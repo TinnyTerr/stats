@@ -1,0 +1,75 @@
+# Builds the standalone binaries and publishes them as a Gitea release
+# whenever a v* tag is pushed.
+#
+#   git tag -a v0.2.0 -m 'v0.2.0' && git push origin v0.2.0
+#
+# The tag must match `version` in package.json — the build's smoke test checks
+# that the binary reports it, and install.sh looks assets up by tag.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Check tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(bun --print 'require("./package.json").version')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun test
+
+      - run: bun run typecheck
+
+      # Cross-compiles the six Linux targets into dist/, alongside gzipped
+      # copies, SHA256SUMS and manifest.json. First run downloads a Bun runtime
+      # per target (~35 MB each), so this step needs network access.
+      - run: bun run build
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v "([^0-9.]|$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "No CHANGELOG section for $version." > notes.md
+          fi
+          {
+            echo
+            echo '## Install'
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --agent"
+            echo '```'
+            echo
+            echo "Checksums for every asset are in \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS\`)."
+          } >> notes.md
+
+      - name: Publish release
+        uses: https://gitea.com/actions/gitea-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body_path: notes.md
+          files: |-
+            dist/stats-linux-*
+            dist/SHA256SUMS
+            dist/manifest.json
