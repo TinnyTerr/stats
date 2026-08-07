@@ -72,12 +72,16 @@ function ServerCard({
   selected,
   onSelect,
   hubVersion,
+  index,
+  arrLength,
 }: {
   server: ServerSummary;
   selected: boolean;
   onSelect: () => void;
   /** null until /api/health answers; a mismatch against it is worth flagging */
   hubVersion: string | null;
+  index: number;
+  arrLength: number;
 }) {
   const [history, setHistory] = useState<number[]>([]);
 
@@ -108,7 +112,7 @@ function ServerCard({
       <header>
         <span className={`dot ${server.status}`} />
         <h2>{server.name}</h2>
-        <span className="host">{server.hostname ?? server.id}</span>
+        <span className="host">{server.hostname ?? server.id} - {index + 1}/{arrLength}</span>
       </header>
 
       {server.status === "offline" ? (
@@ -513,14 +517,16 @@ function App() {
         </button>
       </header>
 
-      <main className="grid">
-        {servers.map((server) => (
+      <main className={servers.length > 1 ? "grid" : ""}>
+        {servers.map((server, i, arr) => (
           <ServerCard
             key={server.id}
             server={server}
             selected={server.id === selectedId}
             onSelect={() => setSelectedId(server.id === selectedId ? null : server.id)}
             hubVersion={hubVersion}
+            index={i}
+            arrLength={arr.length}
           />
         ))}
         {!servers.length && (
