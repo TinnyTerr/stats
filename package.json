@@ -1,0 +1,26 @@
+{
+  "name": "stats",
+  "version": "0.1.0",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "hub": "bun index.ts hub",
+    "dev": "bun --hot index.ts hub",
+    "agent": "bun index.ts agent",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
