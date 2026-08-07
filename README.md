@@ -16,7 +16,37 @@ laptop (hub :3000)  ──poll──> server-a:9101  (agent)
    └── "local" driver ────────> itself, in-process, no agent needed
 ```
 
-## Quick start
+## Install
+
+`stats` ships as one self-contained executable — the Bun runtime, the API and
+the dashboard are all inside it — so servers need nothing installed first.
+
+On each server you want to watch:
+
+```bash
+curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --agent
+```
+
+That drops the binary at `/usr/local/bin/stats`, generates a token into
+`/etc/stats/agent.env` (mode 0600), starts `stats-agent.service`, and prints the
+`servers.json` block to paste into the hub.
+
+On the laptop that shows the dashboard, either run `stats hub` in a terminal or
+install it as a service too:
+
+```bash
+curl -fsSL .../install.sh | sudo sh -s -- --hub    # http://127.0.0.1:3000
+```
+
+The installer picks the right build for the machine — x86-64 or arm64, glibc or
+musl, and a no-AVX2 "baseline" build for older CPUs — verifies it against
+`SHA256SUMS`, and checks it actually runs before putting it in place. Useful
+flags: `--from dist` (install a local build), `--port`, `--host`, `--token`,
+`--prefix`, `--no-service`, `--uninstall [--purge]`, `--help`.
+
+Re-running it upgrades in place; configs and tokens are never overwritten.
+
+## Quick start (from source)
 
 ```bash
 bun install
@@ -26,14 +56,51 @@ bun run hub                            # http://127.0.0.1:3000
 
 `bun run dev` does the same with hot reload for the frontend.
 
-On each remote server:
+On a remote server, without the installer:
 
 ```bash
 git clone <this repo> /opt/stats && cd /opt/stats && bun install
 STATS_AGENT_TOKEN=$(openssl rand -hex 32) bun run agent --port 9101
 ```
 
-See `deploy/stats-agent.service` for a hardened systemd unit.
+`deploy/` has hardened systemd units for both roles.
+
+## Building executables
+
+```bash
+bun run build                          # every Linux target, into dist/
+bun run build:host                     # just this machine's
+bun run build --targets linux-arm64    # one of them
+bun run build --all                    # Linux + macOS (hub only — see below)
+```
+
+| Asset | Runs on |
+| --- | --- |
+| `stats-linux-x64` | glibc x86-64 with AVX2 — most servers since ~2013 |
+| `stats-linux-x64-baseline` | glibc x86-64 without AVX2 — old CPUs, some VPS hosts |
+| `stats-linux-x64-musl` | Alpine x86-64 |
+| `stats-linux-x64-musl-baseline` | Alpine x86-64 without AVX2 |
+| `stats-linux-arm64` | glibc arm64 — Pi 4/5 (64-bit), Graviton, Ampere |
+| `stats-linux-arm64-musl` | Alpine arm64 |
+
+Each is built with `bun build --compile --minify --bytecode` and
+`NODE_ENV=production`, which strips the dev-only hot-reload path and bundles
+React's production build. Bytecode is why `index.ts` keeps its work inside
+`main()` — the flag needs an entry point free of top-level await.
+
+Alongside the binaries the build writes gzipped copies (~40 MB, what the
+installer prefers), `SHA256SUMS` (plain `sha256sum -c` format) and
+`manifest.json`. Cross-compiling downloads the matching Bun runtime once per
+target, so the first build needs network access.
+
+macOS builds exist under `--all` but can only run the hub against remote
+agents: every collector reads `/proc`, `/sys`, `ss`, `systemctl` or the Docker
+socket, so `driver: "local"` is Linux-only.
+
+To cut a release: bump `version`, update `CHANGELOG.md`, tag, `bun run build`,
+and upload everything in `dist/` to the release. The installer resolves the
+latest tag through the forge API and downloads from
+`<host>/<repo>/releases/download/<tag>/`.
 
 ## Versioning
 
@@ -53,7 +120,8 @@ whose agent doesn't match the hub, and the hub logs a warning once per server on
 a protocol mismatch. Mismatches are reported, not enforced — the snapshot shape
 is additive, so a slightly stale agent keeps working.
 
-Releasing: bump `version` in `package.json`, add a `CHANGELOG.md` entry, tag it.
+Releasing: bump `version` in `package.json`, add a `CHANGELOG.md` entry, tag it,
+then `bun run build` and upload `dist/` (see [Building executables](#building-executables)).
 
 ## Configuration
 
@@ -158,7 +226,9 @@ src/hub/source.ts     local | agent drivers behind one interface
 src/hub/poller.ts     poll loop, online/offline tracking
 src/hub/server.ts     dashboard API, WebSocket, static frontend
 web/                  React dashboard (index.html, frontend.tsx, api.ts)
-deploy/               systemd unit for the agent
+scripts/build.ts      cross-compiles the standalone binaries into dist/
+install.sh            download/verify/install + systemd units, for either role
+deploy/               systemd units, for installing by hand
 ```
 
 Adding a transport (ssh, for instance) means implementing `Source` in

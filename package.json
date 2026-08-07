@@ -8,6 +8,8 @@
     "hub": "bun index.ts hub",
     "dev": "bun --hot index.ts hub",
     "agent": "bun index.ts agent",
+    "build": "bun scripts/build.ts",
+    "build:host": "bun scripts/build.ts --host",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

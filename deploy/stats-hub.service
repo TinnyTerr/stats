@@ -1,0 +1,45 @@
+# Manual install of the hub. `install.sh --hub` writes an equivalent unit for
+# you — keep the two in step if you change one.
+#
+#   sudo cp deploy/stats-hub.service /etc/systemd/system/
+#   sudo install -d /etc/stats
+#   sudo cp servers.example.json /etc/stats/servers.json   # then edit it
+#   sudo systemctl enable --now stats-hub
+#
+# Only needed when the hub should survive a reboot unattended. Running
+# `stats hub` in a terminal on the laptop is a perfectly good alternative.
+
+[Unit]
+Description=stats hub (dashboard and poller)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stats hub --config /etc/stats/servers.json
+Restart=on-failure
+RestartSec=5
+
+# Agent tokens referenced as "env:NAME" in servers.json. Optional — the leading
+# '-' means systemd starts the hub anyway when the file isn't there.
+EnvironmentFile=-/etc/stats/hub.env
+
+User=stats
+Group=stats
+
+# Only relevant to a `driver: "local"` entry watching this machine itself.
+SupplementaryGroups=docker systemd-journal
+
+# The SQLite history is all it writes; systemd creates /var/lib/stats and hands
+# it over, which is what keeps ProtectSystem=strict workable.
+StateDirectory=stats
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
