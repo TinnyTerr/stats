@@ -391,10 +391,19 @@ function App() {
 			.then((res) => res.json())
 			.then((body: { version: string; protocol: number }) => setHubInfo(body))
 			.catch(() => setHubInfo(null));
+		// Doubles as the token check and as a first paint: the socket sends the
+		// same list when it opens, but this way the grid doesn't depend on that
+		// frame landing.
 		fetch("/api/nodes", {
 			headers: token() ? { authorization: `Bearer ${token()}` } : {},
 		})
-			.then((res) => setNeedsToken(res.status === 401))
+			.then(async (res) => {
+				setNeedsToken(res.status === 401);
+				if (!res.ok) return;
+				const list = (await res.json()) as NodeSummary[];
+				// Anything the socket has already pushed is newer than this.
+				setNodes((prev) => (prev.length ? prev : list));
+			})
 			.catch(() => {});
 	}, []);
 
