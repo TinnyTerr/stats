@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startNode } from "../agent/agent.ts";
-import { MessageType } from "../proto/frame.ts";
+import { COMPRESS_THRESHOLD, Flags, MessageType } from "../proto/frame.ts";
 import { PeerLink } from "../proto/link.ts";
 import { HubAction, NodeAction } from "../proto/messages.ts";
 import type { HubConfig, NodeSummary, Telemetry } from "../types.ts";
@@ -484,6 +484,60 @@ describe("hub and node over a websocket", () => {
 			);
 		} finally {
 			ui.close();
+			await node.stop();
+			await h.stop();
+		}
+	}, 30_000);
+
+	test("nothing pushed to a browser is gzipped", async () => {
+		// The dashboard runs in a browser, which has no sync gunzip: a compressed
+		// frame is one it drops on the floor. PeerLink would inflate it here and
+		// hide that, so this reads the header off the raw socket instead.
+		const h = await harness();
+		const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+		ws.binaryType = "arraybuffer";
+		const frames: { type: number; compressed: boolean; bytes: number }[] = [];
+		ws.onmessage = (event) => {
+			const raw = new Uint8Array(event.data as ArrayBuffer);
+			const view = new DataView(raw.buffer);
+			frames.push({
+				type: view.getUint8(1),
+				compressed: (view.getUint16(2, false) & Flags.COMPRESSED) !== 0,
+				bytes: raw.length,
+			});
+		};
+		await new Promise<void>((resolve, reject) => {
+			ws.onopen = () => resolve();
+			ws.onerror = () => reject(new Error("browser socket failed"));
+		});
+
+		const node = startNode({
+			hubUrl: `ws://127.0.0.1:${h.port}/node`,
+			token: null,
+			id: "plain",
+			name: "Plain",
+			tags: [],
+			telemetryIntervalMs: 1000,
+			terminal: false,
+			control: false,
+			projectPaths: [join(h.dir, "nothing.json")],
+		});
+
+		try {
+			await node.connected;
+			// A whole-host telemetry push is tens of kilobytes — comfortably past
+			// COMPRESS_THRESHOLD, so this only passes if the hub opted out.
+			await eventually(
+				() => frames,
+				(list) =>
+					list.some(
+						(f) =>
+							f.type === MessageType.Telemetry && f.bytes > COMPRESS_THRESHOLD,
+					),
+			);
+			expect(frames.every((f) => !f.compressed)).toBe(true);
+		} finally {
+			ws.close();
 			await node.stop();
 			await h.stop();
 		}

@@ -74,6 +74,21 @@ export const Flags = {
 export const COMPRESS_THRESHOLD = 1024;
 
 /**
+ * Sync gzip, where the runtime has it. Bun does; a browser does not — its only
+ * gzip is the async `DecompressionStream`, which can't be used from a decoder
+ * that has to return a frame. So a peer running in a browser neither compresses
+ * nor can be sent compressed frames: `PeerLink`'s `compress: false` is what
+ * keeps the hub honest about that, and the guards below are the backstop.
+ */
+const zlib: {
+	gzipSync(data: Bytes): Bytes;
+	gunzipSync(data: Bytes): Bytes;
+} | null = typeof Bun === "undefined" ? null : Bun;
+
+/** Whether this runtime can gzip at all — false in the browser. */
+export const canCompress = zlib !== null;
+
+/**
  * Payloads are always backed by a plain ArrayBuffer, never a SharedArrayBuffer:
  * Bun's compression and WebSocket APIs both insist on it, and nothing here has
  * a reason to share memory across threads.
@@ -114,8 +129,8 @@ export function encodeFrame(
 	let body = payload;
 	const wantsCompression =
 		opts.compress ?? payload.length >= COMPRESS_THRESHOLD;
-	if (wantsCompression && !(flags & Flags.COMPRESSED)) {
-		body = Bun.gzipSync(payload);
+	if (zlib && wantsCompression && !(flags & Flags.COMPRESSED)) {
+		body = zlib.gzipSync(payload);
 		// Compressing tiny or already-compressed payloads can grow them; only keep
 		// the result when it actually helped.
 		if (body.length < payload.length) flags |= Flags.COMPRESSED;
@@ -174,8 +189,13 @@ export function decodeFrame(data: Bytes): { frame: Frame; consumed: number } {
 	const flags = view.getUint16(2, false);
 	let payload = data.subarray(HEADER_SIZE, HEADER_SIZE + length);
 	if (flags & Flags.COMPRESSED) {
+		if (!zlib) {
+			throw new FrameError(
+				`frame ${messageTypeName(view.getUint8(1))} is gzipped, but this runtime has no sync inflate; the peer should not compress frames sent here`,
+			);
+		}
 		try {
-			payload = Bun.gunzipSync(payload);
+			payload = zlib.gunzipSync(payload);
 		} catch (err) {
 			throw new FrameError(
 				`payload is flagged compressed but did not inflate: ${err instanceof Error ? err.message : String(err)}`,

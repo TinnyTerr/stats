@@ -4,6 +4,36 @@ Versions are semver on the repo as a whole — hub and node ship together.
 `protocol` moves separately, only when the wire shape changes in a way an older
 peer can't read. It is also the version byte in every frame.
 
+## 0.2.2
+
+The dashboard was reading almost nothing the hub sent it. Frames over 1 KiB are
+gzipped, and the browser has no sync gunzip — `Bun.gzipSync` and
+`Bun.gunzipSync` don't exist there — so `decodeFrame` threw, `PeerLink.receive`
+caught it, and every large push went in the bin without a word. Telemetry is
+tens of kilobytes, so in practice that was all of it.
+
+- **Live stats update again.** The hub no longer compresses frames sent to a
+  browser; `permessage-deflate` on the socket does that job instead, so the
+  bytes on the wire are unchanged. `PeerLink` takes a `compress` option, and
+  the frame codec now skips gzip where the runtime has none rather than
+  throwing into a `catch`.
+- **Services no longer claim the host has no systemd.** Same cause: with
+  telemetry never arriving, the panel fell through to its "no systemd
+  (`unknown` instead)" message. Logs kept working because they stream.
+- **Terminals open on hosts whose `$HOME` was never created.** The installer
+  makes the service user with `--no-create-home`, so systemd handed the node a
+  `HOME` that isn't there — and Bun reports a missing cwd as
+  `ENOENT … posix_spawn '/bin/bash'`, which reads as a missing shell. The node
+  now falls back to `/`, and says "no such directory" when a project's own cwd
+  is the thing that's missing.
+- Requests the dashboard sent that were over 1 KiB were dropped the same way,
+  on the encode side. Also fixed.
+
+## 0.2.1
+
+Frontend fetched /api/nodes, yet did nothing with the information it had fetched.
+Fixed this to ensure the hub dashboard populates the entries correctly.
+
 ## 0.2.0 — protocol 2
 
 The connection is inverted and the agent is no longer read-only. **Nothing from

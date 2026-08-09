@@ -83,6 +83,9 @@ export function connectHub(opts: ConnectOptions): HubConnection {
 				// The hub allocates odd correlation ids; every peer it talks to uses even.
 				parity: "even",
 				name: "dashboard",
+				// No sync gzip in a browser. The socket's permessage-deflate does the
+				// compressing for us, in both directions.
+				compress: false,
 				onError: (err) => opts.onError?.(err.message),
 			},
 		);

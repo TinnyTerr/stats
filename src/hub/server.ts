@@ -190,18 +190,23 @@ export function startHub(config: HubConfig) {
 		name: string,
 		parity: "odd" | "even",
 	) {
+		// A browser has no sync gunzip, so it would drop every frame we compressed.
+		// permessage-deflate gets the bytes back at the transport layer instead,
+		// where the browser inflates them before we ever see them.
+		const isBrowser = ws.data.role === "browser";
 		return new PeerLink(
 			{
 				send: (data) => {
 					// Backpressure here means a browser that stopped reading; dropping the
 					// frame is better than growing the buffer without limit.
-					if (ws.readyState === WebSocket.OPEN) ws.send(data);
+					if (ws.readyState === WebSocket.OPEN) ws.send(data, isBrowser);
 				},
 				close: (code, reason) => ws.close(code, reason),
 			},
 			{
 				parity,
 				name,
+				compress: !isBrowser,
 				onError: (err) => console.error(`${name}: ${err.message}`),
 			},
 		);
@@ -358,6 +363,10 @@ export function startHub(config: HubConfig) {
 			// Terminal output and log tails are bursty; a bigger backpressure limit
 			// keeps Bun from closing a socket mid-scrollback.
 			backpressureLimit: 16 * 1024 * 1024,
+
+			// Negotiated with browsers only: node links gzip their own payloads, and
+			// deflating those again would cost CPU for nothing. See makeLink.
+			perMessageDeflate: true,
 
 			open(ws) {
 				const isNode = ws.data.role === "node";

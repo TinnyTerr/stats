@@ -14,6 +14,7 @@
 import {
 	type Bytes,
 	decodeFrame,
+	type EncodeOptions,
 	encodeFrame,
 	encodeJson,
 	Flags,
@@ -117,6 +118,13 @@ export interface LinkOptions {
 	requestTimeoutMs?: number;
 	/** label used in error messages and debug logs */
 	name?: string;
+	/**
+	 * Whether frames may be gzipped above {@link COMPRESS_THRESHOLD}. Set false
+	 * for a peer that can't inflate — a browser has no sync gunzip, so the hub
+	 * turns this off on every browser link and the dashboard turns it off on its
+	 * own. Compression is per-frame and flagged, so the two ends need not agree.
+	 */
+	compress?: boolean;
 	onError?: (err: Error) => void;
 }
 
@@ -156,6 +164,8 @@ export class PeerLink {
 	private nextId: number;
 	private heartbeat: ReturnType<typeof setInterval> | null = null;
 	private closeListeners = new Set<(reason: string) => void>();
+	/** false forbids gzip on this link; undefined leaves it to the frame size. */
+	private readonly compress: false | undefined;
 
 	/** Round trip of the most recent Ping, in ms. */
 	latencyMs: number | null = null;
@@ -166,10 +176,29 @@ export class PeerLink {
 		private options: LinkOptions,
 	) {
 		this.nextId = options.parity === "odd" ? 1 : 2;
+		this.compress = options.compress === false ? false : undefined;
 	}
 
 	private get label(): string {
 		return this.options.name ?? "peer";
+	}
+
+	/** {@link encodeFrame} with this link's compression policy applied. */
+	private frame(
+		type: number,
+		payload?: Bytes,
+		opts: EncodeOptions = {},
+	): Bytes {
+		return encodeFrame(type, payload, { compress: this.compress, ...opts });
+	}
+
+	/** {@link encodeJson} with this link's compression policy applied. */
+	private jsonFrame(
+		type: number,
+		value: unknown,
+		opts: EncodeOptions = {},
+	): Bytes {
+		return encodeJson(type, value, { compress: this.compress, ...opts });
 	}
 
 	private allocate(): number {
@@ -199,7 +228,7 @@ export class PeerLink {
 
 	/** Fire-and-forget JSON message: Telemetry, Hello, Welcome. */
 	send(type: number, value: unknown, correlationId = 0) {
-		this.write(encodeJson(type, value, { correlationId }));
+		this.write(this.jsonFrame(type, value, { correlationId }));
 	}
 
 	/** Like {@link send}, but resolves once the peer acknowledges the frame. */
@@ -224,7 +253,10 @@ export class PeerLink {
 				resolve();
 			});
 			this.write(
-				encodeJson(type, value, { correlationId, flags: Flags.REQUIRES_ACK }),
+				this.jsonFrame(type, value, {
+					correlationId,
+					flags: Flags.REQUIRES_ACK,
+				}),
 			);
 		});
 	}
@@ -273,7 +305,7 @@ export class PeerLink {
 			if (ended) return;
 			ended = true;
 			this.write(
-				encodeFrame(MessageType.StreamEnd, undefined, { correlationId }),
+				this.frame(MessageType.StreamEnd, undefined, { correlationId }),
 			);
 		};
 
@@ -283,7 +315,7 @@ export class PeerLink {
 			bytes: (data) => {
 				if (!ended) {
 					this.write(
-						encodeFrame(MessageType.StreamData, data, {
+						this.frame(MessageType.StreamData, data, {
 							correlationId,
 							flags: Flags.BINARY,
 						}),
@@ -293,13 +325,13 @@ export class PeerLink {
 			json: (value) => {
 				if (!ended)
 					this.write(
-						encodeJson(MessageType.StreamData, value, { correlationId }),
+						this.jsonFrame(MessageType.StreamData, value, { correlationId }),
 					);
 			},
 			raw: (payload, binary) => {
 				if (!ended) {
 					this.write(
-						encodeFrame(MessageType.StreamData, payload, {
+						this.frame(MessageType.StreamData, payload, {
 							correlationId,
 							flags: binary ? Flags.BINARY : Flags.NONE,
 						}),
@@ -355,7 +387,7 @@ export class PeerLink {
 					this.pending.delete(correlationId);
 					if (p.timer) clearTimeout(p.timer);
 					this.write(
-						encodeFrame(MessageType.StreamEnd, undefined, { correlationId }),
+						this.frame(MessageType.StreamEnd, undefined, { correlationId }),
 					);
 					if (!p.settled)
 						reject(
@@ -368,7 +400,7 @@ export class PeerLink {
 
 			this.pending.set(correlationId, entry);
 			this.write(
-				encodeJson(
+				this.jsonFrame(
 					MessageType.ControlReq,
 					{ action, params } satisfies ControlRequest,
 					{
@@ -421,7 +453,7 @@ export class PeerLink {
 
 		if (frame.flags & Flags.REQUIRES_ACK && frame.correlationId !== 0) {
 			this.write(
-				encodeFrame(MessageType.Ack, undefined, {
+				this.frame(MessageType.Ack, undefined, {
 					correlationId: frame.correlationId,
 				}),
 			);
@@ -448,7 +480,7 @@ export class PeerLink {
 				return;
 			case MessageType.Ping:
 				this.write(
-					encodeFrame(MessageType.Pong, frame.payload, {
+					this.frame(MessageType.Pong, frame.payload, {
 						correlationId: frame.correlationId,
 					}),
 				);
@@ -514,7 +546,7 @@ export class PeerLink {
 				if (state.ended) return;
 				state.streaming = true;
 				emit(
-					encodeFrame(MessageType.StreamData, data, {
+					this.frame(MessageType.StreamData, data, {
 						correlationId,
 						flags: Flags.BINARY,
 					}),
@@ -523,13 +555,13 @@ export class PeerLink {
 			json: (value) => {
 				if (state.ended) return;
 				state.streaming = true;
-				emit(encodeJson(MessageType.StreamData, value, { correlationId }));
+				emit(this.jsonFrame(MessageType.StreamData, value, { correlationId }));
 			},
 			raw: (payload, binary) => {
 				if (state.ended) return;
 				state.streaming = true;
 				emit(
-					encodeFrame(MessageType.StreamData, payload, {
+					this.frame(MessageType.StreamData, payload, {
 						correlationId,
 						flags: binary ? Flags.BINARY : Flags.NONE,
 					}),
@@ -540,9 +572,9 @@ export class PeerLink {
 				state.ended = true;
 				state.streaming = true;
 				if (error) {
-					emit(encodeJson(MessageType.Error, error, { correlationId }));
+					emit(this.jsonFrame(MessageType.Error, error, { correlationId }));
 				}
-				emit(encodeFrame(MessageType.StreamEnd, undefined, { correlationId }));
+				emit(this.frame(MessageType.StreamEnd, undefined, { correlationId }));
 				state.controller.abort();
 				if (state.responded) this.inbound.delete(correlationId);
 			},
@@ -702,7 +734,7 @@ export class PeerLink {
 				timer: null,
 				settled: false,
 			});
-			this.write(encodeJson(MessageType.Ping, started, { correlationId }));
+			this.write(this.jsonFrame(MessageType.Ping, started, { correlationId }));
 		});
 		this.latencyMs = Date.now() - started;
 		return this.latencyMs;

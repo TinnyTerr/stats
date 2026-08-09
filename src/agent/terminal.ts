@@ -56,6 +56,35 @@ async function pickShell(requested?: string): Promise<string> {
 	throw new Error("no shell found on this host");
 }
 
+/** Directories need stat(); Bun.file().exists() is false for anything but a file. */
+async function isDirectory(path: string): Promise<boolean> {
+	const stat = await Bun.file(path)
+		.stat()
+		.catch(() => null);
+	return stat?.isDirectory() ?? false;
+}
+
+/**
+ * A working directory that exists.
+ *
+ * Worth the check: Bun reports a missing cwd as
+ * `ENOENT … posix_spawn '/bin/bash'`, which sends you hunting for a shell that
+ * was there all along. A node installed the usual way hits exactly that — the
+ * service user is created with `--no-create-home`, so systemd hands it a $HOME
+ * that was never made, and every terminal on the host fails.
+ */
+async function pickCwd(requested?: string): Promise<string> {
+	if (requested) {
+		// An explicit cwd came from a project, so say plainly that it's missing.
+		if (!(await isDirectory(requested)))
+			throw new Error(`no such directory: ${requested}`);
+		return requested;
+	}
+	const home = process.env.HOME;
+	if (home && (await isDirectory(home))) return home;
+	return "/";
+}
+
 function clamp(
 	value: number | undefined,
 	fallback: number,
@@ -113,7 +142,7 @@ export class TerminalManager {
 
 		const id = randomUUID();
 		const proc = Bun.spawn(cmd, {
-			cwd: opts.cwd ?? process.env.HOME ?? "/",
+			cwd: await pickCwd(opts.cwd),
 			env: {
 				...(process.env as Record<string, string>),
 				...opts.env,

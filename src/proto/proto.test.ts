@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
 	COMPRESS_THRESHOLD,
 	decodeFrame,
@@ -64,6 +65,34 @@ describe("frame codec", () => {
 		expect(frameJson<typeof value>(frame)).toEqual(value);
 	});
 
+	test("a link told not to compress never sets the flag", async () => {
+		// A browser has no sync gunzip, so a compressed frame is one it silently
+		// drops — which is how every push to the dashboard once went missing.
+		const sent: Uint8Array[] = [];
+		const link = new PeerLink(
+			{ send: (data) => sent.push(data), close: () => {} },
+			{ parity: "odd", compress: false, onError: () => {} },
+		);
+
+		const big = { lines: Array.from({ length: 500 }, (_, i) => `line ${i}`) };
+		link.send(MessageType.Telemetry, big);
+		void link.request("something.big", big).catch(() => {});
+		link.openStream("stream.big", big).json(big);
+
+		// send, request, the stream's ControlReq, and the frame written into it.
+		expect(sent.length).toBe(4);
+		for (const frame of sent) {
+			const view = new DataView(
+				frame.buffer,
+				frame.byteOffset,
+				frame.byteLength,
+			);
+			expect(view.getUint16(2, false) & Flags.COMPRESSED).toBe(0);
+			// Uncompressed, so the payload is the JSON itself.
+			expect(frame.length).toBeGreaterThan(COMPRESS_THRESHOLD);
+		}
+	});
+
 	test("leaves small payloads alone", () => {
 		const encoded = encodeJson(MessageType.Ping, 1);
 		expect(
@@ -114,6 +143,20 @@ describe("frame codec", () => {
 	test("names types for logs", () => {
 		expect(messageTypeName(MessageType.Telemetry)).toBe("Telemetry");
 		expect(messageTypeName(0x7f)).toBe("0x7f");
+	});
+
+	test("the dashboard bundle never reaches for the Bun global", async () => {
+		// The browser runs this same wire code, where `Bun` does not exist. One
+		// `Bun.gunzipSync` in the decoder was enough to make every push to the
+		// dashboard vanish into a caught exception, silently, for weeks.
+		const built = await Bun.build({
+			entrypoints: [join(import.meta.dir, "../../web/frontend.tsx")],
+			target: "browser",
+		});
+		expect(built.success).toBe(true);
+
+		const js = await built.outputs[0]!.text();
+		expect(js.match(/[^\w$]Bun\./g) ?? []).toEqual([]);
 	});
 });
 
