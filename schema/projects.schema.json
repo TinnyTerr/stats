@@ -1,0 +1,254 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/tinnyterr/stats/schema/projects.schema.json",
+	"title": "stats projects",
+	"description": "Projects and processes a stats node runs and monitors. Drop this at /etc/stats/projects.json, or as any number of files in /etc/stats/projects.d/*.json. The node supervises every process declared here: it starts them, restarts them according to their policy, keeps their logs, samples their CPU and memory, and reports all of it to the hub as a first-class thing rather than a pid that happens to be running.",
+	"type": "object",
+	"required": ["projects"],
+	"additionalProperties": false,
+	"properties": {
+		"$schema": { "type": "string" },
+		"version": {
+			"description": "Schema version of this file. Only 1 exists.",
+			"type": "integer",
+			"enum": [1],
+			"default": 1
+		},
+		"projects": {
+			"type": "array",
+			"items": { "$ref": "#/$defs/project" }
+		}
+	},
+	"$defs": {
+		"identifier": {
+			"type": "string",
+			"pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+			"description": "Stable id: letters, digits, dash and underscore. Used in the API, so changing it is a rename."
+		},
+		"env": {
+			"type": "object",
+			"description": "Environment variables. Values are used literally; no shell expansion.",
+			"additionalProperties": { "type": "string" }
+		},
+		"command": {
+			"description": "What to run. An array is exec'd directly (no shell, no quoting rules). A string is split on whitespace, or passed to `sh -c` when `shell` is true.",
+			"oneOf": [
+				{ "type": "string", "minLength": 1 },
+				{ "type": "array", "items": { "type": "string" }, "minItems": 1 }
+			]
+		},
+		"project": {
+			"type": "object",
+			"required": ["id", "processes"],
+			"additionalProperties": false,
+			"properties": {
+				"id": { "$ref": "#/$defs/identifier" },
+				"name": {
+					"type": "string",
+					"description": "Display name. Defaults to the id."
+				},
+				"description": { "type": "string" },
+				"cwd": {
+					"type": "string",
+					"description": "Absolute working directory inherited by every process in the project."
+				},
+				"env": { "$ref": "#/$defs/env" },
+				"envFiles": {
+					"type": "array",
+					"description": "Files of KEY=value lines loaded before `env`, which wins. Relative paths resolve against `cwd`.",
+					"items": { "type": "string" }
+				},
+				"tags": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Free-form labels, shown as chips and usable as a dashboard filter."
+				},
+				"url": {
+					"type": "string",
+					"description": "Where this project is served, linked from its card."
+				},
+				"enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "false keeps the project in the file but stops the node acting on it."
+				},
+				"processes": {
+					"type": "array",
+					"description": "The processes the node runs for this project.",
+					"items": { "$ref": "#/$defs/process" }
+				},
+				"watch": {
+					"$ref": "#/$defs/watch",
+					"description": "Things this project owns but does not run, grouped onto its card."
+				}
+			}
+		},
+		"process": {
+			"type": "object",
+			"required": ["id", "command"],
+			"additionalProperties": false,
+			"properties": {
+				"id": { "$ref": "#/$defs/identifier" },
+				"name": {
+					"type": "string",
+					"description": "Display name. Defaults to the id."
+				},
+				"command": { "$ref": "#/$defs/command" },
+				"shell": {
+					"type": "boolean",
+					"default": false,
+					"description": "Run the command through `sh -c`. Needed for pipes, globs and redirection; avoid it otherwise so signals reach the real process."
+				},
+				"cwd": {
+					"type": "string",
+					"description": "Overrides the project's cwd."
+				},
+				"env": { "$ref": "#/$defs/env" },
+				"envFiles": { "type": "array", "items": { "type": "string" } },
+				"autostart": {
+					"type": "boolean",
+					"default": true,
+					"description": "Start when the node starts. false leaves it stopped until someone starts it from the dashboard."
+				},
+				"restart": {
+					"enum": ["always", "on-failure", "never"],
+					"default": "on-failure",
+					"description": "always: restart on any exit. on-failure: only on a non-zero exit or a signal. never: leave it exited."
+				},
+				"restartDelayMs": {
+					"type": "integer",
+					"minimum": 0,
+					"default": 2000,
+					"description": "Wait before restarting. Backs off up to 30s while a process keeps failing."
+				},
+				"maxRestarts": {
+					"type": "integer",
+					"minimum": 0,
+					"default": 10,
+					"description": "Give up (state: fatal) after this many restarts inside restartWindowSec. 0 never gives up."
+				},
+				"restartWindowSec": {
+					"type": "integer",
+					"minimum": 1,
+					"default": 300,
+					"description": "The window maxRestarts is counted over."
+				},
+				"user": {
+					"type": "string",
+					"description": "Run as this user. The node must be root; it uses setpriv/su to drop privileges."
+				},
+				"group": {
+					"type": "string",
+					"description": "Run as this group. Requires `user`."
+				},
+				"stopSignal": {
+					"type": "string",
+					"default": "SIGTERM",
+					"description": "Signal sent to stop the process, e.g. SIGTERM, SIGINT, SIGQUIT."
+				},
+				"stopTimeoutSec": {
+					"type": "integer",
+					"minimum": 1,
+					"default": 10,
+					"description": "How long to wait after stopSignal before SIGKILL."
+				},
+				"logLines": {
+					"type": "integer",
+					"minimum": 10,
+					"maximum": 100000,
+					"default": 1000,
+					"description": "Output lines kept in memory for the log tail."
+				},
+				"healthcheck": { "$ref": "#/$defs/healthcheck" }
+			}
+		},
+		"healthcheck": {
+			"type": "object",
+			"description": "Turns 'the process is running' into 'the process is working'. Failures do not restart the process; they mark it unhealthy on the dashboard.",
+			"required": ["type"],
+			"additionalProperties": false,
+			"properties": {
+				"type": { "enum": ["http", "tcp", "command"] },
+				"url": {
+					"type": "string",
+					"description": "http: absolute URL to GET, e.g. http://127.0.0.1:3000/health"
+				},
+				"expectStatus": {
+					"type": "array",
+					"items": { "type": "integer" },
+					"description": "http: status codes counted as healthy. Defaults to anything in 200-399."
+				},
+				"port": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 65535,
+					"description": "tcp: port to connect to."
+				},
+				"host": {
+					"type": "string",
+					"default": "127.0.0.1",
+					"description": "tcp: host to connect to."
+				},
+				"command": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "command: argv run to completion; exit 0 is healthy."
+				},
+				"intervalSec": { "type": "integer", "minimum": 1, "default": 30 },
+				"timeoutMs": { "type": "integer", "minimum": 100, "default": 3000 },
+				"failures": {
+					"type": "integer",
+					"minimum": 1,
+					"default": 3,
+					"description": "Consecutive failures before the process is called unhealthy."
+				},
+				"startPeriodSec": {
+					"type": "integer",
+					"minimum": 0,
+					"default": 10,
+					"description": "Grace period after start during which failures don't count."
+				}
+			},
+			"allOf": [
+				{
+					"if": { "properties": { "type": { "const": "http" } } },
+					"then": { "required": ["url"] }
+				},
+				{
+					"if": { "properties": { "type": { "const": "tcp" } } },
+					"then": { "required": ["port"] }
+				},
+				{
+					"if": { "properties": { "type": { "const": "command" } } },
+					"then": { "required": ["command"] }
+				}
+			]
+		},
+		"watch": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"systemd": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Units belonging to this project, e.g. nginx.service."
+				},
+				"containers": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Container names belonging to this project."
+				},
+				"ports": {
+					"type": "array",
+					"items": { "type": "integer", "minimum": 1, "maximum": 65535 },
+					"description": "Ports this project is expected to be listening on."
+				},
+				"paths": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Log files or directories to offer in the log picker for this project."
+				}
+			}
+		}
+	}
+}

@@ -3,35 +3,37 @@
 #
 #   sudo cp deploy/stats-hub.service /etc/systemd/system/
 #   sudo install -d /etc/stats
-#   sudo cp servers.example.json /etc/stats/servers.json   # then edit it
+#   sudo cp hub.example.json /etc/stats/hub.json   # then edit it
 #   sudo systemctl enable --now stats-hub
 #
 # Only needed when the hub should survive a reboot unattended. Running
 # `stats hub` in a terminal on the laptop is a perfectly good alternative.
+#
+# Nodes connect *to* this machine, so port 3000 (or whatever hub.json says)
+# must be reachable from them — and from nothing else. Bind it to a private
+# interface, or put a TLS proxy in front and point nodes at wss://.
 
 [Unit]
-Description=stats hub (dashboard and poller)
+Description=stats hub (dashboard and node registry)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/stats hub --config /etc/stats/servers.json
+ExecStart=/usr/local/bin/stats hub --config /etc/stats/hub.json
 Restart=on-failure
 RestartSec=5
 
-# Agent tokens referenced as "env:NAME" in servers.json. Optional — the leading
-# '-' means systemd starts the hub anyway when the file isn't there.
+# Tokens referenced as "env:NAME" in hub.json. Optional — the leading '-'
+# means systemd starts the hub anyway when the file isn't there.
 EnvironmentFile=-/etc/stats/hub.env
 
 User=stats
 Group=stats
 
-# Only relevant to a `driver: "local"` entry watching this machine itself.
-SupplementaryGroups=docker systemd-journal
-
 # The SQLite history is all it writes; systemd creates /var/lib/stats and hands
-# it over, which is what keeps ProtectSystem=strict workable.
+# it over, which is what keeps ProtectSystem=strict workable. Point dbPath at
+# /var/lib/stats/stats.db in hub.json.
 StateDirectory=stats
 NoNewPrivileges=yes
 ProtectSystem=strict

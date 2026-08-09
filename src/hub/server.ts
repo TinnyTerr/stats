@@ -1,253 +1,449 @@
 import type { ServerWebSocket } from "bun";
+import projectsSchema from "../../schema/projects.schema.json" with {
+	type: "json",
+};
 import index from "../../web/index.html";
-import type { HubConfig, LogQuery, LogSourceKind, ServerState } from "../types.ts";
-import { json, requireToken, sseResponse, unauthorized } from "../http.ts";
+import { json, requireToken, unauthorized } from "../http.ts";
+import { MessageType } from "../proto/frame.ts";
+import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
+import {
+	type EventsParams,
+	type HelloPayload,
+	type HistoryParams,
+	HubAction,
+	type HubInfoResult,
+	type NodeScoped,
+	type WelcomePayload,
+} from "../proto/messages.ts";
+import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
 import { MetricStore } from "./db.ts";
-import { Poller } from "./poller.ts";
+import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
 
 /**
- * The hub: runs on the laptop, fans out to every configured server, serves the
- * dashboard and its API.
+ * The hub: listens, never dials. Nodes connect to /node and browsers to /ws,
+ * both speaking the same binary protocol, and the hub sits in the middle
+ * relaying control requests and streams between them.
+ *
+ *   node ──ws──▶ /node ─┐
+ *   node ──ws──▶ /node ─┼─ registry ─── /ws ◀──ws── browser
+ *   node ──ws──▶ /node ─┘      │
+ *                            SQLite (history, events, known nodes)
  */
 
-interface WsData {
-  subscribed: Set<string> | null; // null = all servers
+interface SocketData {
+	role: "node" | "browser";
+	link: PeerLink;
+	/** set once the node says Hello */
+	nodeId: string | null;
+	remoteAddress: string | null;
 }
 
-/** Snapshots are large; the list view only needs the headline numbers. */
-function summarise(state: ServerState) {
-  const s = state.snapshot;
-  return {
-    id: state.config.id,
-    name: state.config.name,
-    driver: state.config.driver,
-    tags: state.config.tags ?? [],
-    notes: state.config.notes ?? null,
-    status: state.status,
-    lastSeen: state.lastSeen,
-    latencyMs: state.latencyMs,
-    error: state.error,
-    hostname: s?.stats.hostname ?? null,
-    uptimeSec: s?.stats.uptimeSec ?? null,
-    cpu: s?.stats.cpu.usage ?? null,
-    cores: s?.stats.cpu.cores ?? null,
-    loadavg: s?.stats.loadavg ?? null,
-    mem: s ? { used: s.stats.mem.used, total: s.stats.mem.total } : null,
-    disks: s?.stats.disks ?? [],
-    temps: s?.stats.temps ?? [],
-    net: s
-      ? {
-          rxRate: s.stats.net.reduce((sum, n) => sum + (n.rxRate ?? 0), 0),
-          txRate: s.stats.net.reduce((sum, n) => sum + (n.txRate ?? 0), 0),
-        }
-      : null,
-    containers: s
-      ? {
-          total: s.containers.length,
-          running: s.containers.filter((c) => c.state === "running").length,
-          unhealthy: s.containers.filter((c) => c.health === "unhealthy").length,
-        }
-      : null,
-    services: s?.services.length ?? null,
-    collectorErrors: s?.errors ?? {},
-    // null for agents predating versioning; the UI renders that as "unknown".
-    agentVersion: s?.agent?.version ?? null,
-    agentProtocol: s?.agent?.protocol ?? null,
-  };
-}
+/** Actions whose reply is a stream rather than a single result. */
+const STREAMING_ACTIONS = new Set(["logs.tail", "terminal.open"]);
 
-function parseLogQuery(url: URL): LogQuery | { error: string } {
-  const kind = url.searchParams.get("kind") ?? "docker";
-  const target = url.searchParams.get("target");
-  if (!["docker", "journal", "file"].includes(kind)) {
-    return { error: `unknown log kind '${kind}'` };
-  }
-  if (!target) return { error: "missing 'target' query parameter" };
-  const tail = Number(url.searchParams.get("tail") ?? 200);
-  return {
-    kind: kind as LogSourceKind,
-    target,
-    tail: Number.isFinite(tail) ? Math.min(Math.max(tail, 1), 5000) : 200,
-  };
-}
+/** How long a relayed one-shot may take before the browser gets an error. */
+const RELAY_TIMEOUT_MS = 30_000;
 
 export function startHub(config: HubConfig) {
-  const store = new MetricStore(config.dbPath);
-  const poller = new Poller(config, store);
-  const sockets = new Set<ServerWebSocket<WsData>>();
+	const store = new MetricStore(config.dbPath);
+	const registry = new NodeRegistry(config, store);
+	const browsers = new Set<PeerLink>();
 
-  poller.subscribe((state) => {
-    const message = JSON.stringify({ type: "server", data: summarise(state) });
-    for (const ws of sockets) {
-      const filter = ws.data.subscribed;
-      if (filter && !filter.has(state.config.id)) continue;
-      ws.send(message);
-    }
-  });
+	registry.subscribe((event) => {
+		// One push shape for every browser: the frame type says "telemetry", the
+		// payload's `event` field says which kind.
+		const payload =
+			event.type === "node"
+				? { event: "node", node: event.node }
+				: event.type === "telemetry"
+					? {
+							event: "telemetry",
+							nodeId: event.nodeId,
+							telemetry: event.telemetry,
+						}
+					: event.type === "status"
+						? {
+								event: "status",
+								nodeId: event.nodeId,
+								status: event.status,
+								message: event.message,
+								ts: event.ts,
+							}
+						: {
+								event: "alert",
+								nodeId: event.nodeId,
+								kind: event.kind,
+								message: event.message,
+								ts: event.ts,
+							};
 
-  poller.start();
+		for (const browser of browsers) {
+			if (browser.closed) continue;
+			browser.send(MessageType.Telemetry, payload);
+		}
+	});
 
-  /** Wraps a route so it 401s unless the hub token matches (when configured). */
-  const auth =
-    (handler: (req: Request) => Response | Promise<Response>) =>
-    (req: Request) =>
-      requireToken(req, config.token) ? handler(req) : unauthorized();
+	registry.startSweeper();
+	store.prune(config.retentionHours);
+	const pruneTimer = setInterval(
+		() => store.prune(config.retentionHours),
+		600_000,
+	);
+	pruneTimer.unref?.();
 
-  /** Resolves :id into a poller state, or a 404. */
-  const withServer = (
-    req: Request & { params: { id: string } },
-    handler: (state: ServerState) => Response | Promise<Response>,
-  ) => {
-    const state = poller.getState(req.params.id);
-    if (!state) return json({ error: `unknown server '${req.params.id}'` }, 404);
-    return handler(state);
-  };
+	/* ---------- browser control requests ---------- */
 
-  const server = Bun.serve<WsData>({
-    port: config.port,
-    hostname: config.host,
-    idleTimeout: 0,
+	/** Copies one request, and any stream it opens, to the node that owns it. */
+	async function relay(req: InboundRequest, nodeId: string): Promise<unknown> {
+		const link = registry.linkFor(nodeId);
+		// The node has no use for the routing field, and shouldn't have to ignore it.
+		const { nodeId: _routing, ...params } = (req.params ?? {}) as NodeScoped &
+			Record<string, unknown>;
 
-    routes: {
-      "/": index,
+		if (!STREAMING_ACTIONS.has(req.action)) {
+			return await link.request(req.action, params, {
+				timeoutMs: RELAY_TIMEOUT_MS,
+			});
+		}
 
-      "/api/health": () =>
-        json({
-          ok: true,
-          role: "hub",
-          ...versionInfo,
-          servers: config.servers.length,
-          time: Date.now(),
-        }),
+		req.stream.open();
+		const upstream = link.openStream(req.action, params, {
+			onData: (payload, binary) => req.stream.raw(payload, binary),
+			onEnd: (error) => req.stream.end(error),
+		});
+		// Browser → node: terminal keystrokes and anything else the caller writes.
+		req.onData((payload, binary) => upstream.raw(payload, binary));
+		req.signal.addEventListener("abort", () => upstream.end(), { once: true });
 
-      /** Everything the dashboard's list view needs, in one call. */
-      "/api/servers": auth(() => json(poller.getStates().map(summarise))),
+		return await upstream.ready;
+	}
 
-      "/api/servers/:id": auth((req) =>
-        withServer(req as never, (state) =>
-          json({ ...summarise(state), snapshot: state.snapshot }),
-        ),
-      ),
+	async function handleBrowserRequest(req: InboundRequest): Promise<unknown> {
+		const params = (req.params ?? {}) as Record<string, unknown>;
 
-      "/api/servers/:id/stats": auth((req) =>
-        withServer(req as never, (state) => json(state.snapshot?.stats ?? null)),
-      ),
+		switch (req.action) {
+			case HubAction.Info:
+				return {
+					...versionInfo,
+					terminal: config.terminal,
+					nodes: registry.list().length,
+					time: Date.now(),
+				} satisfies HubInfoResult;
 
-      "/api/servers/:id/containers": auth((req) =>
-        withServer(req as never, (state) => json(state.snapshot?.containers ?? [])),
-      ),
+			case HubAction.Nodes:
+				return registry.summaries();
 
-      "/api/servers/:id/processes": auth((req) =>
-        withServer(req as never, (state) => json(state.snapshot?.processes ?? [])),
-      ),
+			case HubAction.Node: {
+				const record = registry.get(String(params.nodeId ?? ""));
+				if (!record)
+					throw new RemoteError("unknown_node", `no node '${params.nodeId}'`);
+				return {
+					summary: registry.summarise(record),
+					telemetry: record.telemetry,
+				};
+			}
 
-      "/api/servers/:id/services": auth((req) =>
-        withServer(req as never, (state) => json(state.snapshot?.services ?? [])),
-      ),
+			case HubAction.History: {
+				const p = params as unknown as HistoryParams;
+				const minutes = Number(p.minutes ?? 60);
+				const window = Number.isFinite(minutes)
+					? Math.min(Math.max(minutes, 1), 24 * 60)
+					: 60;
+				return store.history(
+					String(p.nodeId ?? ""),
+					Date.now() - window * 60_000,
+				);
+			}
 
-      "/api/servers/:id/ports": auth((req) =>
-        withServer(req as never, (state) => json(state.snapshot?.ports ?? [])),
-      ),
+			case HubAction.Events: {
+				const p = params as unknown as EventsParams;
+				const minutes = Number(p.minutes ?? 1440);
+				const window = Number.isFinite(minutes)
+					? Math.min(Math.max(minutes, 1), 7 * 24 * 60)
+					: 1440;
+				return store.events(Date.now() - window * 60_000, 200, p.nodeId);
+			}
 
-      /** Time series for charts. `minutes` defaults to one hour. */
-      "/api/servers/:id/history": auth((req) =>
-        withServer(req as never, (state) => {
-          const url = new URL(req.url);
-          const minutes = Number(url.searchParams.get("minutes") ?? 60);
-          const window = Number.isFinite(minutes) ? Math.min(minutes, 24 * 60) : 60;
-          return json(store.history(state.config.id, Date.now() - window * 60_000));
-        }),
-      ),
+			case HubAction.Forget: {
+				registry.forget(String(params.nodeId ?? ""));
+				return { ok: true, nodes: registry.summaries() };
+			}
 
-      /** Live log tail, proxied from whichever source backs this server. */
-      "/api/servers/:id/logs/stream": auth((req) => {
-        const params = (req as Request & { params: { id: string } }).params;
-        const source = poller.getSource(params.id);
-        if (!source) return json({ error: `unknown server '${params.id}'` }, 404);
+			default: {
+				const nodeId = params.nodeId;
+				if (typeof nodeId !== "string" || !nodeId) {
+					throw new RemoteError(
+						"bad_request",
+						`'${req.action}' is not a hub action and carries no nodeId to relay it to`,
+					);
+				}
+				return await relay(req, nodeId);
+			}
+		}
+	}
 
-        const query = parseLogQuery(new URL(req.url));
-        if ("error" in query) return json({ error: query.error }, 400);
+	/* ---------- sockets ---------- */
 
-        return sseResponse(async function* (signal) {
-          try {
-            for await (const line of source.logs(query, signal)) {
-              yield { event: "log", data: line };
-            }
-          } catch (err) {
-            yield {
-              event: "error",
-              data: { message: err instanceof Error ? err.message : String(err) },
-            };
-          }
-        }, req.signal);
-      }),
+	function makeLink(
+		ws: ServerWebSocket<SocketData>,
+		name: string,
+		parity: "odd" | "even",
+	) {
+		return new PeerLink(
+			{
+				send: (data) => {
+					// Backpressure here means a browser that stopped reading; dropping the
+					// frame is better than growing the buffer without limit.
+					if (ws.readyState === WebSocket.OPEN) ws.send(data);
+				},
+				close: (code, reason) => ws.close(code, reason),
+			},
+			{
+				parity,
+				name,
+				onError: (err) => console.error(`${name}: ${err.message}`),
+			},
+		);
+	}
 
-      /** Online/offline transitions across all servers. */
-      "/api/events": auth((req) => {
-        const minutes = Number(new URL(req.url).searchParams.get("minutes") ?? 60 * 24);
-        const window = Number.isFinite(minutes) ? minutes : 60 * 24;
-        return json(store.events(Date.now() - window * 60_000));
-      }),
+	function onNodeHello(ws: ServerWebSocket<SocketData>, payload: Uint8Array) {
+		const link = ws.data.link;
+		let hello: HelloPayload;
+		try {
+			hello = JSON.parse(new TextDecoder().decode(payload)) as HelloPayload;
+		} catch {
+			link.error("bad_request", "Hello is not valid JSON");
+			ws.close(4000, "bad hello");
+			return;
+		}
 
-      /** Forces an immediate poll instead of waiting for the interval. */
-      "/api/refresh": {
-        POST: auth(async () => {
-          await poller.pollAll();
-          return json(poller.getStates().map(summarise));
-        }),
-      },
-    },
+		try {
+			const record = registry.attach(hello, link, ws.data.remoteAddress);
+			ws.data.nodeId = record.id;
 
-    fetch(req, srv) {
-      const url = new URL(req.url);
-      if (url.pathname === "/ws") {
-        if (!requireToken(req, config.token)) return unauthorized();
-        const only = url.searchParams.get("servers");
-        const upgraded = srv.upgrade(req, {
-          data: { subscribed: only ? new Set(only.split(",")) : null } satisfies WsData,
-        });
-        return upgraded ? undefined : json({ error: "websocket upgrade failed" }, 400);
-      }
-      return json({ error: "not found" }, 404);
-    },
+			const welcome: WelcomePayload = {
+				hub: versionInfo,
+				name: record.name,
+				telemetryIntervalMs: config.telemetryIntervalMs,
+				terminal: config.terminal,
+				time: Date.now(),
+			};
+			link.send(MessageType.Welcome, welcome);
+			console.log(
+				`node '${record.id}' (${record.name}) connected from ${ws.data.remoteAddress ?? "unknown"}` +
+					` — stats ${record.version ?? "?"}, protocol ${record.protocol ?? "?"}`,
+			);
+			if (record.protocol !== versionInfo.protocol) {
+				console.warn(
+					`warning: node '${record.id}' speaks protocol ${record.protocol}, hub speaks ` +
+						`${versionInfo.protocol} — update it`,
+				);
+			}
+		} catch (err) {
+			const code = err instanceof UnauthorizedNode ? err.code : "error";
+			const message = err instanceof Error ? err.message : String(err);
+			console.warn(
+				`node rejected from ${ws.data.remoteAddress ?? "unknown"}: ${message}`,
+			);
+			link.error(code, message);
+			// Give the frame a moment to flush before the socket goes away.
+			setTimeout(() => ws.close(4003, code), 50);
+		}
+	}
 
-    websocket: {
-      open(ws) {
-        sockets.add(ws);
-        // Send current state immediately so the UI paints without waiting a tick.
-        ws.send(
-          JSON.stringify({ type: "snapshot", data: poller.getStates().map(summarise) }),
-        );
-      },
-      message(ws, raw) {
-        try {
-          const msg = JSON.parse(String(raw)) as { type?: string; servers?: string[] };
-          if (msg.type === "subscribe") {
-            ws.data.subscribed = msg.servers?.length ? new Set(msg.servers) : null;
-          }
-        } catch {
-          // ignore malformed client frames
-        }
-      },
-      close(ws) {
-        sockets.delete(ws);
-      },
-    },
+	const server = Bun.serve<SocketData>({
+		port: config.port,
+		hostname: config.host,
+		// Terminals and log tails are idle for long stretches; the protocol's own
+		// heartbeat is what detects a dead peer.
+		idleTimeout: 0,
 
-    error: (err) => json({ error: err.message }, 500),
+		routes: {
+			"/": index,
 
-    development: process.env.NODE_ENV !== "production" && { hmr: true, console: true },
-  });
+			"/api/health": () =>
+				json({
+					ok: true,
+					role: "hub",
+					...versionInfo,
+					nodes: registry.list().length,
+					online: registry.list().filter((n) => n.link && !n.link.closed)
+						.length,
+					time: Date.now(),
+				}),
 
-  const shutdown = () => {
-    poller.stop();
-    store.close();
-    void server.stop(true);
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+			/** Served so a projects file can point its $schema at its own hub. */
+			"/schema/projects.schema.json": () =>
+				json(projectsSchema, 200, { "cache-control": "public, max-age=300" }),
 
-  return { server, poller, store };
+			/** A read-only REST mirror of the browser protocol, for curl and scripts. */
+			"/api/nodes": (req: Request) =>
+				requireToken(req, config.token)
+					? json(registry.summaries())
+					: unauthorized(),
+
+			"/api/nodes/:id": (req: Request) => {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const { id } = (req as Request & { params: { id: string } }).params;
+				const record = registry.get(id);
+				if (!record) return json({ error: `unknown node '${id}'` }, 404);
+				return json({
+					...registry.summarise(record),
+					telemetry: record.telemetry,
+				});
+			},
+
+			"/api/nodes/:id/history": (req: Request) => {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const { id } = (req as Request & { params: { id: string } }).params;
+				const minutes = Number(
+					new URL(req.url).searchParams.get("minutes") ?? 60,
+				);
+				const window = Number.isFinite(minutes)
+					? Math.min(minutes, 24 * 60)
+					: 60;
+				return json(store.history(id, Date.now() - window * 60_000));
+			},
+
+			"/api/events": (req: Request) => {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const minutes = Number(
+					new URL(req.url).searchParams.get("minutes") ?? 1440,
+				);
+				const window = Number.isFinite(minutes) ? minutes : 1440;
+				return json(store.events(Date.now() - window * 60_000));
+			},
+		},
+
+		fetch(req, srv) {
+			const url = new URL(req.url);
+			const remoteAddress = srv.requestIP(req)?.address ?? null;
+
+			if (url.pathname === "/node") {
+				// The node's own token is checked in Hello, where a mismatch can be
+				// reported in-protocol rather than as a bare HTTP status.
+				const upgraded = srv.upgrade(req, {
+					data: {
+						role: "node",
+						link: null as never,
+						nodeId: null,
+						remoteAddress,
+					},
+				});
+				return upgraded
+					? undefined
+					: json({ error: "websocket upgrade failed" }, 400);
+			}
+
+			if (url.pathname === "/ws") {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const upgraded = srv.upgrade(req, {
+					data: {
+						role: "browser",
+						link: null as never,
+						nodeId: null,
+						remoteAddress,
+					},
+				});
+				return upgraded
+					? undefined
+					: json({ error: "websocket upgrade failed" }, 400);
+			}
+
+			return json({ error: "not found" }, 404);
+		},
+
+		websocket: {
+			// Terminal output and log tails are bursty; a bigger backpressure limit
+			// keeps Bun from closing a socket mid-scrollback.
+			backpressureLimit: 16 * 1024 * 1024,
+
+			open(ws) {
+				const isNode = ws.data.role === "node";
+				const link = makeLink(
+					ws,
+					isNode ? `node@${ws.data.remoteAddress ?? "?"}` : "browser",
+					// The hub allocates odd correlation ids on every link it terminates.
+					"odd",
+				);
+				ws.data.link = link;
+
+				if (isNode) {
+					link.on(MessageType.Hello, (frame) => onNodeHello(ws, frame.payload));
+					link.on(MessageType.Telemetry, (frame) => {
+						if (!ws.data.nodeId) return;
+						try {
+							registry.telemetry(
+								ws.data.nodeId,
+								JSON.parse(new TextDecoder().decode(frame.payload)),
+							);
+						} catch (err) {
+							console.error(
+								`bad telemetry from ${ws.data.nodeId}: ${String(err)}`,
+							);
+						}
+					});
+					// A node may ask the hub for nothing; anything it sends is a mistake.
+					link.onRequest((req) => {
+						throw new RemoteError(
+							"unsupported",
+							`the hub does not handle '${req.action}'`,
+						);
+					});
+					return;
+				}
+
+				browsers.add(link);
+				link.onRequest((req) => handleBrowserRequest(req));
+				// Paint immediately rather than after the first node reports.
+				link.send(MessageType.Telemetry, {
+					event: "nodes",
+					nodes: registry.summaries(),
+				});
+			},
+
+			message(ws, raw) {
+				const link = ws.data.link;
+				if (!link) return;
+				if (typeof raw === "string")
+					link.receive(new TextEncoder().encode(raw));
+				else link.receive(raw);
+			},
+
+			close(ws, code, reason) {
+				const link = ws.data.link;
+				if (!link) return;
+				link.dispose(reason || `socket closed (${code})`);
+				if (ws.data.role === "browser") {
+					browsers.delete(link);
+				} else if (ws.data.nodeId) {
+					registry.detach(
+						ws.data.nodeId,
+						link,
+						reason || `socket closed (${code})`,
+					);
+				}
+			},
+		},
+
+		error: (err) => json({ error: err.message }, 500),
+
+		development: process.env.NODE_ENV !== "production" && {
+			hmr: true,
+			console: true,
+		},
+	});
+
+	const shutdown = () => {
+		clearInterval(pruneTimer);
+		registry.stop();
+		store.close();
+		void server.stop(true);
+		process.exit(0);
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+
+	return { server, registry, store };
 }

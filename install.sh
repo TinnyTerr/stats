@@ -5,19 +5,23 @@
 # and the dashboard, so nothing else is required on the machine) and, on
 # request, a hardened systemd unit for either role.
 #
-#   Agent, on each server you want to watch:
-#     curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --agent
-#
-#   Hub, on the laptop that shows the dashboard:
+#   Hub, on the machine that shows the dashboard — install this one first, it
+#   prints the token the nodes need:
 #     curl -fsSL .../install.sh | sudo sh -s -- --hub
 #
+#   Node, on each server you want to watch:
+#     curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | \
+#       sudo sh -s -- --node --hub ws://hub.lan:3000 --token <token>
+#
 #   From a local build (bun run build):
-#     sudo ./install.sh --from dist --agent
+#     sudo ./install.sh --from dist --node --hub ws://hub.lan:3000
 #
 # Everything it touches:
 #   /usr/local/bin/stats            the binary
-#   /etc/stats/agent.env            agent token          (--agent, mode 0600)
-#   /etc/stats/servers.json         hub config           (--hub)
+#   /etc/stats/node.env             hub URL + node token (--node, mode 0600)
+#   /etc/stats/projects.json        what the node runs   (--node, if absent)
+#   /etc/stats/hub.json             hub config           (--hub)
+#   /etc/stats/hub.env              hub secrets          (--hub, mode 0600)
 #   /var/lib/stats/                 hub SQLite history   (--hub)
 #   /etc/systemd/system/stats-*.service
 #
@@ -32,8 +36,13 @@ BASE_URL="${STATS_URL:-}"        # directory holding the release assets
 VERSION="${STATS_VERSION:-}"     # release tag, e.g. v0.1.0
 FROM=""                          # local dist directory or binary
 PREFIX="${STATS_PREFIX:-}"
-MODE=""                          # agent | hub | "" (binary only)
-TOKEN="${STATS_AGENT_TOKEN:-}"
+MODE=""                          # node | hub | "" (binary only)
+TOKEN="${STATS_NODE_TOKEN:-}"
+HUB_URL="${STATS_HUB:-}"
+NODE_ID="${STATS_NODE_ID:-}"
+NODE_NAME="${STATS_NODE_NAME:-}"
+NO_TERMINAL=0
+NO_CONTROL=0
 PORT=""
 HUB_HOST=""
 NO_SERVICE=0
@@ -60,7 +69,7 @@ stats installer
 Usage: install.sh [options]
 
 Role:
-  --agent              install the read-only metrics agent + systemd unit
+  --node               install a node (dials the hub) + systemd unit
   --hub                install the dashboard hub + systemd unit
   (neither)            install the binary only
 
@@ -76,9 +85,14 @@ Placement:
   --user NAME          system user the services run as (default: stats)
 
 Service:
-  --port N             agent port (default 9101) or hub port (default 3000)
-  --host ADDR          address to bind (agent 0.0.0.0, hub 127.0.0.1)
-  --token VALUE        agent token; one is generated if omitted
+  --hub-url URL        (--node) the hub to dial, e.g. ws://hub.lan:3000
+  --token VALUE        shared token; generated on --hub, required on --node
+  --id ID              (--node) node id (default: /etc/machine-id)
+  --name NAME          (--node) display name (default: hostname)
+  --no-terminal        (--node) refuse to open shells for the dashboard
+  --no-control         (--node) refuse start/stop/restart requests
+  --port N             (--hub) port to listen on (default 3000)
+  --host ADDR          (--hub) address to bind (default 127.0.0.1)
   --no-service         install the binary and config but no systemd unit
 
 Other:
@@ -91,8 +105,16 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --agent)      MODE="agent" ;;
+    --node|--agent) MODE="node" ;;
     --hub)        MODE="hub" ;;
+    --hub-url)    HUB_URL="${2:?--hub-url needs a URL}"; shift ;;
+    --hub-url=*)  HUB_URL="${1#--hub-url=}" ;;
+    --id)         NODE_ID="${2:?--id needs a value}"; shift ;;
+    --id=*)       NODE_ID="${1#--id=}" ;;
+    --name)       NODE_NAME="${2:?--name needs a value}"; shift ;;
+    --name=*)     NODE_NAME="${1#--name=}" ;;
+    --no-terminal) NO_TERMINAL=1 ;;
+    --no-control)  NO_CONTROL=1 ;;
     --from)       FROM="${2:?--from needs a path}"; shift ;;
     --from=*)     FROM="${1#--from=}" ;;
     --version)    VERSION="${2:?--version needs a tag}"; shift ;;
@@ -154,7 +176,7 @@ uninstall() {
   [ "$IS_ROOT" -eq 1 ] || warn "not root — system services and /etc/stats will be left alone"
 
   if [ "$IS_ROOT" -eq 1 ] && have systemctl; then
-    for unit in stats-agent stats-hub; do
+    for unit in stats-node stats-agent stats-hub; do
       if [ -f "$UNIT_DIR/$unit.service" ]; then
         step "removing $unit.service"
         systemctl disable --now "$unit" >/dev/null 2>&1 || true
@@ -207,7 +229,7 @@ detect_asset() {
   case "$os" in
     Linux)  ;;
     Darwin)
-      warn "macOS can run the hub against remote agents, but not the collectors."
+      warn "macOS can run the hub, but not a node — every collector is Linux-only."
       printf 'stats-darwin-%s\n' "$arch"; return ;;
     *) die "$os is not supported — stats is Linux-only (macOS runs the hub only)." ;;
   esac
@@ -367,8 +389,9 @@ esac
 
 if [ -z "$MODE" ]; then
   log ""
-  log "Next: ${BOLD}stats agent${RESET} on a server, or ${BOLD}stats hub${RESET} on the laptop."
-  log "Re-run with --agent or --hub to set one up as a systemd service."
+  log "Next: ${BOLD}stats hub${RESET} on the machine showing the dashboard, then"
+  log "${BOLD}stats node --hub ws://that-machine:3000${RESET} on each server."
+  log "Re-run with --node or --hub to set one up as a systemd service."
   exit 0
 fi
 
@@ -436,22 +459,36 @@ mkdir -p "$CONF_DIR"
 chmod 0755 "$CONF_DIR"
 GROUPS_LINE=$(supplementary_groups)
 
-if [ "$MODE" = "agent" ]; then
-  PORT="${PORT:-9101}"
-  BIND="${HUB_HOST:-0.0.0.0}"
-  ENV_FILE="$CONF_DIR/agent.env"
+if [ "$MODE" = "node" ]; then
+  ENV_FILE="$CONF_DIR/node.env"
+
+  # A node is useless without a hub to dial, and guessing one would be worse
+  # than asking: it would sit there retrying an address nobody meant.
+  if [ -z "$HUB_URL" ] && [ -f "$ENV_FILE" ]; then
+    HUB_URL=$(sed -n 's/^STATS_HUB=//p' "$ENV_FILE" | head -n1)
+  fi
+  [ -n "$HUB_URL" ] || die "a node needs its hub: --hub-url ws://hub.lan:3000 (or set STATS_HUB)."
 
   if [ -f "$ENV_FILE" ]; then
-    log "${DIM}keeping the existing token in $ENV_FILE$RESET"
+    log "${DIM}keeping the existing $ENV_FILE$RESET"
+    [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^STATS_NODE_TOKEN=//p' "$ENV_FILE" | head -n1)
   else
-    [ -n "$TOKEN" ] || TOKEN=$(random_token)
+    [ -n "$TOKEN" ] ||
+      warn "no --token given — the hub will only accept this node if it has no nodeToken set."
     step "writing $ENV_FILE"
     # Create it empty and lock it down before the token is ever in the file.
     : > "$ENV_FILE"
     chmod 0600 "$ENV_FILE"
     cat > "$ENV_FILE" <<EOF
-# Bearer token the agent requires. The hub needs this exact value.
-STATS_AGENT_TOKEN=$TOKEN
+# Where the hub is. The node dials out; nothing listens on this machine.
+STATS_HUB=$HUB_URL
+
+# Must match the hub's nodeToken.
+STATS_NODE_TOKEN=$TOKEN
+${NODE_ID:+
+# Stable identity. Changing it makes the hub treat this as a new machine.
+STATS_NODE_ID=$NODE_ID}${NODE_NAME:+
+STATS_NODE_NAME=$NODE_NAME}
 
 # Extra directories readable through the kind=file log source (colon-separated).
 #STATS_LOG_DIRS=/var/log:/srv/myapp/logs
@@ -461,19 +498,39 @@ STATS_AGENT_TOKEN=$TOKEN
 EOF
   fi
 
+  # A starter projects file, so the projects tab explains itself instead of
+  # being empty. It declares nothing, so installing it changes no behaviour.
+  PROJECTS="$CONF_DIR/projects.json"
+  if [ ! -f "$PROJECTS" ]; then
+    step "writing $PROJECTS"
+    HUB_HTTP=$(printf '%s' "$HUB_URL" | sed -e 's|^ws://|http://|' -e 's|^wss://|https://|' -e 's|/node$||')
+    cat > "$PROJECTS" <<EOF
+{
+  "\$schema": "$HUB_HTTP/schema/projects.schema.json",
+  "version": 1,
+  "projects": []
+}
+EOF
+    chmod 0644 "$PROJECTS"
+  fi
+
+  EXEC_FLAGS=""
+  [ "$NO_TERMINAL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-terminal"
+  [ "$NO_CONTROL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-control"
+
   if [ "$NO_SERVICE" -eq 0 ]; then
-    step "writing $UNIT_DIR/stats-agent.service"
-    cat > "$UNIT_DIR/stats-agent.service" <<EOF
-# Written by install.sh. Mirrors deploy/stats-agent.service in the repo.
+    step "writing $UNIT_DIR/stats-node.service"
+    cat > "$UNIT_DIR/stats-node.service" <<EOF
+# Written by install.sh. Mirrors deploy/stats-node.service in the repo.
 [Unit]
-Description=stats agent (read-only host metrics)
+Description=stats node (telemetry, projects and control for one host)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$BIN agent --port $PORT --host $BIND
-Restart=on-failure
+ExecStart=$BIN node$EXEC_FLAGS
+Restart=always
 RestartSec=5
 EnvironmentFile=$ENV_FILE
 
@@ -481,46 +538,34 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 ${GROUPS_LINE:+SupplementaryGroups=$GROUPS_LINE}
 
-# Read-only workload, so lock it down.
+# Supervised project processes are children of this unit.
+TasksMax=512
+LimitNOFILE=8192
+TimeoutStopSec=30
+
 NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
+ProtectSystem=full
+ProtectHome=read-only
 PrivateTmp=yes
-ReadOnlyPaths=/
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictSUIDSGID=yes
 LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    restart_unit stats-agent
+    restart_unit stats-node
   fi
 
-  # The one thing every agent install ends with is somebody copying this block
-  # into the hub's servers.json, so print it filled in rather than as a template.
-  NAME=$(hostname 2>/dev/null || echo server)
-  ID=$(printf '%s' "$NAME" | tr -c 'a-zA-Z0-9_-' '-' | sed 's/-*$//')
-  ENV_NAME="AGENT_TOKEN_$(printf '%s' "$ID" | tr 'a-z-' 'A-Z_')"
-  ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
-  [ -n "$ADDR" ] || ADDR="THIS-HOST"
-  AGENT_TOKEN=$(sed -n 's/^STATS_AGENT_TOKEN=//p' "$ENV_FILE" | head -n1)
-
   log ""
-  log "Agent listening on ${BOLD}$BIND:$PORT${RESET}."
-  log "Add it to the hub's servers.json:"
-  log ""
-  log "$DIM  {"
-  log "    \"id\": \"$ID\","
-  log "    \"name\": \"$NAME\","
-  log "    \"driver\": \"agent\","
-  log "    \"url\": \"http://$ADDR:$PORT\","
-  log "    \"token\": \"env:$ENV_NAME\""
-  log "  }$RESET"
-  log ""
-  log "and give the hub the token — /etc/stats/hub.env is read by stats-hub.service:"
-  log "  ${BOLD}$ENV_NAME=$AGENT_TOKEN${RESET}"
-  log "${DIM}(also stored here, root-only, in $ENV_FILE)$RESET"
+  log "Node is dialling ${BOLD}$HUB_URL${RESET} — it should appear on the dashboard within seconds."
+  log "Identity:  ${DIM}${NODE_ID:-/etc/machine-id}  (${NODE_NAME:-$(hostname)})$RESET"
+  log "Projects:  $PROJECTS   ${DIM}(declare what this host runs; stats check validates it)$RESET"
+  if [ "$NO_TERMINAL" -eq 0 ] || [ "$NO_CONTROL" -eq 0 ]; then
+    log ""
+    log "${YELLOW}This node accepts${RESET}${BOLD}$([ "$NO_TERMINAL" -eq 0 ] && printf ' shells')$([ "$NO_CONTROL" -eq 0 ] && printf ' start/stop')${RESET}${YELLOW} from the hub,"
+    log "as the '$SERVICE_USER' user. Re-run with --no-terminal / --no-control to refuse.$RESET"
+  fi
   exit 0
 fi
 
@@ -528,7 +573,8 @@ fi
 
 PORT="${PORT:-3000}"
 BIND="${HUB_HOST:-127.0.0.1}"
-CONFIG="$CONF_DIR/servers.json"
+CONFIG="$CONF_DIR/hub.json"
+HUB_ENV="$CONF_DIR/hub.env"
 
 mkdir -p "$STATE_DIR"
 chown "$SERVICE_USER" "$STATE_DIR" 2>/dev/null || true
@@ -547,17 +593,35 @@ else
 {
   "port": $PORT,
   "host": "$BIND",
-  "pollIntervalMs": 5000,
-  "retentionHours": 24,
-  "dbPath": "$STATE_DIR/stats.db",
   "token": null,
-
-  "servers": [
-    { "id": "local", "name": "$(hostname)", "driver": "local" }
-  ]
+  "nodeToken": "env:STATS_NODE_TOKEN",
+  "allowUnknownNodes": true,
+  "retentionHours": 24,
+  "telemetryIntervalMs": 3000,
+  "dbPath": "$STATE_DIR/stats.db",
+  "terminal": true,
+  "embeddedNode": true,
+  "nodes": []
 }
 EOF
   chmod 0644 "$CONFIG"
+fi
+
+# The token every node will need. Generated once and kept, because rotating it
+# on an upgrade would lock out every node already using it.
+if [ -f "$HUB_ENV" ]; then
+  log "${DIM}keeping the existing node token in $HUB_ENV$RESET"
+  TOKEN=$(sed -n 's/^STATS_NODE_TOKEN=//p' "$HUB_ENV" | head -n1)
+else
+  [ -n "$TOKEN" ] || TOKEN=$(random_token)
+  step "writing $HUB_ENV"
+  : > "$HUB_ENV"
+  chmod 0600 "$HUB_ENV"
+  cat > "$HUB_ENV" <<EOF
+# Nodes must present this token in their Hello. hub.json refers to it as
+# "env:STATS_NODE_TOKEN" so the config itself stays free of secrets.
+STATS_NODE_TOKEN=$TOKEN
+EOF
 fi
 
 if [ "$NO_SERVICE" -eq 0 ]; then
@@ -565,7 +629,7 @@ if [ "$NO_SERVICE" -eq 0 ]; then
   cat > "$UNIT_DIR/stats-hub.service" <<EOF
 # Written by install.sh. Mirrors deploy/stats-hub.service in the repo.
 [Unit]
-Description=stats hub (dashboard and poller)
+Description=stats hub (dashboard and node registry)
 After=network-online.target
 Wants=network-online.target
 
@@ -574,8 +638,8 @@ Type=simple
 ExecStart=$BIN hub --config $CONFIG
 Restart=on-failure
 RestartSec=5
-# Agent tokens referenced as "env:NAME" in servers.json live here.
-EnvironmentFile=-$CONF_DIR/hub.env
+# Tokens referenced as "env:NAME" in hub.json live here.
+EnvironmentFile=-$HUB_ENV
 
 User=$SERVICE_USER
 Group=$SERVICE_USER
@@ -597,10 +661,21 @@ EOF
   restart_unit stats-hub
 fi
 
+ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$ADDR" ] || ADDR="$BIND"
+
 log ""
 log "Dashboard: ${BOLD}http://$BIND:$PORT${RESET}"
-log "Config:    $CONFIG   ${DIM}(add your agents, then: systemctl restart stats-hub)$RESET"
+log "Config:    $CONFIG"
+log ""
+log "Install a node on each server you want to watch:"
+log ""
+log "  ${BOLD}curl -fsSL https://$HOST/$REPO/raw/branch/main/install.sh | \\$RESET"
+log "  ${BOLD}    sudo sh -s -- --node --hub-url ws://$ADDR:$PORT --token $TOKEN${RESET}"
+log ""
+log "${DIM}(that token is also in $HUB_ENV, root-only)$RESET"
 if [ "$BIND" = "127.0.0.1" ]; then
-  log "${DIM}Bound to localhost. Re-run with --host 0.0.0.0 to reach it from other devices —"
-  log "set \"token\" in the config first.$RESET"
+  log ""
+  log "${YELLOW}Bound to localhost, so no node can reach it.$RESET Re-run with ${BOLD}--host 0.0.0.0${RESET}"
+  log "${DIM}to accept nodes, and set \"token\" in $CONFIG to protect the dashboard.$RESET"
 fi

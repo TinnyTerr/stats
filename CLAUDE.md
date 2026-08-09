@@ -1,3 +1,59 @@
+# stats
+
+A fleet dashboard. **Nodes dial the hub**, never the other way round: each node
+opens one WebSocket to the hub and everything — telemetry up, control down, log
+tails and terminals both ways — rides on it as binary frames.
+
+```
+node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── browser (web/)
+```
+
+## Architecture rules
+
+- **One protocol, three peers.** `src/proto/` is the whole wire contract:
+  `frame.ts` (12-byte header codec), `messages.ts` (payload shapes and control
+  action names), `link.ts` (`PeerLink` — correlation ids, streams, acks,
+  heartbeats). Node, hub and browser all run a `PeerLink`; the hub is a relay
+  between two of them, so a new capability usually means one action name and
+  one handler, not a new endpoint.
+- **A stream that might produce data later must call `req.stream.open()` before
+  the handler returns.** Otherwise the link closes the correlation id with the
+  response. This is what terminals and log tails depend on.
+- **Correlation id parity:** the hub allocates odd ids on every link it
+  terminates; nodes and browsers allocate even ones. Don't break this.
+- **The hub can only narrow a node's capabilities, never widen them.** A node
+  decides whether it allows terminals and control; `hub.json` can turn them off
+  for everyone but can't turn them on.
+- **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
+  an older peer would misread. It is also the version byte in every frame, and
+  a test asserts the two agree.
+- **Collectors degrade, never throw the snapshot away.** A host without Docker
+  or systemd still reports everything else; the failure lands in
+  `telemetry.errors` and shows on the node's card.
+- **`schema/projects.schema.json` is the documentation for the projects file;
+  `src/agent/projects.ts` is the enforcement.** A test compares the schema's
+  `default` keywords against the loader's `DEFAULTS`, so change both together.
+
+## Things that bit us, worth not rediscovering
+
+- `Bun.spawn(..., { terminal: {...} })` gives a real pty. Do **not** set
+  `COLUMNS`/`LINES` in the child's env: `tput` and friends prefer them over the
+  pty, which makes every later resize look ignored. Test resizes with
+  `stty size`.
+- `server.stop(true)` never resolves once the server has closed a WebSocket
+  itself (Bun 1.3). Tests race it with a short sleep.
+- `Bun.file(dir).exists()` is false for directories — stat it instead.
+- `systemd-detect-virt` exits non-zero when the answer is "none", which is
+  still an answer.
+
+## Commands
+
+```bash
+bun run hub                                  # hub on :3000
+bun run node -- --hub ws://127.0.0.1:3000    # a node against it
+bun run check                                # validate the projects file
+bun test && bun run typecheck
+```
 
 Default to using Bun instead of Node.js.
 

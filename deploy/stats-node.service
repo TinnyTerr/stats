@@ -1,0 +1,67 @@
+# Manual install of a node. `install.sh --node` writes an equivalent unit for
+# you — keep the two in step if you change one.
+#
+#   sudo cp deploy/stats-node.service /etc/systemd/system/
+#   sudo install -d /etc/stats
+#   sudo install -m 600 deploy/stats-node.env.example /etc/stats/node.env
+#   sudo systemctl enable --now stats-node
+#
+# Assumes the compiled binary at /usr/local/bin/stats. To run from source
+# instead: ExecStart=/usr/local/bin/bun /opt/stats/index.ts node
+#
+# The node dials the hub — nothing listens on this machine, so no inbound
+# firewall rule is needed.
+#
+# NOTE ON PRIVILEGE: unlike the 0.1 agent, a node can open shells and start and
+# stop things, and it supervises whatever /etc/stats/projects.json declares.
+# Two ways to run it:
+#
+#   - Least privilege (below): User=stats, so terminals and supervised
+#     processes run as that unprivileged user. Managed processes cannot use
+#     their `user:` field, and unit control needs polkit rules.
+#   - Full control: comment out User/Group and the sandboxing lines, and it
+#     runs as root. Only do that on hosts where you'd hand out a root shell
+#     anyway, because through the dashboard you effectively have.
+#
+# Add --no-terminal and/or --no-control to ExecStart to refuse either outright.
+
+[Unit]
+Description=stats node (telemetry, projects and control for one host)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/stats node
+Restart=always
+RestartSec=5
+
+# STATS_HUB and STATS_NODE_TOKEN live here, in a root-only file.
+EnvironmentFile=/etc/stats/node.env
+
+User=stats
+Group=stats
+
+# docker: container state and `docker exec` terminals.
+# systemd-journal: the journal log source.
+SupplementaryGroups=docker systemd-journal
+
+# Supervised processes are children of this unit, so they share its limits.
+# Raise these if a project needs more.
+TasksMax=512
+LimitNOFILE=8192
+
+# KillMode=control-group (the default) takes the supervised processes down with
+# the node; the supervisor also stops them itself on SIGTERM.
+TimeoutStopSec=30
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

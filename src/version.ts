@@ -7,15 +7,22 @@ import pkg from "../package.json" with { type: "json" };
 export const VERSION: string = pkg.version;
 
 /**
- * The agent↔hub HTTP contract. Bumped only when the wire shape changes in a way
- * an older peer can't read; the release version moves independently of it.
+ * The node↔hub wire contract — the frame layout in src/proto/frame.ts and the
+ * payloads that ride on it. Bumped only when an older peer would misread a
+ * newer one; the release version moves independently of it.
+ *
+ * 2: nodes dial the hub over a WebSocket and speak the binary frame protocol.
+ * 1: the hub polled each agent's HTTP API.
  */
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 
 /** What both roles report about themselves, on /api/health and in snapshots. */
 export interface VersionInfo {
-  version: string;
-  protocol: number;
+	version: string;
+	protocol: number;
 }
 
-export const versionInfo: VersionInfo = { version: VERSION, protocol: PROTOCOL };
+export const versionInfo: VersionInfo = {
+	version: VERSION,
+	protocol: PROTOCOL,
+};

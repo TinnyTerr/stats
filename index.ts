@@ -1,38 +1,63 @@
 #!/usr/bin/env bun
+
 /**
  * Entry point for both roles:
  *
- *   bun index.ts hub                  # laptop: dashboard + API, polls every server
- *   bun index.ts agent --port 9101    # each server: read-only metrics endpoint
+ *   bun index.ts hub                          # laptop: dashboard, listens for nodes
+ *   bun index.ts node --hub ws://laptop:3000  # each server: dials the hub
  */
 
-import { startAgent } from "./src/agent/server.ts";
+import { startNode } from "./src/agent/agent.ts";
+import { type AgentOverrides, loadAgentConfig } from "./src/agent/config.ts";
+import { loadProjects } from "./src/agent/projects.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
 import { PROTOCOL, VERSION } from "./src/version.ts";
 
 function flag(name: string): string | undefined {
-  const args = process.argv.slice(3);
-  const i = args.indexOf(`--${name}`);
-  if (i !== -1 && args[i + 1]) return args[i + 1];
-  const inline = args.find((a) => a.startsWith(`--${name}=`));
-  return inline?.split("=").slice(1).join("=");
+	const args = process.argv.slice(3);
+	const i = args.indexOf(`--${name}`);
+	if (i !== -1 && args[i + 1] && !args[i + 1]!.startsWith("--"))
+		return args[i + 1];
+	const inline = args.find((a) => a.startsWith(`--${name}=`));
+	return inline?.split("=").slice(1).join("=");
+}
+
+/** Presence flags, with an explicit `--no-x` negation. */
+function toggle(name: string): boolean | undefined {
+	const args = process.argv.slice(3);
+	if (args.includes(`--no-${name}`)) return false;
+	if (args.includes(`--${name}`)) return true;
+	return undefined;
 }
 
 /** `stats` when running as a compiled binary, `bun index.ts` from source. */
 const invocation = Bun.main.startsWith("/$bunfs/") ? "stats" : "bun index.ts";
 
-const usage = `stats ${VERSION} — server overview dashboard
+const usage = `stats ${VERSION} — server fleet dashboard (protocol ${PROTOCOL})
+
+Nodes dial the hub over a WebSocket and stream telemetry to it; the hub relays
+control — log tails, terminals, project start/stop — back down the same socket.
 
 Usage:
-  ${invocation} hub    [--config servers.json] [--port 3000] [--host 127.0.0.1]
-  ${invocation} agent  [--port 9101] [--host 0.0.0.0] [--token <token>]
+  ${invocation} hub    [--config hub.json] [--port 3000] [--host 127.0.0.1]
+  ${invocation} node   --hub ws://hub:3000 [--token T] [--id ID] [--name NAME]
+                       [--tags a,b] [--interval 3000] [--projects PATH]
+                       [--no-terminal] [--no-control]
+  ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
 
 Environment:
-  STATS_CONFIG        hub config path (default ./servers.json)
-  STATS_AGENT_TOKEN   bearer token the agent requires
-  STATS_LOG_DIRS      colon-separated dirs readable via kind=file (default /var/log)
+  STATS_CONFIG        hub config path (default ./hub.json)
+  STATS_AGENT_CONFIG  node config path (default /etc/stats/agent.json)
+  STATS_HUB           hub URL for a node
+  STATS_NODE_TOKEN    token the node presents to the hub
+  STATS_NODE_ID       node id (default /etc/machine-id, else hostname)
+  STATS_NODE_NAME     display name (default hostname)
+  STATS_PROJECTS      projects file or directory (colon-separated)
+  STATS_TERMINAL      set to 0 to refuse terminal sessions
+  STATS_CONTROL       set to 0 to refuse start/stop/restart
+  STATS_LOG_DIRS      dirs readable via kind=file (default /var/log)
   DOCKER_SOCKET       docker socket path (default /var/run/docker.sock)
 `;
 
@@ -42,55 +67,131 @@ Environment:
  * CommonJS-compatible graph, and that buys a noticeably faster cold start.
  */
 async function main(role: string | undefined) {
-  switch (role) {
-      case "version":
-    case "--version":
-    case "-v":
-      console.log(`stats ${VERSION} (protocol ${PROTOCOL})`);
-      break;
+	switch (role) {
+		case "version":
+		case "--version":
+		case "-v":
+			console.log(`stats ${VERSION} (protocol ${PROTOCOL})`);
+			break;
 
-    case "agent": {
-      const port = Number(flag("port") ?? process.env.STATS_AGENT_PORT ?? 9101);
-      const host = flag("host") ?? "0.0.0.0";
-      const token = flag("token") ?? process.env.STATS_AGENT_TOKEN ?? null;
+		case "check": {
+			const paths = flag("projects")?.split(":");
+			const loaded = await loadProjects(paths);
+			if (!loaded.sources.length) {
+				console.log("no projects file found — nothing to check");
+				break;
+			}
+			console.log(`read ${loaded.sources.join(", ")}`);
+			for (const project of loaded.projects) {
+				const procs =
+					project.processes.map((p) => p.id).join(", ") || "no processes";
+				console.log(`  ${project.id.padEnd(24)} ${procs}`);
+			}
+			if (loaded.errors.length) {
+				console.error(`\n${loaded.errors.length} problem(s):`);
+				for (const error of loaded.errors) console.error(`  - ${error}`);
+				process.exit(1);
+			}
+			console.log(`\n${loaded.projects.length} project(s), no problems.`);
+			break;
+		}
 
-      const server = startAgent({ port, host, token });
-      console.log(`stats agent ${VERSION} listening on http://${host}:${port}`);
-      if (!token) {
-        console.warn(
-          "warning: no token set — this agent is unauthenticated. Set STATS_AGENT_TOKEN " +
-            "or bind it to a private interface.",
-        );
-      }
-      process.on("SIGINT", () => {
-        void server.stop(true);
-        process.exit(0);
-      });
-      break;
-    }
+		case "node":
+		case "agent": {
+			if (role === "agent") {
+				console.warn(
+					"note: 'agent' is now called 'node' — the old name still works",
+				);
+			}
+			const overrides: AgentOverrides = {
+				hub: flag("hub"),
+				token: flag("token"),
+				id: flag("id"),
+				name: flag("name"),
+				tags: flag("tags"),
+				interval: flag("interval"),
+				projects: flag("projects"),
+				config: flag("config"),
+				terminal: toggle("terminal"),
+				control: toggle("control"),
+			};
+			const config = await loadAgentConfig(overrides);
 
-    case "hub": {
-      const config = await loadConfig(flag("config"));
-      const portOverride = flag("port");
-      const hostOverride = flag("host");
-      if (portOverride) config.port = Number(portOverride);
-      if (hostOverride) config.host = hostOverride;
+			console.log(
+				`stats node ${VERSION} — id '${config.id}' (${config.name}) → ${config.hubUrl}`,
+			);
+			if (!config.token) {
+				console.warn(
+					"warning: no token set — anyone who can reach the hub can register as a node. " +
+						"Set STATS_NODE_TOKEN.",
+				);
+			}
+			if (config.terminal) {
+				console.warn(
+					"note: terminals are enabled — the hub can open a shell on this host. " +
+						"Pass --no-terminal to refuse.",
+				);
+			}
 
-      startHub(config);
-      console.log(`stats hub ${VERSION} listening on http://${config.host}:${config.port}`);
-      console.log(
-        `watching ${config.servers.length} server(s): ${config.servers.map((s) => s.id).join(", ")}`,
-      );
-      break;
-    }
+			const node = startNode(config);
+			const stop = () => {
+				void node.stop().finally(() => process.exit(0));
+			};
+			process.on("SIGINT", stop);
+			process.on("SIGTERM", stop);
+			break;
+		}
 
-    default:
-      console.log(usage);
-      process.exit(role ? 1 : 0);
-  }
+		case "hub": {
+			const config = await loadConfig(flag("config"));
+			const portOverride = flag("port");
+			const hostOverride = flag("host");
+			if (portOverride) config.port = Number(portOverride);
+			if (hostOverride) config.host = hostOverride;
+
+			const { registry } = startHub(config);
+			console.log(
+				`stats hub ${VERSION} listening on http://${config.host}:${config.port}`,
+			);
+			console.log(`nodes connect to ws://${config.host}:${config.port}/node`);
+			const known = registry.list().length;
+			if (known) console.log(`${known} node(s) known from previous runs`);
+			if (!config.nodeToken) {
+				console.warn(
+					"warning: no nodeToken set — any host that can reach this port can register. " +
+						"Set one in hub.json.",
+				);
+			}
+
+			if (config.embeddedNode) {
+				// The hub watching its own machine: a node like any other, over
+				// loopback, so there is exactly one code path for collection.
+				const node = startNode({
+					hubUrl: `ws://127.0.0.1:${config.port}/node`,
+					token: config.nodeToken,
+					id: process.env.STATS_NODE_ID ?? "hub-local",
+					name: process.env.STATS_NODE_NAME ?? "This machine",
+					tags: ["hub"],
+					telemetryIntervalMs: config.telemetryIntervalMs,
+					terminal: config.terminal,
+					control: true,
+					projectPaths: (process.env.STATS_PROJECTS ?? "./projects.json").split(
+						":",
+					),
+				});
+				process.on("SIGINT", () => void node.stop());
+				process.on("SIGTERM", () => void node.stop());
+			}
+			break;
+		}
+
+		default:
+			console.log(usage);
+			process.exit(role ? 1 : 0);
+	}
 }
 
 main(process.argv[2]).catch((err: unknown) => {
-  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+	console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+	process.exit(1);
 });

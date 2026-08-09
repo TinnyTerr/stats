@@ -1,544 +1,538 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createRoot } from "react-dom/client";
-import type { Container, ListeningPort, LogLine, ProcessInfo } from "../src/types.ts";
-import { api, connectLogs, connectServerFeed, type ServerSummary } from "./api.ts";
+import { HubAction } from "../src/proto/messages.ts";
+import type { NodeSummary, Telemetry } from "../src/types.ts";
+import {
+	ago,
+	bytes,
+	duration,
+	pct,
+	rate,
+	systemStateTone,
+	usageTone,
+} from "./format.ts";
+import {
+	connectHub,
+	type HubConnection,
+	type Push,
+	setToken,
+	token,
+} from "./link.ts";
+import {
+	ContainersPanel,
+	LogsPanel,
+	type LogTarget,
+	OverviewPanel,
+	PortsPanel,
+	ProcessesPanel,
+	ProjectsPanel,
+	ServicesPanel,
+} from "./panels.tsx";
+import { TerminalPanel } from "./terminal.tsx";
+import {
+	ActionButton,
+	DistroChip,
+	Dot,
+	Empty,
+	Meter,
+	Pill,
+	Sparkline,
+} from "./ui.tsx";
 import "./index.css";
 
-/* ---------- formatting ---------- */
+/**
+ * The dashboard. One WebSocket to the hub carries node summaries, full
+ * telemetry, alerts and every control request — the panels below just render
+ * whatever the latest frame said.
+ */
 
-const bytes = (n: number | null | undefined) => {
-  if (n == null) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = n;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-};
-
-const rate = (n: number | null | undefined) => (n == null ? "—" : `${bytes(n)}/s`);
-const pct = (n: number | null | undefined) => (n == null ? "—" : `${Math.round(n * 100)}%`);
-
-const duration = (sec: number | null | undefined) => {
-  if (sec == null) return "—";
-  const d = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (d) return `${d}d ${h}h`;
-  if (h) return `${h}h ${m}m`;
-  return `${m}m`;
-};
-
-const clock = (ts: number) => new Date(ts).toLocaleTimeString();
-
-/* ---------- primitives ---------- */
-
-function Meter({ value, label }: { value: number | null; label: string }) {
-  const level = value == null ? "idle" : value > 0.9 ? "crit" : value > 0.7 ? "warn" : "ok";
-  return (
-    <div className="meter">
-      <div className="meter-head">
-        <span>{label}</span>
-        <span className="meter-value">{pct(value)}</span>
-      </div>
-      <div className="meter-track">
-        <div className={`meter-fill ${level}`} style={{ width: `${(value ?? 0) * 100}%` }} />
-      </div>
-    </div>
-  );
+interface Alert {
+	id: number;
+	nodeId: string;
+	kind: string;
+	message: string;
+	ts: number;
 }
 
-/** Dependency-free sparkline; the history endpoint returns plain numbers. */
-function Sparkline({ points, height = 32 }: { points: number[]; height?: number }) {
-  if (points.length < 2) return <div className="spark empty" style={{ height }} />;
-  const max = Math.max(...points, 0.01);
-  const step = 100 / (points.length - 1);
-  const path = points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(2)},${(100 - (p / max) * 100).toFixed(2)}`)
-    .join(" ");
-  return (
-    <svg className="spark" viewBox="0 0 100 100" preserveAspectRatio="none" style={{ height }}>
-      <path d={path} vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
+/* ---------- node card ---------- */
 
-/* ---------- server card ---------- */
-
-function ServerCard({
-  server,
-  selected,
-  onSelect,
-  hubVersion,
-  index,
-  arrLength,
+function NodeCard({
+	node,
+	history,
+	selected,
+	onSelect,
 }: {
-  server: ServerSummary;
-  selected: boolean;
-  onSelect: () => void;
-  /** null until /api/health answers; a mismatch against it is worth flagging */
-  hubVersion: string | null;
-  index: number;
-  arrLength: number;
+	node: NodeSummary;
+	history: number[];
+	selected: boolean;
+	onSelect: () => void;
 }) {
-  const [history, setHistory] = useState<number[]>([]);
+	const offline = node.status === "offline";
+	const disk = node.disks.length
+		? node.disks.reduce(
+				(worst, d) => (d.usage > worst.usage ? d : worst),
+				node.disks[0]!,
+			)
+		: null;
+	const memUsage = node.mem ? node.mem.used / node.mem.total : null;
+	const failed = node.systemd?.failed.length ?? 0;
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      api
-        .history(server.id, 30)
-        .then((rows) => !cancelled && setHistory(rows.map((r) => r.cpu)))
-        .catch(() => {});
-    load();
-    const timer = setInterval(load, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [server.id]);
+	return (
+		<button
+			type="button"
+			className={`card ${selected ? "selected" : ""} ${node.status}`}
+			onClick={onSelect}
+		>
+			<header>
+				<Dot tone={offline ? "crit" : "ok"} title={node.status} />
+				<h2>{node.name}</h2>
+				<DistroChip facts={node.facts} />
+			</header>
 
-  const primaryDisk = server.disks[0] ?? null;
-  const collectorIssues = Object.entries(server.collectorErrors);
+			<p className="card-host">
+				<span className="mono">{node.hostname ?? node.id}</span>
+				{node.remoteAddress && (
+					<span className="dim"> · {node.remoteAddress}</span>
+				)}
+			</p>
 
-  return (
-    <button
-      type="button"
-      className={`card ${selected ? "selected" : ""} ${server.status}`}
-      onClick={onSelect}
-    >
-      <header>
-        <span className={`dot ${server.status}`} />
-        <h2>{server.name}</h2>
-        <span className="host">{server.hostname ?? server.id} - {index + 1}/{arrLength}</span>
-      </header>
+			{offline ? (
+				<div className="card-offline">
+					<p className="error">offline</p>
+					<p className="dim">last seen {ago(node.lastSeen)}</p>
+				</div>
+			) : (
+				<>
+					<div className="metrics">
+						<Meter
+							value={node.cpu}
+							label="CPU"
+							detail={
+								node.loadavg ? `load ${node.loadavg[0].toFixed(2)}` : undefined
+							}
+						/>
+						<Meter
+							value={memUsage}
+							label="Memory"
+							detail={
+								node.mem
+									? `${bytes(node.mem.used)} / ${bytes(node.mem.total)}`
+									: undefined
+							}
+						/>
+						<Meter
+							value={disk?.usage ?? null}
+							label={disk?.mount ?? "Disk"}
+							detail={disk ? bytes(disk.available) + " free" : undefined}
+						/>
+					</div>
 
-      {server.status === "offline" ? (
-        <p className="error">{server.error ?? "unreachable"}</p>
-      ) : (
-        <>
-          <div className="metrics">
-            <Meter value={server.cpu} label="CPU" />
-            <Meter
-              value={server.mem ? server.mem.used / server.mem.total : null}
-              label="Memory"
-            />
-            <Meter value={primaryDisk?.usage ?? null} label={primaryDisk?.mount ?? "Disk"} />
-          </div>
+					<Sparkline points={history} tone={usageTone(node.cpu)} />
 
-          <Sparkline points={history} />
+					<dl className="facts">
+						<div>
+							<dt>Uptime</dt>
+							<dd>{duration(node.uptimeSec)}</dd>
+						</div>
+						<div>
+							<dt>Network</dt>
+							<dd>
+								↓{rate(node.net?.rxRate)} ↑{rate(node.net?.txRate)}
+							</dd>
+						</div>
+						<div>
+							<dt>Projects</dt>
+							<dd>
+								{node.projects
+									? `${node.projects.running}/${node.projects.total}`
+									: "—"}
+								{node.projects?.degraded ? (
+									<Pill tone="crit">{node.projects.degraded} degraded</Pill>
+								) : null}
+							</dd>
+						</div>
+						<div>
+							<dt>Containers</dt>
+							<dd>
+								{node.containers
+									? `${node.containers.running}/${node.containers.total}`
+									: "—"}
+								{node.containers?.unhealthy ? (
+									<Pill tone="crit">{node.containers.unhealthy} sick</Pill>
+								) : null}
+							</dd>
+						</div>
+					</dl>
+				</>
+			)}
 
-          <dl className="facts">
-            <div>
-              <dt>Uptime</dt>
-              <dd>{duration(server.uptimeSec)}</dd>
-            </div>
-            <div>
-              <dt>Load</dt>
-              <dd>{server.loadavg ? server.loadavg[0].toFixed(2) : "—"}</dd>
-            </div>
-            <div>
-              <dt>Net</dt>
-              <dd>
-                ↓{rate(server.net?.rxRate)} ↑{rate(server.net?.txRate)}
-              </dd>
-            </div>
-            <div>
-              <dt>Containers</dt>
-              <dd>
-                {server.containers
-                  ? `${server.containers.running}/${server.containers.total}`
-                  : "—"}
-                {server.containers?.unhealthy ? (
-                  <span className="badge crit">{server.containers.unhealthy} unhealthy</span>
-                ) : null}
-              </dd>
-            </div>
-          </dl>
-        </>
-      )}
-
-      <footer>
-        {server.tags.map((tag) => (
-          <span key={tag} className="tag">
-            {tag}
-          </span>
-        ))}
-        {collectorIssues.map(([name]) => (
-          <span key={name} className="tag warn" title={server.collectorErrors[name]}>
-            {name} unavailable
-          </span>
-        ))}
-        {server.status === "online" && hubVersion && server.agentVersion !== hubVersion && (
-          <span className="tag warn" title={`hub is ${hubVersion}`}>
-            agent {server.agentVersion ?? "pre-0.1.0"}
-          </span>
-        )}
-        {server.latencyMs != null && <span className="latency">{server.latencyMs}ms</span>}
-      </footer>
-    </button>
-  );
+			<footer>
+				{node.systemd?.state && node.systemd.state !== "running" && (
+					<Pill tone={systemStateTone(node.systemd.state)}>
+						systemd {node.systemd.state}
+					</Pill>
+				)}
+				{failed > 0 && (
+					<Pill tone="crit">
+						{failed} failed unit{failed > 1 ? "s" : ""}
+					</Pill>
+				)}
+				{node.tags.map((tag) => (
+					<span key={tag} className="tag">
+						{tag}
+					</span>
+				))}
+				{Object.keys(node.collectorErrors).map((name) => (
+					<span
+						key={name}
+						className="tag warn"
+						title={node.collectorErrors[name]}
+					>
+						{name} unavailable
+					</span>
+				))}
+				<div className="spacer" />
+				{node.latencyMs != null && !offline && (
+					<span className="latency">{node.latencyMs}ms</span>
+				)}
+			</footer>
+		</button>
+	);
 }
 
-/* ---------- detail tabs ---------- */
+/* ---------- detail ---------- */
 
-function ContainersTab({ serverId }: { serverId: string }) {
-  const [rows, setRows] = useState<Container[]>([]);
-
-  useEffect(() => {
-    const load = () => api.containers(serverId).then(setRows).catch(() => setRows([]));
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, [serverId]);
-
-  if (!rows.length) return <p className="empty-state">No containers reported.</p>;
-
-  // Group by compose project so a stack reads as one unit.
-  const groups = new Map<string, Container[]>();
-  for (const c of rows) {
-    const key = c.project ?? "standalone";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(c);
-  }
-
-  return (
-    <div className="stack">
-      {[...groups].map(([project, containers]) => (
-        <section key={project}>
-          <h4>{project}</h4>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Image</th>
-                <th>State</th>
-                <th>CPU</th>
-                <th>Memory</th>
-                <th>Ports</th>
-              </tr>
-            </thead>
-            <tbody>
-              {containers.map((c) => (
-                <tr key={c.id}>
-                  <td>
-                    <span className={`dot ${c.state === "running" ? "online" : "offline"}`} />
-                    {c.name}
-                  </td>
-                  <td className="dim">{c.image}</td>
-                  <td>
-                    {c.status}
-                    {c.health && c.health !== "healthy" && (
-                      <span className="badge crit">{c.health}</span>
-                    )}
-                  </td>
-                  <td>{pct(c.cpu)}</td>
-                  <td>{bytes(c.memUsage)}</td>
-                  <td className="dim">
-                    {c.ports
-                      .filter((p) => p.publicPort)
-                      .map((p) => `${p.publicPort}→${p.privatePort}`)
-                      .join(", ") || "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-function ProcessesTab({ serverId }: { serverId: string }) {
-  const [rows, setRows] = useState<ProcessInfo[]>([]);
-
-  useEffect(() => {
-    const load = () => api.processes(serverId).then(setRows).catch(() => setRows([]));
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, [serverId]);
-
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>PID</th>
-          <th>User</th>
-          <th>CPU</th>
-          <th>Memory</th>
-          <th>Uptime</th>
-          <th>Command</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((p) => (
-          <tr key={p.pid}>
-            <td className="dim">{p.pid}</td>
-            <td>{p.user}</td>
-            <td>{pct(p.cpu)}</td>
-            <td>{bytes(p.rssBytes)}</td>
-            <td>{duration(p.elapsedSec)}</td>
-            <td className="mono truncate" title={p.args}>
-              {p.args || p.command}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function PortsTab({ serverId }: { serverId: string }) {
-  const [rows, setRows] = useState<ListeningPort[]>([]);
-
-  useEffect(() => {
-    api.ports(serverId).then(setRows).catch(() => setRows([]));
-  }, [serverId]);
-
-  if (!rows.length) return <p className="empty-state">No listening ports reported.</p>;
-
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>Port</th>
-          <th>Proto</th>
-          <th>Address</th>
-          <th>Process</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((p) => (
-          <tr key={`${p.proto}-${p.address}-${p.port}`}>
-            <td>{p.port}</td>
-            <td className="dim">{p.proto}</td>
-            <td className="mono">{p.address}</td>
-            <td>
-              {p.process ?? "—"}
-              {p.pid && <span className="dim"> ({p.pid})</span>}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-const MAX_LOG_LINES = 2000;
-
-function LogsTab({ serverId }: { serverId: string }) {
-  const [kind, setKind] = useState("docker");
-  const [target, setTarget] = useState("");
-  const [active, setActive] = useState<{ kind: string; target: string } | null>(null);
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [containers, setContainers] = useState<Container[]>([]);
-  const bottom = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    api.containers(serverId).then(setContainers).catch(() => setContainers([]));
-    setActive(null);
-    setLines([]);
-  }, [serverId]);
-
-  useEffect(() => {
-    if (!active) return;
-    setLines([]);
-    setError(null);
-    return connectLogs(
-      serverId,
-      { kind: active.kind, target: active.target, tail: 300 },
-      (line) => setLines((prev) => [...prev, line].slice(-MAX_LOG_LINES)),
-      setError,
-    );
-  }, [serverId, active]);
-
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [lines]);
-
-  return (
-    <div className="logs">
-      <form
-        className="log-controls"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (target.trim()) setActive({ kind, target: target.trim() });
-        }}
-      >
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="docker">Container</option>
-          <option value="journal">systemd unit</option>
-          <option value="file">File</option>
-        </select>
-
-        {kind === "docker" && containers.length > 0 ? (
-          <select value={target} onChange={(e) => setTarget(e.target.value)}>
-            <option value="">Select a container…</option>
-            {containers.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            placeholder={kind === "journal" ? "nginx.service" : "/var/log/syslog"}
-          />
-        )}
-
-        <button type="submit" disabled={!target.trim()}>
-          Tail
-        </button>
-        {active && (
-          <button type="button" onClick={() => setActive(null)}>
-            Stop
-          </button>
-        )}
-      </form>
-
-      {error && <p className="error">{error}</p>}
-
-      <div className="log-output">
-        {lines.map((line, i) => (
-          <div key={i} className={`log-line ${line.stream}`}>
-            <span className="log-ts">{clock(line.ts)}</span>
-            <span>{line.message}</span>
-          </div>
-        ))}
-        {active && !lines.length && !error && <p className="empty-state">Waiting for output…</p>}
-        {!active && <p className="empty-state">Pick a source and press Tail.</p>}
-        <div ref={bottom} />
-      </div>
-    </div>
-  );
-}
-
-const TABS = ["containers", "processes", "ports", "logs"] as const;
+const TABS = [
+	"overview",
+	"projects",
+	"containers",
+	"services",
+	"processes",
+	"ports",
+	"logs",
+	"terminal",
+] as const;
 type Tab = (typeof TABS)[number];
 
-function ServerDetail({ server, onClose }: { server: ServerSummary; onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>("containers");
+function NodeDetail({
+	node,
+	telemetry,
+	hub,
+	onClose,
+}: {
+	node: NodeSummary;
+	telemetry: Telemetry | null;
+	hub: HubConnection;
+	onClose: () => void;
+}) {
+	const [tab, setTab] = useState<Tab>("overview");
+	const [logTarget, setLogTarget] = useState<LogTarget | undefined>();
 
-  return (
-    <aside className="detail">
-      <header>
-        <div>
-          <h2>{server.name}</h2>
-          <p className="dim">
-            {server.hostname ?? server.id}
-            {server.notes ? ` — ${server.notes}` : ""}
-            {server.agentVersion ? ` · agent ${server.agentVersion}` : ""}
-          </p>
-        </div>
-        <button type="button" className="close" onClick={onClose} aria-label="Close">
-          ×
-        </button>
-      </header>
+	const go = useCallback((next: string, context?: LogTarget) => {
+		setTab(next as Tab);
+		if (context) setLogTarget(context);
+	}, []);
 
-      <nav className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            type="button"
-            className={tab === t ? "active" : ""}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
+	const props = { node, telemetry, hub, go };
 
-      <div className="detail-body">
-        {tab === "containers" && <ContainersTab serverId={server.id} />}
-        {tab === "processes" && <ProcessesTab serverId={server.id} />}
-        {tab === "ports" && <PortsTab serverId={server.id} />}
-        {tab === "logs" && <LogsTab serverId={server.id} />}
-      </div>
-    </aside>
-  );
+	return (
+		<aside className="detail">
+			<header className="detail-head">
+				<div>
+					<h2>
+						<Dot tone={node.status === "online" ? "ok" : "crit"} />
+						{node.name}
+					</h2>
+					<p className="dim">
+						{node.hostname ?? node.id}
+						{node.notes ? ` — ${node.notes}` : ""}
+						{node.version ? ` · stats ${node.version}` : ""}
+						{node.status === "offline"
+							? ` · last seen ${ago(node.lastSeen)}`
+							: ""}
+					</p>
+				</div>
+				<button
+					type="button"
+					className="close"
+					onClick={onClose}
+					aria-label="Close"
+				>
+					×
+				</button>
+			</header>
+
+			<nav className="tabs">
+				{TABS.map((name) => (
+					<button
+						key={name}
+						type="button"
+						className={tab === name ? "active" : ""}
+						onClick={() => setTab(name)}
+					>
+						{name}
+						{name === "projects" && node.projects?.degraded ? (
+							<span className="tab-badge" />
+						) : null}
+						{name === "services" && node.systemd?.failed.length ? (
+							<span className="tab-badge" />
+						) : null}
+					</button>
+				))}
+			</nav>
+
+			<div className="detail-body">
+				{!telemetry && node.status === "offline" && (
+					<Empty>
+						This node hasn't reported since the hub started, so there's nothing
+						to show.
+					</Empty>
+				)}
+				{tab === "overview" && <OverviewPanel {...props} />}
+				{tab === "projects" && <ProjectsPanel {...props} />}
+				{tab === "containers" && <ContainersPanel {...props} />}
+				{tab === "services" && <ServicesPanel {...props} />}
+				{tab === "processes" && <ProcessesPanel {...props} />}
+				{tab === "ports" && <PortsPanel {...props} />}
+				{tab === "logs" && <LogsPanel {...props} target={logTarget} />}
+				{tab === "terminal" && (
+					<TerminalPanel node={node} telemetry={telemetry} hub={hub} />
+				)}
+			</div>
+		</aside>
+	);
 }
 
 /* ---------- app ---------- */
 
 function App() {
-  const [servers, setServers] = useState<ServerSummary[]>([]);
-  const [connected, setConnected] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hubVersion, setHubVersion] = useState<string | null>(null);
+	const [nodes, setNodes] = useState<NodeSummary[]>([]);
+	const [telemetry, setTelemetry] = useState<Map<string, Telemetry>>(new Map());
+	const [history, setHistory] = useState<Map<string, number[]>>(new Map());
+	const [alerts, setAlerts] = useState<Alert[]>([]);
+	const [connected, setConnected] = useState(false);
+	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [hubInfo, setHubInfo] = useState<{
+		version: string;
+		protocol: number;
+	} | null>(null);
+	const [needsToken, setNeedsToken] = useState(false);
+	const hub = useRef<HubConnection | null>(null);
+	const alertId = useRef(0);
 
-  const upsert = useCallback((incoming: ServerSummary) => {
-    setServers((prev) => {
-      const i = prev.findIndex((s) => s.id === incoming.id);
-      if (i === -1) return [...prev, incoming];
-      const next = [...prev];
-      next[i] = incoming;
-      return next;
-    });
-  }, []);
+	const onPush = useCallback((push: Push) => {
+		switch (push.event) {
+			case "nodes":
+				setNodes(push.nodes);
+				break;
+			case "node":
+				setNodes((prev) => {
+					const index = prev.findIndex((n) => n.id === push.node.id);
+					if (index === -1) return [...prev, push.node];
+					const next = [...prev];
+					next[index] = push.node;
+					return next;
+				});
+				break;
+			case "telemetry": {
+				const frame = push as { nodeId: string; telemetry: Telemetry };
+				setTelemetry((prev) =>
+					new Map(prev).set(frame.nodeId, frame.telemetry),
+				);
+				// Keep a short in-memory series for the card sparklines; the hub's
+				// SQLite history is for anything longer.
+				setHistory((prev) => {
+					const next = new Map(prev);
+					const points = [
+						...(next.get(frame.nodeId) ?? []),
+						frame.telemetry.stats.cpu.usage,
+					];
+					next.set(frame.nodeId, points.slice(-60));
+					return next;
+				});
+				break;
+			}
+			case "status":
+			case "alert": {
+				const message = "message" in push ? push.message : "";
+				const kind = "kind" in push ? push.kind : push.status;
+				setAlerts((prev) =>
+					[
+						{
+							id: ++alertId.current,
+							nodeId: push.nodeId,
+							kind,
+							message,
+							ts: push.ts,
+						},
+						...prev,
+					].slice(0, 50),
+				);
+				break;
+			}
+		}
+	}, []);
 
-  useEffect(() => connectServerFeed(setServers, upsert, setConnected), [upsert]);
+	useEffect(() => {
+		const connection = connectHub({ onPush, onStatus: setConnected });
+		hub.current = connection;
+		return () => connection.close();
+	}, [onPush]);
 
-  // Fetched once: the hub only changes version across a restart, which drops
-  // the WebSocket and remounts nothing — a reload is the honest way to update.
-  useEffect(() => {
-    api
-      .health()
-      .then((h) => setHubVersion(h.version))
-      .catch(() => setHubVersion(null));
-  }, []);
+	// Health is unauthenticated, so it also tells us whether a token is needed.
+	useEffect(() => {
+		fetch("/api/health")
+			.then((res) => res.json())
+			.then((body: { version: string; protocol: number }) => setHubInfo(body))
+			.catch(() => setHubInfo(null));
+		fetch("/api/nodes", {
+			headers: token() ? { authorization: `Bearer ${token()}` } : {},
+		})
+			.then((res) => setNeedsToken(res.status === 401))
+			.catch(() => {});
+	}, []);
 
-  const selected = useMemo(
-    () => servers.find((s) => s.id === selectedId) ?? null,
-    [servers, selectedId],
-  );
+	// Seed each card's sparkline from stored history, so a fresh page load isn't flat.
+	useEffect(() => {
+		const connection = hub.current;
+		if (!connection || !connected) return;
+		for (const node of nodes) {
+			if (history.has(node.id)) continue;
+			connection
+				.request<{ cpu: number }[]>(HubAction.History, {
+					nodeId: node.id,
+					minutes: 30,
+				})
+				.then((rows) =>
+					setHistory((prev) =>
+						prev.has(node.id)
+							? prev
+							: new Map(prev).set(node.id, rows.map((r) => r.cpu).slice(-60)),
+					),
+				)
+				.catch(() => {});
+		}
+	}, [connected, nodes.length]);
 
-  const offline = servers.filter((s) => s.status === "offline").length;
+	const selected = useMemo(
+		() => nodes.find((n) => n.id === selectedId) ?? null,
+		[nodes, selectedId],
+	);
+	const offline = nodes.filter((n) => n.status === "offline").length;
+	const totalCpu = nodes.filter((n) => n.status === "online" && n.cpu != null);
+	const fleetCpu = totalCpu.length
+		? totalCpu.reduce((sum, n) => sum + (n.cpu ?? 0), 0) / totalCpu.length
+		: null;
 
-  return (
-    <div className={`app ${selected ? "with-detail" : ""}`}>
-      <header className="topbar">
-        <h1>stats</h1>
-        {hubVersion && <span className="version">v{hubVersion}</span>}
-        <span className={`conn ${connected ? "on" : "off"}`}>
-          {connected ? "live" : "reconnecting…"}
-        </span>
-        <span className="dim">
-          {servers.length} servers{offline ? ` · ${offline} offline` : ""}
-        </span>
-        <button type="button" onClick={() => void api.refresh().then(setServers)}>
-          Refresh
-        </button>
-      </header>
+	return (
+		<div className={`app ${selected ? "with-detail" : ""}`}>
+			<header className="topbar">
+				<h1>stats</h1>
+				{hubInfo && <span className="version">v{hubInfo.version}</span>}
+				<span className={`conn ${connected ? "on" : "off"}`}>
+					{connected ? "live" : "reconnecting…"}
+				</span>
+				<span className="dim">
+					{nodes.length} node{nodes.length === 1 ? "" : "s"}
+					{offline ? ` · ${offline} offline` : ""}
+					{fleetCpu != null ? ` · ${pct(fleetCpu)} avg CPU` : ""}
+				</span>
+				<div className="spacer" />
+				{alerts.length > 0 && (
+					<details className="alerts">
+						<summary>
+							{alerts.length} recent event{alerts.length === 1 ? "" : "s"}
+						</summary>
+						<ul>
+							{alerts.map((alert) => (
+								<li key={alert.id}>
+									<span className="dim">
+										{new Date(alert.ts).toLocaleTimeString()}
+									</span>
+									<Pill
+										tone={/online|recovered/.test(alert.kind) ? "ok" : "crit"}
+									>
+										{alert.kind}
+									</Pill>
+									{alert.message}
+								</li>
+							))}
+						</ul>
+					</details>
+				)}
+				<ActionButton
+					onAction={async () => {
+						const value = window.prompt(
+							"Hub token (leave empty to clear)",
+							token() ?? "",
+						);
+						if (value === null) return;
+						setToken(value.trim() || null);
+						location.reload();
+					}}
+				>
+					Token
+				</ActionButton>
+			</header>
 
-      <main className={servers.length > 1 ? "grid" : ""}>
-        {servers.map((server, i, arr) => (
-          <ServerCard
-            key={server.id}
-            server={server}
-            selected={server.id === selectedId}
-            onSelect={() => setSelectedId(server.id === selectedId ? null : server.id)}
-            hubVersion={hubVersion}
-            index={i}
-            arrLength={arr.length}
-          />
-        ))}
-        {!servers.length && (
-          <p className="empty-state">
-            No servers yet. Add them to <code>servers.json</code> and restart the hub.
-          </p>
-        )}
-      </main>
+			{needsToken && (
+				<p className="banner">
+					This hub requires a token. Click <strong>Token</strong> and paste the
+					one from its config.
+				</p>
+			)}
 
-      {selected && <ServerDetail server={selected} onClose={() => setSelectedId(null)} />}
-    </div>
-  );
+			<main className="grid">
+				{nodes.map((node) => (
+					<NodeCard
+						key={node.id}
+						node={node}
+						history={history.get(node.id) ?? []}
+						selected={node.id === selectedId}
+						onSelect={() =>
+							setSelectedId(node.id === selectedId ? null : node.id)
+						}
+					/>
+				))}
+				{!nodes.length && (
+					<div className="onboarding">
+						<h2>No nodes yet</h2>
+						<p>
+							Nodes connect to this hub — nothing here polls them. On a machine
+							you want to watch, run:
+						</p>
+						<pre>
+							<code>{`stats node --hub ws://${location.host} --token <nodeToken>`}</code>
+						</pre>
+						<p className="dim">
+							It appears here within a few seconds. To have that node run and
+							monitor your services too, drop a <code>projects.json</code> at{" "}
+							<code>/etc/stats/</code> — the schema lives at{" "}
+							<a href="/schema/projects.schema.json">
+								/schema/projects.schema.json
+							</a>
+							.
+						</p>
+					</div>
+				)}
+			</main>
+
+			{selected && hub.current && (
+				<NodeDetail
+					node={selected}
+					telemetry={telemetry.get(selected.id) ?? null}
+					hub={hub.current}
+					onClose={() => setSelectedId(null)}
+				/>
+			)}
+		</div>
+	);
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

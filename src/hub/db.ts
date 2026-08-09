@@ -1,58 +1,98 @@
 import { Database } from "bun:sqlite";
-import type { SystemStats } from "../types.ts";
+import type { NodeStatus, SystemStats } from "../types.ts";
 
 /**
- * Rolling metric history, kept in SQLite so sparklines survive a hub restart.
- * Only the handful of scalars a chart needs are stored; the full snapshot
- * stays in memory since it's only ever read as "current".
+ * Rolling history, kept in SQLite so charts survive a hub restart and so a node
+ * that has never connected since boot still appears (offline) in the grid.
+ *
+ * Only the scalars a chart needs are stored. The full telemetry frame stays in
+ * memory: it is only ever read as "current", and writing it would turn a
+ * dashboard into a time-series database.
  */
 
 export interface MetricRow {
-  ts: number;
-  cpu: number;
-  memUsed: number;
-  memTotal: number;
-  load1: number;
-  rxRate: number;
-  txRate: number;
-  diskUsed: number;
-  diskTotal: number;
+	ts: number;
+	cpu: number;
+	memUsed: number;
+	memTotal: number;
+	load1: number;
+	rxRate: number;
+	txRate: number;
+	diskUsed: number;
+	diskTotal: number;
 }
 
 export interface EventRow {
-  ts: number;
-  serverId: string;
-  kind: string;
-  message: string;
+	ts: number;
+	nodeId: string;
+	kind: string;
+	message: string;
+}
+
+export interface KnownNode {
+	id: string;
+	name: string;
+	firstSeen: number;
+	lastSeen: number;
+	version: string | null;
+	hostname: string | null;
 }
 
 export class MetricStore {
-  private db: Database;
-  private insertMetric;
-  private insertEvent;
+	private db: Database;
+	private insertMetric;
+	private insertEvent;
+	private upsertNode;
 
-  constructor(path: string) {
-    this.db = new Database(path, { create: true });
-    // WAL keeps the poller's writes from blocking dashboard reads.
-    this.db.exec("PRAGMA journal_mode = WAL");
-    this.db.exec("PRAGMA synchronous = NORMAL");
-    this.migrate();
+	constructor(path: string) {
+		this.db = new Database(path, { create: true });
+		// WAL keeps telemetry writes from blocking dashboard reads.
+		this.db.exec("PRAGMA journal_mode = WAL");
+		this.db.exec("PRAGMA synchronous = NORMAL");
+		this.migrate();
 
-    this.insertMetric = this.db.prepare(
-      `INSERT INTO metrics
-         (server_id, ts, cpu, mem_used, mem_total, load1, rx_rate, tx_rate, disk_used, disk_total)
+		this.insertMetric = this.db.prepare(
+			`INSERT INTO metrics
+         (node_id, ts, cpu, mem_used, mem_total, load1, rx_rate, tx_rate, disk_used, disk_total)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    this.insertEvent = this.db.prepare(
-      `INSERT INTO events (server_id, ts, kind, message) VALUES (?, ?, ?, ?)`,
-    );
-  }
+		);
+		this.insertEvent = this.db.prepare(
+			`INSERT INTO events (node_id, ts, kind, message) VALUES (?, ?, ?, ?)`,
+		);
+		this.upsertNode = this.db.prepare(
+			`INSERT INTO nodes (id, name, first_seen, last_seen, version, hostname)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         last_seen = excluded.last_seen,
+         version = excluded.version,
+         hostname = excluded.hostname`,
+		);
+	}
 
-  private migrate() {
-    this.db.exec(`
+	/**
+	 * The 0.1 schema keyed everything on `server_id` and had no nodes table.
+	 * Rather than migrate rows nobody will miss — the data is a rolling window of
+	 * at most a day — the old tables are dropped outright.
+	 */
+	private migrate() {
+		const hasLegacy = this.db
+			.query(
+				`SELECT 1 FROM sqlite_master
+          WHERE type = 'table' AND name = 'metrics'
+            AND sql LIKE '%server_id%'`,
+			)
+			.get();
+		if (hasLegacy) {
+			this.db.exec(
+				"DROP TABLE IF EXISTS metrics; DROP TABLE IF EXISTS events;",
+			);
+		}
+
+		this.db.exec(`
       CREATE TABLE IF NOT EXISTS metrics (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_id  TEXT    NOT NULL,
+        node_id    TEXT    NOT NULL,
         ts         INTEGER NOT NULL,
         cpu        REAL    NOT NULL,
         mem_used   INTEGER NOT NULL,
@@ -63,78 +103,134 @@ export class MetricStore {
         disk_used  INTEGER NOT NULL,
         disk_total INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_metrics_server_ts ON metrics (server_id, ts);
+      CREATE INDEX IF NOT EXISTS idx_metrics_node_ts ON metrics (node_id, ts);
 
       CREATE TABLE IF NOT EXISTS events (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        server_id TEXT    NOT NULL,
-        ts        INTEGER NOT NULL,
-        kind      TEXT    NOT NULL,
-        message   TEXT    NOT NULL
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id TEXT    NOT NULL,
+        ts      INTEGER NOT NULL,
+        kind    TEXT    NOT NULL,
+        message TEXT    NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
+
+      CREATE TABLE IF NOT EXISTS nodes (
+        id         TEXT PRIMARY KEY,
+        name       TEXT    NOT NULL,
+        first_seen INTEGER NOT NULL,
+        last_seen  INTEGER NOT NULL,
+        version    TEXT,
+        hostname   TEXT
+      );
     `);
-  }
+	}
 
-  record(serverId: string, stats: SystemStats) {
-    const rx = stats.net.reduce((sum, n) => sum + (n.rxRate ?? 0), 0);
-    const tx = stats.net.reduce((sum, n) => sum + (n.txRate ?? 0), 0);
-    // Root-ish view of storage: sum the real mounts rather than pick one.
-    const diskUsed = stats.disks.reduce((sum, d) => sum + d.used, 0);
-    const diskTotal = stats.disks.reduce((sum, d) => sum + d.total, 0);
+	record(nodeId: string, stats: SystemStats) {
+		const rx = stats.net.reduce((sum, n) => sum + (n.rxRate ?? 0), 0);
+		const tx = stats.net.reduce((sum, n) => sum + (n.txRate ?? 0), 0);
+		// Root-ish view of storage: sum the real mounts rather than pick one.
+		const diskUsed = stats.disks.reduce((sum, d) => sum + d.used, 0);
+		const diskTotal = stats.disks.reduce((sum, d) => sum + d.total, 0);
 
-    this.insertMetric.run(
-      serverId,
-      stats.timestamp,
-      stats.cpu.usage,
-      stats.mem.used,
-      stats.mem.total,
-      stats.loadavg[0],
-      rx,
-      tx,
-      diskUsed,
-      diskTotal,
-    );
-  }
+		this.insertMetric.run(
+			nodeId,
+			stats.timestamp,
+			stats.cpu.usage,
+			stats.mem.used,
+			stats.mem.total,
+			stats.loadavg[0],
+			rx,
+			tx,
+			diskUsed,
+			diskTotal,
+		);
+	}
 
-  recordEvent(serverId: string, kind: string, message: string) {
-    this.insertEvent.run(serverId, Date.now(), kind, message);
-  }
+	recordEvent(nodeId: string, kind: string, message: string) {
+		this.insertEvent.run(nodeId, Date.now(), kind, message);
+	}
 
-  history(serverId: string, sinceMs: number, limit = 2000): MetricRow[] {
-    return this.db
-      .query(
-        `SELECT ts, cpu, mem_used AS memUsed, mem_total AS memTotal, load1,
+	/** Remembers a node so it shows as offline rather than vanishing. */
+	seen(node: {
+		id: string;
+		name: string;
+		version?: string | null;
+		hostname?: string | null;
+	}) {
+		const now = Date.now();
+		this.upsertNode.run(
+			node.id,
+			node.name,
+			now,
+			now,
+			node.version ?? null,
+			node.hostname ?? null,
+		);
+	}
+
+	knownNodes(): KnownNode[] {
+		return this.db
+			.query(
+				`SELECT id, name, first_seen AS firstSeen, last_seen AS lastSeen, version, hostname
+           FROM nodes ORDER BY name`,
+			)
+			.all() as KnownNode[];
+	}
+
+	forget(nodeId: string) {
+		this.db.run("DELETE FROM nodes WHERE id = ?", [nodeId]);
+		this.db.run("DELETE FROM metrics WHERE node_id = ?", [nodeId]);
+		this.db.run("DELETE FROM events WHERE node_id = ?", [nodeId]);
+	}
+
+	history(nodeId: string, sinceMs: number, limit = 2000): MetricRow[] {
+		return this.db
+			.query(
+				`SELECT ts, cpu, mem_used AS memUsed, mem_total AS memTotal, load1,
                 rx_rate AS rxRate, tx_rate AS txRate,
                 disk_used AS diskUsed, disk_total AS diskTotal
            FROM metrics
-          WHERE server_id = ? AND ts >= ?
+          WHERE node_id = ? AND ts >= ?
           ORDER BY ts ASC
           LIMIT ?`,
-      )
-      .all(serverId, sinceMs, limit) as MetricRow[];
-  }
+			)
+			.all(nodeId, sinceMs, limit) as MetricRow[];
+	}
 
-  events(sinceMs: number, limit = 200): EventRow[] {
-    return this.db
-      .query(
-        `SELECT ts, server_id AS serverId, kind, message
-           FROM events
-          WHERE ts >= ?
+	events(sinceMs: number, limit = 200, nodeId?: string): EventRow[] {
+		const where = nodeId ? "WHERE ts >= ? AND node_id = ?" : "WHERE ts >= ?";
+		const args: (string | number)[] = nodeId
+			? [sinceMs, nodeId, limit]
+			: [sinceMs, limit];
+		return this.db
+			.query(
+				`SELECT ts, node_id AS nodeId, kind, message
+           FROM events ${where}
           ORDER BY ts DESC
           LIMIT ?`,
-      )
-      .all(sinceMs, limit) as EventRow[];
-  }
+			)
+			.all(...args) as EventRow[];
+	}
 
-  /** Drops samples older than the retention window. Cheap enough to run often. */
-  prune(retentionHours: number) {
-    const cutoff = Date.now() - retentionHours * 3600_000;
-    this.db.run("DELETE FROM metrics WHERE ts < ?", [cutoff]);
-    this.db.run("DELETE FROM events WHERE ts < ?", [cutoff]);
-  }
+	/** Drops samples older than the retention window. Cheap enough to run often. */
+	prune(retentionHours: number) {
+		const cutoff = Date.now() - retentionHours * 3600_000;
+		this.db.run("DELETE FROM metrics WHERE ts < ?", [cutoff]);
+		this.db.run("DELETE FROM events WHERE ts < ?", [cutoff]);
+	}
 
-  close() {
-    this.db.close();
-  }
+	close() {
+		this.db.close();
+	}
+}
+
+/** Shared shape for the online/offline events the registry writes. */
+export function statusMessage(
+	name: string,
+	status: NodeStatus,
+	detail?: string,
+): string {
+	return status === "online"
+		? `${name} connected${detail ? ` (${detail})` : ""}`
+		: `${name} disconnected${detail ? `: ${detail}` : ""}`;
 }

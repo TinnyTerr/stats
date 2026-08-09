@@ -1,0 +1,30 @@
+{
+	"port": 3000,
+	"host": "127.0.0.1",
+
+	"token": null,
+	"nodeToken": "env:STATS_NODE_TOKEN",
+	"allowUnknownNodes": true,
+
+	"dbPath": "./stats.db",
+	"retentionHours": 24,
+	"telemetryIntervalMs": 3000,
+
+	"terminal": true,
+	"embeddedNode": false,
+
+	"nodes": [
+		{
+			"id": "web-1",
+			"name": "Web 1",
+			"tags": ["prod", "docker"],
+			"notes": "nginx + compose stack"
+		},
+		{
+			"id": "db-1",
+			"name": "Database",
+			"tags": ["prod", "postgres"],
+			"token": "env:DB1_TOKEN"
+		}
+	]
+}

@@ -1,0 +1,76 @@
+{
+	"$schema": "https://raw.githubusercontent.com/tinnyterr/stats/main/schema/projects.schema.json",
+	"version": 1,
+
+	"projects": [
+		{
+			"id": "billing-api",
+			"name": "Billing API",
+			"description": "Bun HTTP service behind nginx",
+			"cwd": "/srv/billing",
+			"tags": ["prod", "bun"],
+			"url": "https://billing.example.com",
+			"envFiles": [".env"],
+			"env": { "NODE_ENV": "production" },
+
+			"processes": [
+				{
+					"id": "web",
+					"name": "http server",
+					"command": ["bun", "run", "start"],
+					"restart": "always",
+					"user": "billing",
+					"healthcheck": {
+						"type": "http",
+						"url": "http://127.0.0.1:3000/health",
+						"intervalSec": 15,
+						"startPeriodSec": 20
+					}
+				},
+				{
+					"id": "worker",
+					"name": "queue worker",
+					"command": ["bun", "run", "worker"],
+					"restart": "on-failure",
+					"maxRestarts": 20,
+					"stopSignal": "SIGINT",
+					"stopTimeoutSec": 30
+				}
+			],
+
+			"watch": {
+				"systemd": ["nginx.service"],
+				"containers": ["billing-postgres"],
+				"ports": [3000, 443],
+				"paths": ["/var/log/nginx/billing.access.log"]
+			}
+		},
+
+		{
+			"id": "backups",
+			"name": "Nightly backups",
+			"description": "Runs on a timer; the node only watches the unit.",
+			"enabled": true,
+			"processes": [],
+			"watch": {
+				"systemd": ["restic-backup.timer", "restic-backup.service"]
+			}
+		},
+
+		{
+			"id": "scratch",
+			"name": "Scratch box",
+			"cwd": "/srv/scratch",
+			"processes": [
+				{
+					"id": "tail-syslog",
+					"command": "tail -F /var/log/syslog | grep -v CRON",
+					"shell": true,
+					"autostart": false,
+					"restart": "never",
+					"logLines": 2000
+				}
+			]
+		}
+	]
+}
