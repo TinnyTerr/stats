@@ -8,6 +8,7 @@
  *                     relays the rest, verbatim, to the node named by `nodeId`
  */
 
+import type { ModuleSet } from "../modules/manifest.ts";
 import type {
 	Container,
 	HostFacts,
@@ -45,8 +46,11 @@ export interface WelcomePayload {
 	name: string;
 	/** how often to send Telemetry from here on */
 	telemetryIntervalMs: number;
-	/** the hub's own switch; a node still refuses if its capability is off */
-	terminal: boolean;
+	/**
+	 * The modules the hub is willing to see. Only ever subtractive — a node that
+	 * didn't load one doesn't get it back by being told it's allowed.
+	 */
+	modules: ModuleSet;
 	/** epoch ms on the hub, so a node can flag a badly skewed clock */
 	time: number;
 }
@@ -71,6 +75,7 @@ export interface ControlResponse<R = unknown> {
 /** Actions a hub sends to a node. */
 export const NodeAction = {
 	Snapshot: "snapshot",
+	Modules: "modules",
 	FactsRefresh: "facts.refresh",
 	LogsTail: "logs.tail",
 	TerminalOpen: "terminal.open",
@@ -195,10 +200,18 @@ export interface EventsParams {
 export interface HubInfoResult {
 	version: string;
 	protocol: number;
-	/** the hub's own switch for terminals */
-	terminal: boolean;
+	/** the hub's fleet-wide module switches */
+	modules: ModuleSet;
 	nodes: number;
 	time: number;
+}
+
+/** What a node reports about its own module set, on request. */
+export interface ModulesResult {
+	modules: ModuleSet;
+	control: boolean;
+	/** why a module isn't loaded: disabled, denied by policy, or unavailable */
+	notes: string[];
 }
 
 /* ---------- what the hub pushes to browsers ---------- */

@@ -79,15 +79,45 @@ describe("agent config", () => {
 	});
 
 	test("terminal and control default on, and can be refused", async () => {
-		expect(await loadAgentConfig({ hub: "h" })).toMatchObject({
-			terminal: true,
-			control: true,
-		});
-		expect(
-			await loadAgentConfig({ hub: "h", terminal: false, control: false }),
-		).toMatchObject({
+		const on = await loadAgentConfig({ hub: "h" });
+		expect(on.modules.terminal).toBe(true);
+		expect(on.control).toBe(true);
+
+		const off = await loadAgentConfig({
+			hub: "h",
 			terminal: false,
 			control: false,
 		});
+		expect(off.modules.terminal).toBe(false);
+		expect(off.control).toBe(false);
+	});
+
+	test("--modules picks a set, and a leading dash removes one", async () => {
+		// The positive form is exhaustive: asking for docker means docker and the
+		// modules that can't be turned off, and nothing else.
+		const only = await loadAgentConfig({ hub: "h", modules: "docker" });
+		expect(only.modules).toMatchObject({
+			system: true,
+			docker: true,
+			systemd: false,
+			terminal: false,
+		});
+
+		const without = await loadAgentConfig({
+			hub: "h",
+			modules: "-terminal,-docker",
+		});
+		expect(without.modules).toMatchObject({
+			system: true,
+			systemd: true,
+			docker: false,
+			terminal: false,
+		});
+	});
+
+	test("the system module cannot be switched off", async () => {
+		await expect(
+			loadAgentConfig({ hub: "h", modules: "-system" }),
+		).rejects.toThrow(/required/);
 	});
 });

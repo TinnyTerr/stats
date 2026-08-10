@@ -11,10 +11,11 @@ export const VERSION: string = pkg.version;
  * payloads that ride on it. Bumped only when an older peer would misread a
  * newer one; the release version moves independently of it.
  *
+ * 3: capabilities are a module set rather than a fixed list of booleans.
  * 2: nodes dial the hub over a WebSocket and speak the binary frame protocol.
  * 1: the hub polled each agent's HTTP API.
  */
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 
 /** What both roles report about themselves, on /api/health and in snapshots. */
 export interface VersionInfo {

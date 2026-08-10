@@ -1,48 +1,17 @@
-import {
-	collectContainers,
-	containerAction,
-	DockerUnavailable,
-	dockerAvailable,
-} from "../collect/docker.ts";
 import { collectFacts } from "../collect/facts.ts";
-import { streamLogs } from "../collect/logs.ts";
-import {
-	collectListeningPorts,
-	collectProcesses,
-} from "../collect/processes.ts";
-import { collectSystem } from "../collect/system.ts";
-import {
-	collectSystemdSummary,
-	collectUnits,
-	showUnit,
-	systemdAvailable,
-	unitAction,
-} from "../collect/systemd.ts";
+import { defaultPolicy } from "../modules/host.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
 import {
-	type ContainerActionParams,
 	type HelloPayload,
-	type LogsTailParams,
 	NodeAction,
-	type ProjectActionParams,
-	type ProjectsListResult,
 	type SnapshotResult,
-	type TerminalCloseParams,
-	type TerminalOpenParams,
-	type TerminalResizeParams,
-	type UnitActionParams,
-	type UnitShowParams,
 	type WelcomePayload,
 } from "../proto/messages.ts";
-import type {
-	LogLine,
-	LogQuery,
-	NodeCapabilities,
-	Telemetry,
-} from "../types.ts";
+import type { NodeCapabilities, Telemetry } from "../types.ts";
 import { versionInfo } from "../version.ts";
 import type { AgentConfig } from "./config.ts";
+import { type LoadedModules, loadModules } from "./modules/index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -53,24 +22,27 @@ import { TerminalManager } from "./terminal.ts";
  *
  * One WebSocket carries everything — telemetry out, control in, log and
  * terminal streams both ways.
+ *
+ * What a node can actually do is assembled at startup from src/agent/modules/:
+ * this file knows how to collect a frame from whatever loaded and how to route
+ * an action to whichever module owns it, and nothing about docker, systemd or
+ * ptys beyond that.
  */
 
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 
-/** Lines pushed per frame when tailing; batching keeps a busy log cheap. */
-const LOG_BATCH = 25;
-const LOG_BATCH_MS = 100;
-
 export interface AgentHandle {
 	stop(): Promise<void>;
 	/** resolves the first time the hub accepts this node */
 	connected: Promise<void>;
+	/** what the node loaded; resolves once the module set is settled */
+	modules: Promise<LoadedModules>;
 }
 
 export function startNode(config: AgentConfig): AgentHandle {
 	const supervisor = new Supervisor(config.projectPaths);
-	const terminals = new TerminalManager(config.terminal);
+	const terminals = new TerminalManager(config.modules.terminal !== false);
 
 	let socket: WebSocket | null = null;
 	let link: PeerLink | null = null;
@@ -88,60 +60,64 @@ export function startNode(config: AgentConfig): AgentHandle {
 		announceConnected = resolve;
 	});
 
-	const capabilities: NodeCapabilities = {
-		terminal: config.terminal,
-		control: config.control,
-		projects: true,
-		docker: false,
-		systemd: false,
-		logs: true,
-	};
+	/* ---------- modules ---------- */
+
+	let loaded: LoadedModules | null = null;
+	const modules = loadModules(
+		{ config, supervisor, terminals, control: config.control },
+		config.modules,
+		defaultPolicy(config.trustedModules),
+	).then((result) => {
+		loaded = result;
+		const active = result.active.map((m) => m.manifest.id).join(", ");
+		console.log(`modules: ${active || "none"}`);
+		for (const note of result.notes) console.log(`  ${note}`);
+		return result;
+	});
+
+	function capabilities(): NodeCapabilities {
+		return { modules: loaded?.set ?? {}, control: config.control };
+	}
 
 	/* ---------- collection ---------- */
 
+	/**
+	 * A frame is the sum of what the active modules produced. Sections nobody
+	 * filled in stay empty rather than absent, so the hub and the dashboard don't
+	 * have to care which modules a given node runs.
+	 */
 	async function collect(): Promise<{
 		telemetry: Telemetry;
 		snapshot: SnapshotResult;
 	}> {
-		const errors: Record<string, string> = {};
-		const guard = async <T>(
-			name: string,
-			fn: () => Promise<T>,
-			fallback: T,
-		): Promise<T> => {
-			try {
-				return await fn();
-			} catch (err) {
-				errors[name] = err instanceof Error ? err.message : String(err);
-				return fallback;
-			}
-		};
+		const active = loaded ?? (await modules);
+		const { parts, errors } = await active.collect();
 
-		const [stats, facts, containers, processes, units, ports, projects] =
-			await Promise.all([
-				collectSystem(),
-				// Cached and self-healing: every probe inside it already tolerates absence.
-				collectFacts(),
-				guard("docker", () => collectContainers(), []),
-				guard("processes", () => collectProcesses(), []),
-				guard("systemd", () => collectUnits(), []),
-				guard("ports", () => collectListeningPorts(), []),
-				guard("projects", () => supervisor.status(), []),
-			]);
+		if (!parts.stats || !parts.facts) {
+			throw new Error(
+				`the system module produced nothing: ${errors.system ?? "unknown reason"}`,
+			);
+		}
 
-		const systemd = await collectSystemdSummary(units);
 		const projectErrors = supervisor.definitions.errors;
 		if (projectErrors.length) errors.projectsFile = projectErrors.join("; ");
 
 		const snapshot: SnapshotResult = {
-			stats,
-			facts,
-			systemd,
-			units,
-			containers,
-			processes,
-			ports,
-			projects,
+			stats: parts.stats,
+			facts: parts.facts,
+			systemd: parts.systemd ?? {
+				available: false,
+				version: null,
+				state: null,
+				total: 0,
+				active: 0,
+				failed: [],
+			},
+			units: parts.units ?? [],
+			containers: parts.containers ?? [],
+			processes: parts.processes ?? [],
+			ports: parts.ports ?? [],
+			projects: parts.projects ?? [],
 			errors,
 		};
 
@@ -173,216 +149,31 @@ export function startNode(config: AgentConfig): AgentHandle {
 
 	/* ---------- control ---------- */
 
-	/** Streams log lines to the hub in small batches until the peer hangs up. */
-	async function streamLogsTo(req: InboundRequest, query: LogQuery) {
-		// Said up front: a quiet log would otherwise look like a handler with no
-		// stream at all, and the correlation id would close under it.
-		req.stream.open();
-		let batch: LogLine[] = [];
-		let timer: ReturnType<typeof setTimeout> | null = null;
-
-		const flush = () => {
-			if (timer) {
-				clearTimeout(timer);
-				timer = null;
-			}
-			if (!batch.length || req.stream.closed) return;
-			req.stream.json(batch);
-			batch = [];
-		};
-		const push = (line: LogLine) => {
-			batch.push(line);
-			if (batch.length >= LOG_BATCH) flush();
-			else if (!timer) timer = setTimeout(flush, LOG_BATCH_MS);
-		};
-
-		if (query.kind === "project") {
-			// target is "<projectId>/<processId>"
-			const slash = query.target.indexOf("/");
-			if (slash === -1)
-				throw new RemoteError(
-					"bad_request",
-					"project log target must be 'project/process'",
-				);
-			supervisor.tail(
-				query.target.slice(0, slash),
-				query.target.slice(slash + 1),
-				query.tail,
-				push,
-				req.signal,
-			);
-			flush();
-			if (!query.follow) req.stream.end();
-			return;
-		}
-
-		void (async () => {
-			try {
-				for await (const line of streamLogs(query, req.signal)) {
-					if (req.signal.aborted) break;
-					push(line);
-				}
-				flush();
-				req.stream.end();
-			} catch (err) {
-				flush();
-				if (!req.signal.aborted) {
-					req.stream.end({
-						code: "log_error",
-						message: err instanceof Error ? err.message : String(err),
-					});
-				}
-			}
-		})();
-	}
-
-	function requireControl() {
-		if (!config.control) {
-			throw new RemoteError(
-				"forbidden",
-				"control actions are disabled on this node",
-			);
-		}
-	}
-
 	async function handle(req: InboundRequest): Promise<unknown> {
-		const params = (req.params ?? {}) as Record<string, unknown>;
+		const active = loaded ?? (await modules);
 
+		// The two actions the agent itself owns: everything else belongs to a
+		// module, and dispatch() explains it when the owner isn't loaded.
 		switch (req.action) {
 			case NodeAction.Snapshot:
 				return (await collect()).snapshot;
 
-			case NodeAction.FactsRefresh:
-				return await collectFacts(true);
-
-			case NodeAction.LogsTail: {
-				const p = params as unknown as LogsTailParams;
-				const query: LogQuery = {
-					kind: p.kind ?? "journal",
-					target: String(p.target ?? ""),
-					tail: Math.min(Math.max(Number(p.tail) || 200, 1), 5000),
-					follow: p.follow !== false,
-				};
-				if (!query.target)
-					throw new RemoteError("bad_request", "missing log target");
-				await streamLogsTo(req, query);
-				return { streaming: true, ...query };
-			}
-
-			case NodeAction.TerminalOpen: {
-				const p = params as unknown as TerminalOpenParams;
-				if (!config.terminal) {
-					throw new RemoteError(
-						"forbidden",
-						"terminals are disabled on this node",
-					);
-				}
-				const context = p.projectId
-					? await supervisor.shellContext(p.projectId)
-					: null;
-				// Output starts whenever the shell feels like it, which is usually
-				// after this handler has already returned.
-				req.stream.open();
-
-				const result = await terminals.open({
-					...p,
-					cwd: p.cwd ?? context?.cwd ?? undefined,
-					env: context?.env,
-					onData: (data) => req.stream.bytes(data),
-					onExit: (code, signal) => {
-						if (req.stream.closed) return;
-						// A last line so the pane says why it went away rather than freezing.
-						req.stream.json({
-							event: "exit",
-							code,
-							signal,
-							message: `\r\n[session ended: ${signal ?? `exit ${code ?? 0}`}]\r\n`,
-						});
-						req.stream.end();
-					},
-				});
-
-				// Keystrokes arrive as binary frames on this same correlation id.
-				req.onData((payload, binary) => {
-					if (binary) terminals.write(result.sessionId, payload);
-				});
-				req.signal.addEventListener(
-					"abort",
-					() => terminals.close(result.sessionId),
-					{ once: true },
-				);
-				return result;
-			}
-
-			case NodeAction.TerminalResize: {
-				const p = params as unknown as TerminalResizeParams;
-				terminals.resize(p.sessionId, p.cols, p.rows);
-				return { ok: true };
-			}
-
-			case NodeAction.TerminalClose: {
-				terminals.close((params as unknown as TerminalCloseParams).sessionId);
-				return { ok: true };
-			}
-
-			case NodeAction.UnitShow:
-				return await showUnit(
-					String((params as unknown as UnitShowParams).unit ?? ""),
-				);
-
-			case NodeAction.UnitAction: {
-				requireControl();
-				const p = params as unknown as UnitActionParams;
-				return await unitAction(p.unit, p.verb);
-			}
-
-			case NodeAction.ContainerAction: {
-				requireControl();
-				const p = params as unknown as ContainerActionParams;
-				try {
-					return await containerAction(p.container, p.verb);
-				} catch (err) {
-					if (err instanceof DockerUnavailable) {
-						throw new RemoteError("docker_unavailable", err.message);
-					}
-					throw err;
-				}
-			}
-
-			case NodeAction.ProjectsList: {
-				const { projects, sources, errors } = supervisor.definitions;
-				return { projects, sources, errors } satisfies ProjectsListResult;
-			}
-
-			case NodeAction.ProjectsReload: {
-				requireControl();
-				const loaded = await supervisor.load();
+			case NodeAction.Modules:
 				return {
-					projects: loaded.projects,
-					sources: loaded.sources,
-					errors: loaded.errors,
-				} satisfies ProjectsListResult;
-			}
-
-			case NodeAction.ProjectAction: {
-				requireControl();
-				const p = params as unknown as ProjectActionParams;
-				if (p.verb === "start")
-					await supervisor.start(p.projectId, p.processId);
-				else if (p.verb === "stop")
-					await supervisor.stop(p.projectId, p.processId);
-				else if (p.verb === "restart")
-					await supervisor.restart(p.projectId, p.processId);
-				else throw new RemoteError("bad_request", `unknown verb '${p.verb}'`);
-				return { ok: true, projects: await supervisor.status() };
-			}
-
-			default:
-				throw new RemoteError(
-					"unknown_action",
-					`this node does not handle '${req.action}'`,
-				);
+					modules: active.set,
+					control: config.control,
+					notes: active.notes,
+				};
 		}
+
+		const handler = active.dispatch(req.action);
+		if (!handler) {
+			throw new RemoteError(
+				"unknown_action",
+				`this node does not handle '${req.action}'`,
+			);
+		}
+		return await handler(req);
 	}
 
 	/* ---------- connection lifecycle ---------- */
@@ -476,14 +267,14 @@ export function startNode(config: AgentConfig): AgentHandle {
 		});
 
 		ws.onopen = async () => {
+			// Modules are probed once, at load: a docker socket that appears later
+			// is picked up on the next reconnect, which is also when the hub gets a
+			// chance to hear about it.
+			await modules;
 			const hello: HelloPayload = {
 				node: { id: config.id, name: config.name, ...versionInfo },
 				token: config.token,
-				capabilities: {
-					...capabilities,
-					docker: await dockerAvailable(),
-					systemd: await systemdAvailable(),
-				},
+				capabilities: capabilities(),
 				facts: await collectFacts(),
 				startedAt: startedAt,
 			};
@@ -514,17 +305,17 @@ export function startNode(config: AgentConfig): AgentHandle {
 	// should still be running what it was told to run.
 	void supervisor
 		.load()
-		.then((loaded) => {
-			const count = loaded.projects.reduce(
+		.then((files) => {
+			const count = files.projects.reduce(
 				(sum, p) => sum + p.processes.length,
 				0,
 			);
-			if (loaded.sources.length) {
+			if (files.sources.length) {
 				console.log(
-					`projects: ${loaded.projects.length} from ${loaded.sources.join(", ")} (${count} process(es))`,
+					`projects: ${files.projects.length} from ${files.sources.join(", ")} (${count} process(es))`,
 				);
 			}
-			for (const error of loaded.errors) console.warn(`projects: ${error}`);
+			for (const error of files.errors) console.warn(`projects: ${error}`);
 		})
 		.catch((err: unknown) => {
 			console.error(
@@ -541,6 +332,7 @@ export function startNode(config: AgentConfig): AgentHandle {
 
 	return {
 		connected,
+		modules,
 		async stop() {
 			stopped = true;
 			if (reconnectTimer) clearTimeout(reconnectTimer);

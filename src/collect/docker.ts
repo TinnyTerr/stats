@@ -6,23 +6,46 @@ import type { Container, ContainerPort } from "../types.ts";
  * has the socket bind-mounted.
  */
 
-const SOCKET = process.env.DOCKER_SOCKET ?? "/var/run/docker.sock";
+export const DOCKER_SOCKET =
+	process.env.DOCKER_SOCKET ?? "/var/run/docker.sock";
 const API = "v1.43";
 
 export class DockerUnavailable extends Error {}
+
+/** How an engine-API path is turned into a request. See {@link useDockerTransport}. */
+export type DockerTransport = (
+	path: string,
+	init?: RequestInit,
+) => Promise<Response>;
+
+const directTransport: DockerTransport = (path, init) =>
+	fetch(`http://localhost/${API}${path}`, { ...init, unix: DOCKER_SOCKET });
+
+let transport = directTransport;
+
+/**
+ * Lets the docker module hand in its own gated socket, so the one thing this
+ * collector reaches for goes through the module host rather than around it.
+ * Passing null restores the direct socket, which is what the tests use.
+ */
+export function useDockerTransport(next: DockerTransport | null) {
+	transport = next ?? directTransport;
+}
+
+/** The engine-API prefix a transport is expected to put in front of a path. */
+export function dockerUrl(path: string): string {
+	return `http://localhost/${API}${path}`;
+}
 
 async function dockerFetch(
 	path: string,
 	init?: RequestInit,
 ): Promise<Response> {
 	try {
-		return await fetch(`http://localhost/${API}${path}`, {
-			...init,
-			unix: SOCKET,
-		});
+		return await transport(path, init);
 	} catch (err) {
 		throw new DockerUnavailable(
-			`docker socket ${SOCKET} unreachable: ${err instanceof Error ? err.message : String(err)}`,
+			`docker socket ${DOCKER_SOCKET} unreachable: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 }
@@ -113,9 +136,7 @@ interface RawStats {
  * internal samples to compute the CPU delta, so callers should run these in
  * parallel and only for running containers.
  */
-async function containerStats(
-	id: string,
-): Promise<{
+async function containerStats(id: string): Promise<{
 	cpu: number | null;
 	memUsage: number | null;
 	memLimit: number | null;

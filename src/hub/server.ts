@@ -4,6 +4,7 @@ import projectsSchema from "../../schema/projects.schema.json" with {
 };
 import index from "../../web/index.html";
 import { json, requireToken, unauthorized } from "../http.ts";
+import { moduleForAction, moduleOn } from "../modules/manifest.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
 import {
@@ -18,6 +19,7 @@ import {
 import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
 import { MetricStore } from "./db.ts";
+import { startNotionSync } from "./notion.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
 
 /**
@@ -49,6 +51,8 @@ export function startHub(config: HubConfig) {
 	const store = new MetricStore(config.dbPath);
 	const registry = new NodeRegistry(config, store);
 	const browsers = new Set<PeerLink>();
+	// Outbound-only mirror; null unless hub.json configures it.
+	const notion = startNotionSync(config.notion, registry);
 
 	registry.subscribe((event) => {
 		// One push shape for every browser: the frame type says "telemetry", the
@@ -97,6 +101,18 @@ export function startHub(config: HubConfig) {
 	/** Copies one request, and any stream it opens, to the node that owns it. */
 	async function relay(req: InboundRequest, nodeId: string): Promise<unknown> {
 		const link = registry.linkFor(nodeId);
+		// The node would refuse this anyway; refusing it here means a disabled
+		// module costs nothing on the wire and says the same thing every time.
+		const owner = moduleForAction(req.action);
+		if (
+			owner &&
+			!moduleOn(registry.get(nodeId)?.capabilities?.modules, owner)
+		) {
+			throw new RemoteError(
+				"module_disabled",
+				`the '${owner}' module is not enabled on node '${nodeId}'`,
+			);
+		}
 		// The node has no use for the routing field, and shouldn't have to ignore it.
 		const { nodeId: _routing, ...params } = (req.params ?? {}) as NodeScoped &
 			Record<string, unknown>;
@@ -126,7 +142,7 @@ export function startHub(config: HubConfig) {
 			case HubAction.Info:
 				return {
 					...versionInfo,
-					terminal: config.terminal,
+					modules: config.modules,
 					nodes: registry.list().length,
 					time: Date.now(),
 				} satisfies HubInfoResult;
@@ -231,7 +247,7 @@ export function startHub(config: HubConfig) {
 				hub: versionInfo,
 				name: record.name,
 				telemetryIntervalMs: config.telemetryIntervalMs,
-				terminal: config.terminal,
+				modules: config.modules,
 				time: Date.now(),
 			};
 			link.send(MessageType.Welcome, welcome);
@@ -446,6 +462,7 @@ export function startHub(config: HubConfig) {
 
 	const shutdown = () => {
 		clearInterval(pruneTimer);
+		notion?.stop();
 		registry.stop();
 		store.close();
 		void server.stop(true);
@@ -454,5 +471,5 @@ export function startHub(config: HubConfig) {
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 
-	return { server, registry, store };
+	return { server, registry, store, notion };
 }

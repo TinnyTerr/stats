@@ -8,15 +8,7 @@ import React, {
 import { createRoot } from "react-dom/client";
 import { HubAction } from "../src/proto/messages.ts";
 import type { NodeSummary, Telemetry } from "../src/types.ts";
-import {
-	ago,
-	bytes,
-	duration,
-	pct,
-	rate,
-	systemStateTone,
-	usageTone,
-} from "./format.ts";
+import { ago, pct, systemStateTone } from "./format.ts";
 import {
 	connectHub,
 	type HubConnection,
@@ -25,25 +17,16 @@ import {
 	token,
 } from "./link.ts";
 import {
-	ContainersPanel,
-	LogsPanel,
+	type CardFace,
+	EMPTY_HISTORY,
+	facesFor,
+	HISTORY_MINUTES,
+	HISTORY_POINTS,
 	type LogTarget,
-	OverviewPanel,
-	PortsPanel,
-	ProcessesPanel,
-	ProjectsPanel,
-	ServicesPanel,
-} from "./panels.tsx";
-import { TerminalPanel } from "./terminal.tsx";
-import {
-	ActionButton,
-	DistroChip,
-	Dot,
-	Empty,
-	Meter,
-	Pill,
-	Sparkline,
-} from "./ui.tsx";
+	type NodeHistory,
+	tabsFor,
+} from "./modules.tsx";
+import { ActionButton, DistroChip, Dot, Empty, Pill } from "./ui.tsx";
 import "./index.css";
 
 /**
@@ -51,6 +34,15 @@ import "./index.css";
  * telemetry, alerts and every control request — the panels below just render
  * whatever the latest frame said.
  */
+
+/** The columns of the hub's history table a card actually draws. */
+interface HistoryRow {
+	cpu: number;
+	memUsed: number;
+	memTotal: number;
+	rxRate: number;
+	txRate: number;
+}
 
 interface Alert {
 	id: number;
@@ -62,32 +54,56 @@ interface Alert {
 
 /* ---------- node card ---------- */
 
+/**
+ * The front block. Every card keeps the same shape — header, host line, one
+ * face, footer — and the face is whichever module's turn it is. Cards rotate
+ * off one shared tick so the whole grid turns over together, and clicking a
+ * face's dot pins that card to it until you click the dot again.
+ */
 function NodeCard({
 	node,
 	history,
+	faceIndex,
+	pinned,
+	onPin,
 	selected,
 	onSelect,
 }: {
 	node: NodeSummary;
-	history: number[];
+	history: NodeHistory;
+	/** the shared rotation counter; the card maps it onto its own faces */
+	faceIndex: number;
+	pinned: string | null;
+	onPin: (faceId: string | null) => void;
 	selected: boolean;
 	onSelect: () => void;
 }) {
 	const offline = node.status === "offline";
-	const disk = node.disks.length
-		? node.disks.reduce(
-				(worst, d) => (d.usage > worst.usage ? d : worst),
-				node.disks[0]!,
-			)
-		: null;
-	const memUsage = node.mem ? node.mem.used / node.mem.total : null;
 	const failed = node.systemd?.failed.length ?? 0;
 
+	const faces = useMemo(() => facesFor({ node, history }), [node, history]);
+	const face: CardFace | null =
+		faces.find((candidate) => candidate.id === pinned) ??
+		faces[faceIndex % Math.max(1, faces.length)] ??
+		null;
+
 	return (
-		<button
-			type="button"
+		// A div rather than a button: the face dots are buttons of their own, and
+		// a button inside a button is invalid HTML that browsers handle however
+		// they feel like. The role and key handler put the keyboard back.
+		<div
+			// biome-ignore lint/a11y/useSemanticElements: a <button> here would
+			// contain the face-dot buttons, which is exactly what we're avoiding
+			role="button"
+			tabIndex={0}
+			aria-pressed={selected}
 			className={`card ${selected ? "selected" : ""} ${node.status}`}
 			onClick={onSelect}
+			onKeyDown={(event) => {
+				if (event.key !== "Enter" && event.key !== " ") return;
+				event.preventDefault();
+				onSelect();
+			}}
 		>
 			<header>
 				<Dot tone={offline ? "crit" : "ok"} title={node.status} />
@@ -103,72 +119,40 @@ function NodeCard({
 			</p>
 
 			{offline ? (
-				<div className="card-offline">
+				<div className="card-face card-offline">
 					<p className="error">offline</p>
 					<p className="dim">last seen {ago(node.lastSeen)}</p>
 				</div>
 			) : (
 				<>
-					<div className="metrics">
-						<Meter
-							value={node.cpu}
-							label="CPU"
-							detail={
-								node.loadavg ? `load ${node.loadavg[0].toFixed(2)}` : undefined
-							}
-						/>
-						<Meter
-							value={memUsage}
-							label="Memory"
-							detail={
-								node.mem
-									? `${bytes(node.mem.used)} / ${bytes(node.mem.total)}`
-									: undefined
-							}
-						/>
-						<Meter
-							value={disk?.usage ?? null}
-							label={disk?.mount ?? "Disk"}
-							detail={disk ? bytes(disk.available) + " free" : undefined}
-						/>
+					<div className="card-face">
+						{face ? face.render({ node, history }) : <p className="dim">…</p>}
 					</div>
 
-					<Sparkline points={history} tone={usageTone(node.cpu)} />
-
-					<dl className="facts">
-						<div>
-							<dt>Uptime</dt>
-							<dd>{duration(node.uptimeSec)}</dd>
+					{faces.length > 1 && (
+						<div className="face-switch">
+							{faces.map((candidate) => (
+								<button
+									key={candidate.id}
+									type="button"
+									className={`face-dot ${candidate.id === face?.id ? "on" : ""} ${
+										candidate.id === pinned ? "pinned" : ""
+									}`}
+									title={
+										candidate.id === pinned
+											? `${candidate.label} — click to resume rotating`
+											: `hold on ${candidate.label}`
+									}
+									aria-label={candidate.label}
+									onClick={(event) => {
+										event.stopPropagation();
+										onPin(pinned === candidate.id ? null : candidate.id);
+									}}
+								/>
+							))}
+							<span className="face-label dim">{face?.label}</span>
 						</div>
-						<div>
-							<dt>Network</dt>
-							<dd>
-								↓{rate(node.net?.rxRate)} ↑{rate(node.net?.txRate)}
-							</dd>
-						</div>
-						<div>
-							<dt>Projects</dt>
-							<dd>
-								{node.projects
-									? `${node.projects.running}/${node.projects.total}`
-									: "—"}
-								{node.projects?.degraded ? (
-									<Pill tone="crit">{node.projects.degraded} degraded</Pill>
-								) : null}
-							</dd>
-						</div>
-						<div>
-							<dt>Containers</dt>
-							<dd>
-								{node.containers
-									? `${node.containers.running}/${node.containers.total}`
-									: "—"}
-								{node.containers?.unhealthy ? (
-									<Pill tone="crit">{node.containers.unhealthy} sick</Pill>
-								) : null}
-							</dd>
-						</div>
-					</dl>
+					)}
 				</>
 			)}
 
@@ -202,24 +186,17 @@ function NodeCard({
 					<span className="latency">{node.latencyMs}ms</span>
 				)}
 			</footer>
-		</button>
+		</div>
 	);
 }
 
 /* ---------- detail ---------- */
 
-const TABS = [
-	"overview",
-	"projects",
-	"containers",
-	"services",
-	"processes",
-	"ports",
-	"logs",
-	"terminal",
-] as const;
-type Tab = (typeof TABS)[number];
-
+/**
+ * The detail pane. Which tabs exist is the node's business: every tab comes
+ * from a module the node actually loaded, so a host without docker has no
+ * containers tab rather than an empty one.
+ */
 function NodeDetail({
 	node,
 	telemetry,
@@ -231,15 +208,21 @@ function NodeDetail({
 	hub: HubConnection;
 	onClose: () => void;
 }) {
-	const [tab, setTab] = useState<Tab>("overview");
+	const tabs = useMemo(() => tabsFor(node), [node]);
+	const [tabId, setTabId] = useState<string>(tabs[0]?.id ?? "overview");
 	const [logTarget, setLogTarget] = useState<LogTarget | undefined>();
 
+	// A module can go away under you — the node reconnects without docker, or
+	// the hub narrows it — and the pane shouldn't be left on a tab that no
+	// longer exists.
+	const active = tabs.find((tab) => tab.id === tabId) ?? tabs[0] ?? null;
+
 	const go = useCallback((next: string, context?: LogTarget) => {
-		setTab(next as Tab);
+		setTabId(next);
 		if (context) setLogTarget(context);
 	}, []);
 
-	const props = { node, telemetry, hub, go };
+	const props = { node, telemetry, hub, go, target: logTarget };
 
 	return (
 		<aside className="detail">
@@ -269,20 +252,15 @@ function NodeDetail({
 			</header>
 
 			<nav className="tabs">
-				{TABS.map((name) => (
+				{tabs.map((tab) => (
 					<button
-						key={name}
+						key={tab.id}
 						type="button"
-						className={tab === name ? "active" : ""}
-						onClick={() => setTab(name)}
+						className={active?.id === tab.id ? "active" : ""}
+						onClick={() => setTabId(tab.id)}
 					>
-						{name}
-						{name === "projects" && node.projects?.degraded ? (
-							<span className="tab-badge" />
-						) : null}
-						{name === "services" && node.systemd?.failed.length ? (
-							<span className="tab-badge" />
-						) : null}
+						{tab.label}
+						{tab.badge?.(node) ? <span className="tab-badge" /> : null}
 					</button>
 				))}
 			</nav>
@@ -294,15 +272,10 @@ function NodeDetail({
 						to show.
 					</Empty>
 				)}
-				{tab === "overview" && <OverviewPanel {...props} />}
-				{tab === "projects" && <ProjectsPanel {...props} />}
-				{tab === "containers" && <ContainersPanel {...props} />}
-				{tab === "services" && <ServicesPanel {...props} />}
-				{tab === "processes" && <ProcessesPanel {...props} />}
-				{tab === "ports" && <PortsPanel {...props} />}
-				{tab === "logs" && <LogsPanel {...props} target={logTarget} />}
-				{tab === "terminal" && (
-					<TerminalPanel node={node} telemetry={telemetry} hub={hub} />
+				{active ? (
+					active.render(props)
+				) : (
+					<Empty>This node hasn't told the hub what it can do yet.</Empty>
 				)}
 			</div>
 		</aside>
@@ -311,10 +284,29 @@ function NodeDetail({
 
 /* ---------- app ---------- */
 
+/** How often the grid turns over. "Hold" leaves every card where it is. */
+const ROTATE_CHOICES = [
+	{ ms: 0, label: "hold" },
+	{ ms: 8000, label: "rotate 8s" },
+	{ ms: 15000, label: "rotate 15s" },
+	{ ms: 30000, label: "rotate 30s" },
+];
+
+const ROTATE_KEY = "stats.rotateMs";
+
+function readRotate(): number {
+	const stored = Number(localStorage.getItem(ROTATE_KEY));
+	return ROTATE_CHOICES.some((choice) => choice.ms === stored) ? stored : 8000;
+}
+
+function writeRotate(ms: number) {
+	localStorage.setItem(ROTATE_KEY, String(ms));
+}
+
 function App() {
 	const [nodes, setNodes] = useState<NodeSummary[]>([]);
 	const [telemetry, setTelemetry] = useState<Map<string, Telemetry>>(new Map());
-	const [history, setHistory] = useState<Map<string, number[]>>(new Map());
+	const [history, setHistory] = useState<Map<string, NodeHistory>>(new Map());
 	const [alerts, setAlerts] = useState<Alert[]>([]);
 	const [connected, setConnected] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -323,6 +315,9 @@ function App() {
 		protocol: number;
 	} | null>(null);
 	const [needsToken, setNeedsToken] = useState(false);
+	const [rotateMs, setRotateMs] = useState(readRotate);
+	const [faceIndex, setFaceIndex] = useState(0);
+	const [pinned, setPinned] = useState<Map<string, string>>(new Map());
 	const hub = useRef<HubConnection | null>(null);
 	const alertId = useRef(0);
 
@@ -345,16 +340,29 @@ function App() {
 				setTelemetry((prev) =>
 					new Map(prev).set(frame.nodeId, frame.telemetry),
 				);
-				// Keep a short in-memory series for the card sparklines; the hub's
-				// SQLite history is for anything longer.
+				// A short in-memory series per face; the hub's SQLite history is for
+				// anything longer, and the cards deliberately don't ask for it.
 				setHistory((prev) => {
-					const next = new Map(prev);
-					const points = [
-						...(next.get(frame.nodeId) ?? []),
-						frame.telemetry.stats.cpu.usage,
-					];
-					next.set(frame.nodeId, points.slice(-60));
-					return next;
+					const stats = frame.telemetry.stats;
+					const previous = prev.get(frame.nodeId) ?? EMPTY_HISTORY;
+					const hottest = stats.temps.length
+						? Math.max(...stats.temps.map((t) => t.celsius))
+						: 0;
+					const push = (series: number[], value: number) =>
+						[...series, value].slice(-HISTORY_POINTS);
+
+					return new Map(prev).set(frame.nodeId, {
+						cpu: push(previous.cpu, stats.cpu.usage),
+						mem: push(previous.mem, stats.mem.used / (stats.mem.total || 1)),
+						net: push(
+							previous.net,
+							stats.net.reduce(
+								(sum, iface) => sum + (iface.rxRate ?? 0) + (iface.txRate ?? 0),
+								0,
+							),
+						),
+						temp: push(previous.temp, hottest / 100),
+					});
 				});
 				break;
 			}
@@ -407,27 +415,47 @@ function App() {
 			.catch(() => {});
 	}, []);
 
-	// Seed each card's sparkline from stored history, so a fresh page load isn't flat.
+	// Seed each card's sparklines from stored history, so a fresh page load isn't
+	// flat. Only the last few minutes: these are shapes, not charts.
 	useEffect(() => {
 		const connection = hub.current;
 		if (!connection || !connected) return;
 		for (const node of nodes) {
 			if (history.has(node.id)) continue;
 			connection
-				.request<{ cpu: number }[]>(HubAction.History, {
+				.request<HistoryRow[]>(HubAction.History, {
 					nodeId: node.id,
-					minutes: 30,
+					minutes: HISTORY_MINUTES,
 				})
-				.then((rows) =>
+				.then((rows) => {
+					const recent = rows.slice(-HISTORY_POINTS);
 					setHistory((prev) =>
 						prev.has(node.id)
 							? prev
-							: new Map(prev).set(node.id, rows.map((r) => r.cpu).slice(-60)),
-					),
-				)
+							: new Map(prev).set(node.id, {
+									cpu: recent.map((row) => row.cpu),
+									mem: recent.map((row) => row.memUsed / (row.memTotal || 1)),
+									net: recent.map((row) => row.rxRate + row.txRate),
+									// Temperatures aren't in the hub's history table, so this
+									// one starts flat and fills in as frames arrive.
+									temp: [],
+								}),
+					);
+				})
 				.catch(() => {});
 		}
 	}, [connected, nodes.length]);
+
+	// One timer for the whole grid: every card turns its face at the same moment,
+	// which reads as a dashboard changing rather than as tiles flickering.
+	useEffect(() => {
+		if (!rotateMs) return;
+		const timer = setInterval(
+			() => setFaceIndex((index) => index + 1),
+			rotateMs,
+		);
+		return () => clearInterval(timer);
+	}, [rotateMs]);
 
 	const selected = useMemo(
 		() => nodes.find((n) => n.id === selectedId) ?? null,
@@ -475,6 +503,23 @@ function App() {
 						</ul>
 					</details>
 				)}
+				<label className="rotate">
+					<span className="dim">faces</span>
+					<select
+						value={String(rotateMs)}
+						onChange={(event) => {
+							const value = Number(event.target.value);
+							setRotateMs(value);
+							writeRotate(value);
+						}}
+					>
+						{ROTATE_CHOICES.map((choice) => (
+							<option key={choice.ms} value={choice.ms}>
+								{choice.label}
+							</option>
+						))}
+					</select>
+				</label>
 				<ActionButton
 					onAction={async () => {
 						const value = window.prompt(
@@ -502,7 +547,17 @@ function App() {
 					<NodeCard
 						key={node.id}
 						node={node}
-						history={history.get(node.id) ?? []}
+						history={history.get(node.id) ?? EMPTY_HISTORY}
+						faceIndex={faceIndex}
+						pinned={pinned.get(node.id) ?? null}
+						onPin={(faceId) =>
+							setPinned((prev) => {
+								const next = new Map(prev);
+								if (faceId) next.set(node.id, faceId);
+								else next.delete(node.id);
+								return next;
+							})
+						}
 						selected={node.id === selectedId}
 						onSelect={() =>
 							setSelectedId(node.id === selectedId ? null : node.id)

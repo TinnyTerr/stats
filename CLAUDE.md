@@ -10,6 +10,17 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 
 ## Architecture rules
 
+- **Docker, systemd, terminals and the rest are modules, not special cases.**
+  `src/modules/manifest.ts` is the table all three peers read — what a module
+  provides, which actions it owns, which tab it draws, what it may touch.
+  `src/agent/modules/` is the node half (availability, a slice of the telemetry
+  frame, action handlers); `web/modules.tsx` is the browser half (a tab and the
+  card faces). Adding a capability is a row in the manifest plus those two
+  halves; the shell doesn't change.
+- **A module only reaches what it declared.** Grants are `read`, `http`, `ws`
+  and `socket` for anyone, `exec` and `pty` for modules in the policy's trust
+  list. `src/modules/host.ts` is the enforcement, and it is checked at load —
+  a module wanting more than the policy allows doesn't start.
 - **One protocol, three peers.** `src/proto/` is the whole wire contract:
   `frame.ts` (12-byte header codec), `messages.ts` (payload shapes and control
   action names), `link.ts` (`PeerLink` — correlation ids, streams, acks,
@@ -22,14 +33,20 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 - **Correlation id parity:** the hub allocates odd ids on every link it
   terminates; nodes and browsers allocate even ones. Don't break this.
 - **The hub can only narrow a node's capabilities, never widen them.** A node
-  decides whether it allows terminals and control; `hub.json` can turn them off
-  for everyone but can't turn them on.
+  decides which modules it loads and whether it allows control; `hub.json`'s
+  `modules` block can turn them off for everyone but can't turn them on.
+  `narrowModules()` is the one place that rule is implemented.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
   a test asserts the two agree.
 - **Collectors degrade, never throw the snapshot away.** A host without Docker
   or systemd still reports everything else; the failure lands in
   `telemetry.errors` and shows on the node's card.
+- **Outbound integrations mirror, they don't drive.** `src/hub/notion.ts`
+  pushes projects into a Notion database and never reads anything back: the
+  node's projects file is the source of truth, and the hub can only narrow it.
+  Everything is an outbound call to the third party, which is also the only
+  reason it works behind Tailscale — nothing off-tailnet can reach the hub.
 - **`schema/projects.schema.json` is the documentation for the projects file;
   `src/agent/projects.ts` is the enforcement.** A test compares the schema's
   `default` keywords against the loader's `DEFAULTS`, so change both together.
@@ -50,6 +67,7 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 
 ```bash
 bun run hub                                  # hub on :3000
+bun index.ts modules                         # what a node can load
 bun run node -- --hub ws://127.0.0.1:3000    # a node against it
 bun run check                                # validate the projects file
 bun test && bun run typecheck

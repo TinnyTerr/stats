@@ -10,7 +10,15 @@
 	"retentionHours": 24,
 	"telemetryIntervalMs": 3000,
 
-	"terminal": true,
+	"modules": {
+		"docker": true,
+		"systemd": true,
+		"terminal": true,
+		"processes": true,
+		"ports": true,
+		"logs": true,
+		"projects": true
+	},
 	"embeddedNode": false,
 
 	"nodes": [
@@ -26,5 +34,13 @@
 			"tags": ["prod", "postgres"],
 			"token": "env:DB1_TOKEN"
 		}
-	]
+	],
+
+	"notion": {
+		"enabled": false,
+		"token": "env:NOTION_TOKEN",
+		"database": "",
+		"intervalMs": 60000,
+		"archiveStale": false
+	}
 }

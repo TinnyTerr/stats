@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import React, { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
+import { moduleOn } from "../src/modules/manifest.ts";
 import { NodeAction } from "../src/proto/messages.ts";
 import type { NodeSummary, Telemetry } from "../src/types.ts";
 import { type HubConnection, streamJson } from "./link.ts";
@@ -29,7 +30,7 @@ export function TerminalPanel({
 }) {
 	const [session, setSession] = useState<Session | null>(null);
 	const [target, setTarget] = useState("host");
-	const allowed = node.capabilities?.terminal ?? false;
+	const allowed = moduleOn(node.capabilities?.modules, "terminal");
 
 	if (!allowed) {
 		return (

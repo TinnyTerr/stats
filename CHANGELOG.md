@@ -4,6 +4,62 @@ Versions are semver on the repo as a whole — hub and node ship together.
 `protocol` moves separately, only when the wire shape changes in a way an older
 peer can't read. It is also the version byte in every frame.
 
+## Unreleased
+
+- **Modules.** Docker, systemd, terminals, processes, ports, logs and projects
+  are no longer wired through the codebase as special cases: each is a module
+  that owns a slice of the telemetry frame, its control actions, its tab in the
+  detail pane and the faces it offers the front of a node card. `stats modules`
+  lists them; `--modules docker,systemd` or `--modules -terminal` picks a set,
+  as does `modules` in `agent.json`. `system` is required — everything else can
+  go. A module whose host can't serve it (no docker socket, no systemd) drops
+  itself at startup and says why, so the dashboard hides its tab instead of
+  showing an empty one.
+
+  The hub's `modules` block narrows the fleet the same way `terminal` used to
+  narrow shells, and `terminal: true/false` still works as the terminal
+  module's switch. Turning a module off in `hub.json` refuses its actions at
+  the hub, before they reach a node.
+
+  **Protocol 3**: `capabilities` is now `{ modules, control }` rather than a
+  fixed list of booleans. A 0.2.x node connecting to a 0.3 hub reports
+  telemetry but can't be asked to do anything, which is the safe direction.
+
+- **A module reaches the world through one gated object.** Every module
+  declares what it needs — `read`, `http`, `ws`, `socket` — and gets a host
+  wired to exactly that; asking for anything else is a `ModuleDenied` rather
+  than the resource. Reads are confined to `/proc`, `/sys`, `/etc`, `/run` and
+  `/var/log`, and sockets to the ones the policy names. `exec` and `pty` hand
+  over the machine, so they are privileged: the modules in this repo hold them,
+  and a module from anywhere else has to be listed in `trustedModules` to. A
+  module asking for more than the policy allows doesn't load, and says so at
+  startup.
+
+- **The node card's front block rotates.** The three meters, the sparkline and
+  the facts grid are now one face among several — load, temps, network,
+  storage, containers, units, projects — each contributed by the module that
+  owns the data, all in the same fixed-height slot so the grid never jumps.
+  The whole grid turns over on one timer (`hold`, 8s, 15s or 30s, in the top
+  bar), and clicking a card's face dot pins that card until you click it again.
+
+- **Shorter sparklines.** 30 points instead of 60, seeded from 10 minutes of
+  history instead of 30, and 28px tall instead of 34. These are shapes read at
+  a glance, and the long tail was crowding out the part anyone looks at.
+
+- **Notion mirror.** The hub can push every project the fleet reports into a
+  Notion database, one row per (node, project), upserted on `Key`. Configure it
+  with a `notion` block in `hub.json`; omitting the block leaves it off. The
+  protocol is untouched — this rides on telemetry the hub already has.
+
+  It writes and never reads back, because the node's projects file is the
+  source of truth and the hub can only narrow what a node reports. It is also
+  outbound-only: Notion cannot reach a tailnet address, so anything driving the
+  fleet *from* Notion would need the hub exposed publicly.
+
+  Missing or wrong-typed columns are reported once and skipped rather than
+  failing the whole page, the same way collectors degrade. Rows are only
+  rewritten when something other than the timestamp changed.
+
 ## 0.2.2
 
 The dashboard was reading almost nothing the hub sent it. Frames over 1 KiB are

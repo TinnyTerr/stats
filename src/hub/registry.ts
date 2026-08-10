@@ -1,3 +1,4 @@
+import { narrowModules } from "../modules/manifest.ts";
 import type { PeerLink } from "../proto/link.ts";
 import type { HelloPayload } from "../proto/messages.ts";
 import type {
@@ -184,10 +185,12 @@ export class NodeRegistry {
 	}
 
 	/** The hub can only take capabilities away from what a node offers. */
-	private narrow(capabilities: NodeCapabilities): NodeCapabilities {
+	private narrow(capabilities: NodeCapabilities | undefined): NodeCapabilities {
+		// A node old enough to predate modules announces none, and gets none: it
+		// still reports telemetry, it just can't be asked to do anything.
 		return {
-			...capabilities,
-			terminal: capabilities.terminal && this.config.terminal,
+			control: capabilities?.control ?? false,
+			modules: narrowModules(capabilities?.modules ?? {}, this.config.modules),
 		};
 	}
 

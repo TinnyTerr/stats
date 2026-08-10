@@ -1,5 +1,12 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
+import {
+	isModuleId,
+	MODULE_IDS,
+	MODULES,
+	type ModuleSet,
+	resolveModules,
+} from "../modules/manifest.ts";
 import { DEFAULT_SOURCES } from "./projects.ts";
 
 /**
@@ -20,12 +27,14 @@ export interface AgentConfig {
 	tags: string[];
 	/** what the node asks for; the hub may hand back a slower interval */
 	telemetryIntervalMs: number;
-	/** allow the dashboard to open shells here */
-	terminal: boolean;
+	/** which modules to load — docker, systemd, terminal and the rest */
+	modules: ModuleSet;
 	/** allow start/stop/restart of projects, units and containers */
 	control: boolean;
 	/** projects files/directories, in load order */
 	projectPaths: string[];
+	/** module ids permitted to hold the privileged exec/pty grants */
+	trustedModules: string[];
 }
 
 const DEFAULT_CONFIG_PATH =
@@ -42,6 +51,8 @@ interface RawAgentConfig {
 	terminal?: boolean;
 	control?: boolean;
 	projects?: string | string[];
+	modules?: Record<string, boolean>;
+	trustedModules?: string[];
 }
 
 /**
@@ -95,6 +106,43 @@ function envBool(name: string, fallback: boolean): boolean {
 	return !/^(0|false|no|off)$/i.test(value.trim());
 }
 
+/**
+ * Reads a module list the way an operator would write one on a command line.
+ *
+ *   "docker,systemd"    exactly these (plus the required ones)
+ *   "-docker,-terminal" everything the defaults give you, minus these
+ *
+ * Mixing the two forms is allowed and means what it looks like: the positive
+ * entries are the set, and the negative ones are then removed from it.
+ */
+export function parseModuleList(spec: string): Record<string, boolean> {
+	const entries = spec
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+
+	const positives = entries.filter((entry) => !/^[-!]|^no-/.test(entry));
+	const modules: Record<string, boolean> = {};
+
+	// An explicit "these ones" starts from nothing; a list of removals starts
+	// from whatever the manifest defaults to. The modules that can't be turned
+	// off are left alone either way — naming one is fine, omitting it isn't a
+	// request to remove it.
+	if (positives.length) {
+		for (const id of MODULE_IDS) if (!MODULES[id].required) modules[id] = false;
+	}
+
+	for (const entry of entries) {
+		const off = /^[-!]|^no-/.test(entry);
+		const id = entry.replace(/^[-!]|^no-/, "");
+		// A required module named positively is a no-op; named negatively it is a
+		// mistake, and resolveModules is where that gets reported.
+		if (!off && isModuleId(id) && MODULES[id].required) continue;
+		modules[id] = !off;
+	}
+	return modules;
+}
+
 export interface AgentOverrides {
 	hub?: string;
 	token?: string;
@@ -106,6 +154,8 @@ export interface AgentOverrides {
 	control?: boolean;
 	projects?: string;
 	config?: string;
+	/** "docker,systemd" or "-terminal"; see parseModuleList */
+	modules?: string;
 }
 
 export async function loadAgentConfig(
@@ -143,6 +193,24 @@ export async function loadAgentConfig(
 	const projects =
 		flags.projects ?? process.env.STATS_PROJECTS ?? file.projects;
 
+	// Three ways to ask for a module set, in the usual precedence. --no-terminal
+	// predates modules and still works: it is the terminal module's switch.
+	const spec = flags.modules ?? process.env.STATS_MODULES;
+	const requested: Record<string, boolean> = {
+		...(file.modules ?? {}),
+		...(spec ? parseModuleList(spec) : {}),
+	};
+	const terminal = flags.terminal ?? envBool("STATS_TERMINAL", true);
+	if (flags.terminal !== undefined || process.env.STATS_TERMINAL !== undefined)
+		requested.terminal = terminal;
+	else if (file.terminal !== undefined) requested.terminal ??= file.terminal;
+
+	const moduleErrors: string[] = [];
+	const modules = resolveModules(requested, moduleErrors);
+	if (moduleErrors.length) {
+		throw new Error(`invalid modules:\n  - ${moduleErrors.join("\n  - ")}`);
+	}
+
 	return {
 		hubUrl: normaliseHubUrl(hub),
 		token: flags.token ?? process.env.STATS_NODE_TOKEN ?? file.token ?? null,
@@ -163,13 +231,15 @@ export async function loadAgentConfig(
 		telemetryIntervalMs: Number.isFinite(interval)
 			? Math.max(1000, interval)
 			: 3000,
-		terminal:
-			flags.terminal ?? envBool("STATS_TERMINAL", file.terminal ?? true),
+		modules,
 		control: flags.control ?? envBool("STATS_CONTROL", file.control ?? true),
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(
 					Boolean,
 				)
 			: DEFAULT_SOURCES,
+		// The modules in this repo are the ones trusted with exec and pty; a
+		// module from anywhere else has to be named here to get either.
+		trustedModules: file.trustedModules ?? [...MODULE_IDS],
 	};
 }

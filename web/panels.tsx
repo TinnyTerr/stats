@@ -1,5 +1,6 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { moduleOn } from "../src/modules/manifest.ts";
 import { HubAction, NodeAction } from "../src/proto/messages.ts";
 import type {
 	Container,
@@ -614,9 +615,9 @@ export function ContainersPanel({ node, telemetry, hub, go }: PanelProps) {
 	if (!containers.length) {
 		return (
 			<Empty>
-				{node.capabilities?.docker === false
-					? "Docker isn't reachable from this node."
-					: "No containers reported."}
+				{moduleOn(node.capabilities?.modules, "docker")
+					? "No containers reported."
+					: "The docker module isn't loaded on this node."}
 			</Empty>
 		);
 	}

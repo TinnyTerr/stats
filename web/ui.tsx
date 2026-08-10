@@ -28,16 +28,19 @@ export function Meter({
 	value,
 	label,
 	detail,
+	format = pct,
 }: {
 	value: number | null;
 	label: string;
 	detail?: string;
+	/** how the 0..1 value reads out; temperatures aren't percentages */
+	format?: (value: number | null) => string;
 }) {
 	return (
 		<div className="meter">
 			<div className="meter-head">
 				<span className="meter-label">{label}</span>
-				<span className="meter-value">{pct(value)}</span>
+				<span className="meter-value">{format(value)}</span>
 			</div>
 			<div className="meter-track">
 				<div
@@ -50,10 +53,35 @@ export function Meter({
 	);
 }
 
+/**
+ * A counted thing, sized to sit in the same row as a {@link Meter}: the card
+ * faces swap between the two, and a face that changed the row height would make
+ * the whole grid jump every time it came round.
+ */
+export function Tile({
+	label,
+	value,
+	detail,
+	tone,
+}: {
+	label: string;
+	value: React.ReactNode;
+	detail?: string;
+	tone?: Tone;
+}) {
+	return (
+		<div className="tile">
+			<span className="tile-label">{label}</span>
+			<span className={`tile-value ${tone ?? ""}`}>{value}</span>
+			<span className="tile-detail">{detail ?? ""}</span>
+		</div>
+	);
+}
+
 /** Dependency-free sparkline; history comes back as plain numbers. */
 export function Sparkline({
 	points,
-	height = 34,
+	height = 28,
 	tone = "ok",
 }: {
 	points: number[];

@@ -4,6 +4,10 @@
  * once.
  */
 
+import type { ModuleSet } from "./modules/manifest.ts";
+
+export type { ModuleId, ModuleSet } from "./modules/manifest.ts";
+
 /* ---------- host metrics ---------- */
 
 export interface CpuStats {
@@ -340,19 +344,15 @@ export interface NodeIdentity {
 }
 
 /**
- * What a node will let the hub do to it. `terminal` and `control` are the only
- * ones that aren't read-only, and both are switches on the node, not the hub —
- * a node decides what it exposes, and the hub can only narrow that further.
+ * What a node will let the hub do to it: the modules it loaded, plus the one
+ * switch that cuts across all of them. Both are decided on the node — the hub
+ * can only narrow what a node offers, never widen it.
  */
 export interface NodeCapabilities {
-	/** open a shell over the link */
-	terminal: boolean;
+	/** module id → loaded here, after the hub narrowed it. See src/modules/. */
+	modules: ModuleSet;
 	/** start/stop/restart projects, units and containers */
 	control: boolean;
-	projects: boolean;
-	docker: boolean;
-	systemd: boolean;
-	logs: boolean;
 }
 
 /** One tick of everything a node reports. */
@@ -420,11 +420,36 @@ export interface HubConfig {
 	telemetryIntervalMs: number;
 	/** a node is declared offline this long after its last frame */
 	nodeTimeoutMs: number;
-	/** allow the dashboard to open shells on nodes that permit it */
-	terminal: boolean;
+	/**
+	 * Fleet-wide module switches. Only ever subtractive: setting `docker: false`
+	 * hides docker everywhere, but setting it true can't give it to a node that
+	 * didn't load the module.
+	 */
+	modules: ModuleSet;
 	/** run a node in-process so the hub machine watches itself */
 	embeddedNode: boolean;
 	nodes: NodeOverride[];
+	/** mirror projects into a Notion database, null when not configured */
+	notion: NotionConfig | null;
+}
+
+/**
+ * Outbound mirror of the fleet's projects into a Notion database. Read-only by
+ * design: the node's projects file stays the source of truth, so nothing set
+ * in Notion can change what a node runs.
+ */
+export interface NotionConfig {
+	enabled: boolean;
+	/** Notion internal integration secret */
+	token: string | null;
+	/** the database id to write rows into */
+	database: string | null;
+	/** how often to push, floored at 15s to stay well inside Notion's limits */
+	intervalMs: number;
+	/** archive rows whose project no longer exists anywhere in the fleet */
+	archiveStale: boolean;
+	/** override the Notion property name used for a column */
+	properties?: Partial<Record<string, string>>;
 }
 
 /** The list-view shape the dashboard renders, one per known node. */

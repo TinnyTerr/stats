@@ -8,10 +8,15 @@
  */
 
 import { startNode } from "./src/agent/agent.ts";
-import { type AgentOverrides, loadAgentConfig } from "./src/agent/config.ts";
+import {
+	type AgentOverrides,
+	loadAgentConfig,
+	parseModuleList,
+} from "./src/agent/config.ts";
 import { loadProjects } from "./src/agent/projects.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
+import { MODULE_LIST, resolveModules } from "./src/modules/manifest.ts";
 import { PROTOCOL, VERSION } from "./src/version.ts";
 
 function flag(name: string): string | undefined {
@@ -43,7 +48,9 @@ Usage:
   ${invocation} hub    [--config hub.json] [--port 3000] [--host 127.0.0.1]
   ${invocation} node   --hub ws://hub:3000 [--token T] [--id ID] [--name NAME]
                        [--tags a,b] [--interval 3000] [--projects PATH]
+                       [--modules docker,systemd | --modules -terminal]
                        [--no-terminal] [--no-control]
+  ${invocation} modules                      list the modules a node can load
   ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
 
@@ -55,6 +62,7 @@ Environment:
   STATS_NODE_ID       node id (default /etc/machine-id, else hostname)
   STATS_NODE_NAME     display name (default hostname)
   STATS_PROJECTS      projects file or directory (colon-separated)
+  STATS_MODULES       modules to load, e.g. "docker,systemd" or "-terminal"
   STATS_TERMINAL      set to 0 to refuse terminal sessions
   STATS_CONTROL       set to 0 to refuse start/stop/restart
   STATS_LOG_DIRS      dirs readable via kind=file (default /var/log)
@@ -73,6 +81,21 @@ async function main(role: string | undefined) {
 		case "-v":
 			console.log(`stats ${VERSION} (protocol ${PROTOCOL})`);
 			break;
+
+		case "modules": {
+			console.log("modules a node can load (--modules to choose):\n");
+			for (const module of MODULE_LIST) {
+				const flags = [
+					module.required ? "required" : null,
+					module.enabledByDefault ? "on by default" : "off by default",
+					module.tab ? `tab '${module.tab}'` : null,
+					`grants ${module.grants.join("+")}`,
+				].filter(Boolean);
+				console.log(`  ${module.id.padEnd(11)} ${module.description}`);
+				console.log(`  ${" ".repeat(11)} ${flags.join(" · ")}`);
+			}
+			break;
+		}
 
 		case "check": {
 			const paths = flag("projects")?.split(":");
@@ -112,6 +135,7 @@ async function main(role: string | undefined) {
 				interval: flag("interval"),
 				projects: flag("projects"),
 				config: flag("config"),
+				modules: flag("modules"),
 				terminal: toggle("terminal"),
 				control: toggle("control"),
 			};
@@ -126,10 +150,10 @@ async function main(role: string | undefined) {
 						"Set STATS_NODE_TOKEN.",
 				);
 			}
-			if (config.terminal) {
+			if (config.modules.terminal) {
 				console.warn(
-					"note: terminals are enabled — the hub can open a shell on this host. " +
-						"Pass --no-terminal to refuse.",
+					"note: the terminal module is loaded — the hub can open a shell on this " +
+						"host. Pass --no-terminal to refuse.",
 				);
 			}
 
@@ -149,13 +173,20 @@ async function main(role: string | undefined) {
 			if (portOverride) config.port = Number(portOverride);
 			if (hostOverride) config.host = hostOverride;
 
-			const { registry } = startHub(config);
+			const { registry, notion } = startHub(config);
 			console.log(
 				`stats hub ${VERSION} listening on http://${config.host}:${config.port}`,
 			);
 			console.log(`nodes connect to ws://${config.host}:${config.port}/node`);
 			const known = registry.list().length;
 			if (known) console.log(`${known} node(s) known from previous runs`);
+			if (notion) {
+				console.log(
+					`mirroring projects to Notion database ${config.notion?.database} every ${
+						(config.notion?.intervalMs ?? 0) / 1000
+					}s`,
+				);
+			}
 			if (!config.nodeToken) {
 				console.warn(
 					"warning: no nodeToken set — any host that can reach this port can register. " +
@@ -173,11 +204,19 @@ async function main(role: string | undefined) {
 					name: process.env.STATS_NODE_NAME ?? "This machine",
 					tags: ["hub"],
 					telemetryIntervalMs: config.telemetryIntervalMs,
-					terminal: config.terminal,
+					// The hub's own switches apply, and STATS_MODULES still trims
+					// further — this node is in the hub's process, but it is a node.
+					modules: resolveModules({
+						...config.modules,
+						...(process.env.STATS_MODULES
+							? parseModuleList(process.env.STATS_MODULES)
+							: {}),
+					}),
 					control: true,
 					projectPaths: (process.env.STATS_PROJECTS ?? "./projects.json").split(
 						":",
 					),
+					trustedModules: MODULE_LIST.map((module) => module.id),
 				});
 				process.on("SIGINT", () => void node.stop());
 				process.on("SIGTERM", () => void node.stop());

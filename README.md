@@ -174,12 +174,21 @@ Every field is optional:
   "retentionHours": 24,
   "telemetryIntervalMs": 3000,  // handed to every node when it connects
 
-  "terminal": true,             // hub-side switch for shells
+  "modules": {                  // fleet-wide switches; subtractive only
+    "terminal": false           // no shells anywhere, whatever a node offers
+  },
   "embeddedNode": false,        // run a node in-process for the hub's own host
 
   "nodes": [                    // optional per-node overrides
     { "id": "web-1", "name": "Web 1", "tags": ["prod"], "notes": "nginx" }
-  ]
+  ],
+
+  "notion": {                   // omit the block entirely to disable
+    "token": "env:NOTION_TOKEN",
+    "database": "1f2a…",        // the 32-char id from the database URL
+    "intervalMs": 60000,        // floored at 15s
+    "archiveStale": false       // true: archive rows whose project is gone
+  }
 }
 ```
 
@@ -195,6 +204,105 @@ stats node --hub ws://hub.lan:3000 --token secret \
 Any `token` in `hub.json` may be written `"env:VAR_NAME"` so the config stays
 committable. A node's id defaults to `/etc/machine-id` — stable across reboots
 and address changes — and the hub keys everything on it.
+
+## Modules
+
+Docker, systemd, terminals, processes, ports, logs and projects are modules, not
+built-in special cases. A module owns a slice of the telemetry frame, the
+control actions that go with it, the tab it draws in the detail pane, and the
+faces it offers the front of a node card. Turn one off and all four go with it —
+no tab, no actions, no empty section.
+
+```bash
+stats modules                                  # what's available
+stats node --hub … --modules docker,systemd    # only these (plus system)
+stats node --hub … --modules -terminal         # everything but this
+STATS_MODULES=-docker,-terminal stats node …   # same, from the environment
+```
+
+or in `/etc/stats/agent.json`:
+
+```jsonc
+{ "modules": { "terminal": false, "docker": true } }
+```
+
+`system` is required — a card with no CPU or memory on it isn't a dashboard —
+and everything else defaults to on. A module whose host can't serve it (no
+docker socket, no systemd) drops itself at startup and says so in the node's
+log, so the dashboard hides it rather than showing an empty tab.
+
+The hub narrows, never widens. `modules` in `hub.json` can switch something off
+across the whole fleet, but a hub cannot hand a node a module the node didn't
+load.
+
+### What a module may touch
+
+A module reaches the outside world through one gated host object, and only
+through the grants it declared in `src/modules/manifest.ts`:
+
+| Grant | What it gives |
+| --- | --- |
+| `read` | reading files under the policy's roots (`/proc`, `/sys`, `/etc`, `/run`, `/var/log`) |
+| `http` | outbound HTTP, host-allowlisted |
+| `ws` | outbound WebSocket, same allowlist |
+| `socket` | HTTP over a named unix socket — how the docker module reaches the engine |
+| `exec` | **privileged**: running a command |
+| `pty` | **privileged**: spawning a process on a pty |
+
+The first four are the open set: any module may ask for them. `exec` and `pty`
+hand over the machine, so a module holding either has to be in the policy's
+trust list — the modules in this repo are, and nothing else is unless you say
+so. Asking for a grant the policy won't give means the module doesn't load at
+all, reported at startup rather than discovered when it first misbehaves.
+
+## Notion mirror
+
+The hub can mirror every project the fleet reports into a Notion database, one
+row per (node, project), refreshed on a timer.
+
+It only ever writes. The node's `projects.json` stays the source of truth — the
+hub can narrow what a node reports but never widen it — so nothing you type in
+Notion changes what a node runs. Treat the database as a view.
+
+Setup:
+
+1. Create an internal integration at
+   [notion.so/my-integrations](https://www.notion.so/my-integrations), copy the
+   secret into `NOTION_TOKEN`.
+2. Create a database, then **… → Connections → your integration**. Without
+   this the API returns 404 for a database that plainly exists.
+3. Copy the database id — the 32 hex characters in its URL, before the `?`.
+
+The database needs these properties. Any that are missing are logged once and
+skipped, so you can start with a subset:
+
+| Property    | Type           | Holds                              |
+| ----------- | -------------- | ---------------------------------- |
+| *(title)*   | `title`        | project name — any name works      |
+| `Key`       | `rich_text`    | `nodeId/projectId`, the upsert key |
+| `Node`      | `rich_text`    | node display name                  |
+| `Status`    | `select`       | running / degraded / stopped / empty / offline |
+| `Processes` | `rich_text`    | `3/4 running`                      |
+| `Uptime`    | `rich_text`    | longest-running process            |
+| `Restarts`  | `number`       | summed across the project          |
+| `Tags`      | `multi_select` | the project's tags                 |
+| `URL`       | `url`          | the project's `url`                |
+| `Updated`   | `date`         | last sync                          |
+
+`Key` is the one that matters: it is what makes the sync an upsert. Without it
+every pass creates duplicate rows, so the hub refuses to guess and says so.
+Rename any column via `"properties": { "restarts": "Crash count" }`.
+
+A project on a node the hub has lost contact with reports `offline` rather than
+whatever its last telemetry claimed. Rows are only rewritten when something
+other than the timestamp changed, so a quiet fleet costs one query per pass.
+
+**On reaching the hub from Notion:** you can't. A tailnet address is only
+routable inside your tailnet, and Notion's servers aren't on it — so Notion
+automations, webhooks and buttons pointed at the hub will simply time out. This
+mirror works because every request goes the other way, out to `api.notion.com`.
+Exposing the hub publicly (Tailscale Funnel, a reverse proxy) is the only way
+round that, and is worth wanting only if you need Notion to drive the fleet.
 
 ## The wire protocol
 
@@ -223,7 +331,7 @@ way can never be confused with one going the other. A control request that
 opens a stream keeps its id alive in both directions until either side sends
 `stream_end`.
 
-Control actions a hub sends a node: `snapshot`, `facts.refresh`, `logs.tail`,
+Control actions a hub sends a node: `snapshot`, `modules`, `facts.refresh`, `logs.tail`,
 `terminal.open` / `.resize` / `.close`, `unit.show`, `unit.action`,
 `container.action`, `projects.list`, `projects.reload`, `project.action`. A
 browser sends the same actions with a `nodeId`, plus the hub's own: `nodes`,
@@ -251,9 +359,9 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 
 - **A node is no longer read-only.** By default it will open a shell and
   start/stop projects, units and containers on request. Both are node-side
-  switches: `--no-terminal` and `--no-control` (or `STATS_TERMINAL=0`,
-  `STATS_CONTROL=0`) refuse them outright, and the hub's `terminal: false` can
-  narrow it further but never widen it.
+  switches: `--no-terminal` (the terminal module) and `--no-control` (or
+  `STATS_TERMINAL=0`, `STATS_CONTROL=0`) refuse them outright, and the hub's
+  `modules.terminal: false` can narrow it further but never widen it.
 - **Whoever can reach the dashboard can do those things.** Set `token` in
   `hub.json` if the hub isn't on localhost.
 - **Set `nodeToken`.** Without one, any host that can reach the hub can
@@ -286,6 +394,7 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `STATS_PROJECTS` | node | `/etc/stats/projects.json`, `/etc/stats/projects.d` |
 | `STATS_LOG_DIRS` | node | `/var/log` |
 | `DOCKER_SOCKET` | node | `/var/run/docker.sock` |
+| `NOTION_TOKEN` | hub | none (only if `hub.json` refers to it) |
 
 ## Building executables
 
@@ -352,11 +461,14 @@ src/agent/config.ts     node configuration and hub URL normalisation
 src/agent/projects.ts   projects file loading and validation
 src/agent/supervisor.ts runs and watches declared processes
 src/agent/terminal.ts   pty sessions
+src/agent/modules/      the node half of each module
+src/modules/            the manifest all three peers read, and the gated host
 src/hub/config.ts       hub.json loading
 src/hub/db.ts           SQLite history, events and known nodes
 src/hub/registry.ts     who's connected, and the alerts derived from telemetry
+src/hub/notion.ts       outbound mirror of projects into a Notion database
 src/hub/server.ts       node and browser endpoints, and the relay between them
-web/                    React dashboard (link.ts, panels.tsx, terminal.tsx, …)
+web/                    React dashboard (link.ts, panels.tsx, modules.tsx, …)
 schema/                 the projects JSON Schema
 scripts/build.ts        cross-compiles the standalone binaries into dist/
 install.sh              download/verify/install + systemd units, either role

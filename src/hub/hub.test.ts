@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startNode } from "../agent/agent.ts";
+import { MODULE_IDS, moduleOn, resolveModules } from "../modules/manifest.ts";
 import { COMPRESS_THRESHOLD, Flags, MessageType } from "../proto/frame.ts";
 import { PeerLink } from "../proto/link.ts";
 import { HubAction, NodeAction } from "../proto/messages.ts";
@@ -69,6 +70,55 @@ describe("hub config", () => {
 
 	test("rejects an explicit config path that isn't there", () => {
 		expect(loadConfig(tmp("nope.json"))).rejects.toThrow(/config not found/);
+	});
+
+	test("leaves notion off when the file says nothing about it", async () => {
+		const config = await loadConfig(await writeConfig("no-notion", {}));
+		expect(config.notion).toBeNull();
+	});
+
+	test("resolves the notion token and floors the interval", async () => {
+		process.env.TEST_NOTION_TOKEN = "ntn_x";
+		const path = await writeConfig("notion", {
+			notion: {
+				token: "env:TEST_NOTION_TOKEN",
+				database: "abc123",
+				intervalMs: 1000,
+			},
+		});
+		const config = await loadConfig(path);
+		expect(config.notion?.token).toBe("ntn_x");
+		expect(config.notion?.database).toBe("abc123");
+		// Notion rate-limits per integration, so a typo can't become a hot loop.
+		expect(config.notion?.intervalMs).toBe(15_000);
+		delete process.env.TEST_NOTION_TOKEN;
+	});
+
+	test("an enabled notion block without credentials fails the boot", async () => {
+		const noDb = await writeConfig("notion-nodb", {
+			notion: { token: "ntn_x" },
+		});
+		expect(loadConfig(noDb)).rejects.toThrow(/notion.database/);
+
+		const noToken = await writeConfig("notion-notoken", {
+			notion: { database: "abc123" },
+		});
+		expect(loadConfig(noToken)).rejects.toThrow(/notion.token/);
+	});
+
+	test("an unset env var is a clearer error than a missing token", async () => {
+		delete process.env.TEST_NOTION_ABSENT;
+		const path = await writeConfig("notion-unset", {
+			notion: { token: "env:TEST_NOTION_ABSENT", database: "abc123" },
+		});
+		expect(loadConfig(path)).rejects.toThrow(/is the env var set/);
+	});
+
+	test("notion can be present but switched off without being valid", async () => {
+		const path = await writeConfig("notion-off", {
+			notion: { enabled: false },
+		});
+		expect((await loadConfig(path)).notion?.enabled).toBe(false);
 	});
 });
 
@@ -302,9 +352,10 @@ async function harness(
 		retentionHours: 24,
 		telemetryIntervalMs: 1000,
 		nodeTimeoutMs: 15_000,
-		terminal: true,
+		modules: resolveModules({}),
 		embeddedNode: false,
 		nodes: [],
+		notion: null,
 		...overrides,
 	};
 
@@ -383,7 +434,8 @@ describe("hub and node over a websocket", () => {
 			name: "Test Node",
 			tags: [],
 			telemetryIntervalMs: 1000,
-			terminal: true,
+			modules: resolveModules({ terminal: true }),
+			trustedModules: [...MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -405,7 +457,7 @@ describe("hub and node over a websocket", () => {
 			expect(summary.id).toBe("test-node");
 			expect(summary.name).toBe("Test Node");
 			expect(summary.facts?.osPretty ?? summary.facts?.osName).toBeTruthy();
-			expect(summary.capabilities?.terminal).toBe(true);
+			expect(moduleOn(summary.capabilities?.modules, "terminal")).toBe(true);
 			expect(summary.mem!.total).toBeGreaterThan(0);
 
 			// A relayed request reaches the node and its answer comes back.
@@ -462,7 +514,8 @@ describe("hub and node over a websocket", () => {
 			name: "Pushy",
 			tags: [],
 			telemetryIntervalMs: 1000,
-			terminal: false,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -518,7 +571,8 @@ describe("hub and node over a websocket", () => {
 			name: "Plain",
 			tags: [],
 			telemetryIntervalMs: 1000,
-			terminal: false,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -552,7 +606,8 @@ describe("hub and node over a websocket", () => {
 			name: "Shell",
 			tags: [],
 			telemetryIntervalMs: 2000,
-			terminal: true,
+			modules: resolveModules({ terminal: true }),
+			trustedModules: [...MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -637,7 +692,8 @@ describe("hub and node over a websocket", () => {
 			name: "Logs",
 			tags: [],
 			telemetryIntervalMs: 2000,
-			terminal: false,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -696,7 +752,8 @@ describe("hub and node over a websocket", () => {
 			name: "Locked",
 			tags: [],
 			telemetryIntervalMs: 2000,
-			terminal: false,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -712,7 +769,7 @@ describe("hub and node over a websocket", () => {
 					cols: 80,
 					rows: 24,
 				}),
-			).rejects.toThrow(/terminals are disabled/);
+			).rejects.toThrow(/'terminal' module is not enabled/);
 
 			expect(
 				ui.request(NodeAction.ProjectAction, {
@@ -741,7 +798,8 @@ describe("hub and node over a websocket", () => {
 			name: "Intruder",
 			tags: [],
 			telemetryIntervalMs: 1000,
-			terminal: false,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -777,7 +835,7 @@ describe("hub and node over a websocket", () => {
 
 			const link = await browser(h.port, "let-me-in");
 			expect(await link.request(HubAction.Info)).toMatchObject({
-				terminal: true,
+				modules: { terminal: true },
 				nodes: 0,
 			});
 			link.close();
