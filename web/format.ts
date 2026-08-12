@@ -1,4 +1,5 @@
 import type { HostFacts, ProcessState, SystemdUnit } from "../src/types.ts";
+import { compareVersions } from "../src/version.ts";
 
 /** Formatting shared by every panel. Presentation only — no fetching here. */
 
@@ -64,6 +65,37 @@ export const cpuTime = (ns: number | null): string => {
 	if (seconds < 60) return `${seconds.toFixed(1)}s`;
 	return duration(seconds);
 };
+
+/* ---------- versions ---------- */
+
+export type VersionState = "current" | "behind" | "ahead" | "unknown";
+
+/**
+ * How a node's build compares to the hub's. The hub is the reference because it
+ * is the thing you upgrade first — a node ahead of it means someone updated in
+ * the wrong order, which is worth saying out loud rather than colouring green.
+ */
+export function versionState(
+	nodeVersion: string | null | undefined,
+	hubVersion: string | null | undefined,
+): VersionState {
+	if (!nodeVersion || !hubVersion) return "unknown";
+	const diff = compareVersions(nodeVersion, hubVersion);
+	if (diff < 0) return "behind";
+	if (diff > 0) return "ahead";
+	return "current";
+}
+
+export function versionTone(state: VersionState): Tone {
+	switch (state) {
+		case "behind":
+			return "warn";
+		case "ahead":
+			return "info";
+		default:
+			return "idle";
+	}
+}
 
 /* ---------- distributions ---------- */
 
@@ -217,5 +249,19 @@ export function usageTone(value: number | null | undefined): Tone {
 	if (value == null) return "idle";
 	if (value > 0.9) return "crit";
 	if (value > 0.75) return "warn";
+	return "ok";
+}
+
+/**
+ * The other direction: a fraction where full is the healthy end — units active,
+ * containers up, projects running. {@link usageTone} reads a bar as pressure on
+ * a resource, which is right for CPU and disk and exactly backwards here: 99% of
+ * units running is the best a box gets, and it should not be painted as an
+ * alarm.
+ */
+export function readyTone(value: number | null | undefined): Tone {
+	if (value == null) return "idle";
+	if (value < 0.5) return "crit";
+	if (value < 0.9) return "warn";
 	return "ok";
 }

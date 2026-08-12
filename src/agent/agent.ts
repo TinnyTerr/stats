@@ -1,4 +1,5 @@
 import { collectFacts } from "../collect/facts.ts";
+import { emptyProxmoxSummary } from "../collect/proxmox.ts";
 import { defaultPolicy } from "../modules/host.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
@@ -6,12 +7,26 @@ import {
 	type HelloPayload,
 	NodeAction,
 	type SnapshotResult,
+	type UpdateApplyParams,
+	type UpdateApplyResult,
+	type UpdateCheckResult,
 	type WelcomePayload,
 } from "../proto/messages.ts";
 import type { NodeCapabilities, Telemetry } from "../types.ts";
+import {
+	applyUpdate,
+	checkForUpdate,
+	currentUnit,
+	restartUnit,
+} from "../update.ts";
 import { versionInfo } from "../version.ts";
 import type { AgentConfig } from "./config.ts";
-import { type LoadedModules, loadModules } from "./modules/index.ts";
+import { loadExternalModules } from "./modules/external.ts";
+import {
+	BUILTIN_MODULES,
+	type LoadedModules,
+	loadModules,
+} from "./modules/index.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -63,20 +78,43 @@ export function startNode(config: AgentConfig): AgentHandle {
 	/* ---------- modules ---------- */
 
 	let loaded: LoadedModules | null = null;
-	const modules = loadModules(
-		{ config, supervisor, terminals, control: config.control },
-		config.modules,
-		defaultPolicy(config.trustedModules),
-	).then((result) => {
+	const installed = config.installed ?? [];
+
+	const modules = (async () => {
+		// Installed modules are imported first and then join the builtins as
+		// equals: from loadModules down, nothing distinguishes them.
+		const external = await loadExternalModules(
+			installed,
+			config.moduleSettings ?? {},
+		);
+		const result = await loadModules(
+			{ config, supervisor, terminals, control: config.control },
+			config.modules,
+			defaultPolicy(config.trustedModules),
+			[...BUILTIN_MODULES, ...external.modules],
+		);
+		result.notes.unshift(...external.notes);
+
 		loaded = result;
 		const active = result.active.map((m) => m.manifest.id).join(", ");
 		console.log(`modules: ${active || "none"}`);
 		for (const note of result.notes) console.log(`  ${note}`);
 		return result;
-	});
+	})();
+
+	/** The manifests for installed modules that actually loaded. */
+	function externals() {
+		return installed
+			.filter((module) => loaded?.set[module.manifest.id])
+			.map((module) => module.manifest);
+	}
 
 	function capabilities(): NodeCapabilities {
-		return { modules: loaded?.set ?? {}, control: config.control };
+		return {
+			modules: loaded?.set ?? {},
+			control: config.control,
+			externals: externals(),
+		};
 	}
 
 	/* ---------- collection ---------- */
@@ -118,6 +156,9 @@ export function startNode(config: AgentConfig): AgentHandle {
 			processes: parts.processes ?? [],
 			ports: parts.ports ?? [],
 			projects: parts.projects ?? [],
+			proxmox: parts.proxmox ?? emptyProxmoxSummary(),
+			guests: parts.guests ?? [],
+			extras: parts.extras ?? {},
 			errors,
 		};
 
@@ -163,7 +204,25 @@ export function startNode(config: AgentConfig): AgentHandle {
 					modules: active.set,
 					control: config.control,
 					notes: active.notes,
+					externals: externals(),
 				};
+
+			// Read-only, and allowed even on a node that refuses to be updated —
+			// "you are three versions behind and won't take one" is exactly what
+			// the dashboard should be able to say.
+			case NodeAction.UpdateCheck: {
+				const status = await checkForUpdate();
+				return {
+					current: status.current,
+					latest: status.latest,
+					behind: status.behind,
+					asset: status.asset,
+					allowed: config.allowRemoteUpdate === true,
+				} satisfies UpdateCheckResult;
+			}
+
+			case NodeAction.UpdateApply:
+				return await selfUpdate(req.params as UpdateApplyParams);
 		}
 
 		const handler = active.dispatch(req.action);
@@ -174,6 +233,46 @@ export function startNode(config: AgentConfig): AgentHandle {
 			);
 		}
 		return await handler(req);
+	}
+
+	/* ---------- self-update ---------- */
+
+	/**
+	 * The hub can ask for this; it cannot say where from. Everything about which
+	 * release, which build and which checksum is decided here, against the forge
+	 * this node was configured with — see src/update.ts.
+	 */
+	async function selfUpdate(
+		params: UpdateApplyParams = {},
+	): Promise<UpdateApplyResult> {
+		if (!config.allowRemoteUpdate) {
+			throw new RemoteError(
+				"forbidden",
+				"this node does not accept remote updates — start it with --allow-remote-update, or run 'stats update' on the host",
+			);
+		}
+		if (!config.control) {
+			throw new RemoteError(
+				"forbidden",
+				"control actions are disabled on this node",
+			);
+		}
+
+		const result = await applyUpdate({
+			version: typeof params.version === "string" ? params.version : undefined,
+		});
+		const unit = await currentUnit();
+		const restarting = params.restart !== false && unit !== null;
+
+		if (restarting) {
+			// The response has to reach the hub before systemd takes this process
+			// away, so the restart is scheduled rather than awaited. The binary is
+			// already swapped either way; the delay only decides whether the caller
+			// hears about it.
+			setTimeout(() => void restartUnit(unit!), 750).unref?.();
+		}
+
+		return { from: result.from, to: result.to, unit, restarting };
 	}
 
 	/* ---------- connection lifecycle ---------- */

@@ -8,7 +8,13 @@ import React, {
 import { createRoot } from "react-dom/client";
 import { HubAction } from "../src/proto/messages.ts";
 import type { NodeSummary, Telemetry } from "../src/types.ts";
-import { ago, pct, systemStateTone } from "./format.ts";
+import {
+	ago,
+	pct,
+	systemStateTone,
+	versionState,
+	versionTone,
+} from "./format.ts";
 import {
 	connectHub,
 	type HubConnection,
@@ -68,6 +74,7 @@ function NodeCard({
 	onPin,
 	selected,
 	onSelect,
+	hubVersion,
 }: {
 	node: NodeSummary;
 	history: NodeHistory;
@@ -77,9 +84,12 @@ function NodeCard({
 	onPin: (faceId: string | null) => void;
 	selected: boolean;
 	onSelect: () => void;
+	/** what the hub is running, so a card can say it's behind */
+	hubVersion: string | null;
 }) {
 	const offline = node.status === "offline";
 	const failed = node.systemd?.failed.length ?? 0;
+	const version = versionState(node.version, hubVersion);
 
 	const faces = useMemo(() => facesFor({ node, history }), [node, history]);
 	const face: CardFace | null =
@@ -109,6 +119,18 @@ function NodeCard({
 				<Dot tone={offline ? "crit" : "ok"} title={node.status} />
 				<h2>{node.name}</h2>
 				<DistroChip facts={node.facts} />
+				{version !== "current" && version !== "unknown" && (
+					<Pill
+						tone={versionTone(version)}
+						title={
+							version === "behind"
+								? `running stats ${node.version}, the hub is on ${hubVersion} — update this node`
+								: `running stats ${node.version}, ahead of the hub's ${hubVersion} — update the hub first`
+						}
+					>
+						{node.version}
+					</Pill>
+				)}
 			</header>
 
 			<p className="card-host">
@@ -462,6 +484,12 @@ function App() {
 		[nodes, selectedId],
 	);
 	const offline = nodes.filter((n) => n.status === "offline").length;
+	// Only online nodes count: an offline one's version is whatever it last
+	// reported, and "3 behind" that you can't act on is noise during a rollout.
+	const online = nodes.filter((n) => n.status === "online");
+	const behind = online.filter(
+		(n) => versionState(n.version, hubInfo?.version ?? null) === "behind",
+	).length;
 	const totalCpu = nodes.filter((n) => n.status === "online" && n.cpu != null);
 	const fleetCpu = totalCpu.length
 		? totalCpu.reduce((sum, n) => sum + (n.cpu ?? 0), 0) / totalCpu.length
@@ -480,6 +508,14 @@ function App() {
 					{offline ? ` · ${offline} offline` : ""}
 					{fleetCpu != null ? ` · ${pct(fleetCpu)} avg CPU` : ""}
 				</span>
+				{behind > 0 && (
+					<span
+						className="pill warn"
+						title={`${behind} online node${behind === 1 ? "" : "s"} are not on ${hubInfo?.version} — run 'stats update' there, or update from the node's panel`}
+					>
+						{online.length - behind}/{online.length} up to date
+					</span>
+				)}
 				<div className="spacer" />
 				{alerts.length > 0 && (
 					<details className="alerts">
@@ -562,6 +598,7 @@ function App() {
 						onSelect={() =>
 							setSelectedId(node.id === selectedId ? null : node.id)
 						}
+						hubVersion={hubInfo?.version ?? null}
 					/>
 				))}
 				{!nodes.length && (

@@ -938,6 +938,13 @@ tr:last-child td {
 	border-bottom: none;
 }
 
+/* A declared column can ask for this; numbers read better against a right edge. */
+td.right,
+th.right {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
 .stacked {
 	display: flex;
 	flex-direction: column;

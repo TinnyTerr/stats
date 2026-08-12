@@ -14,7 +14,7 @@
  * the correlation id (that's how terminal I/O travels).
  */
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Header size in bytes: version + type + flags + correlation + length. */
 export const HEADER_SIZE = 12;

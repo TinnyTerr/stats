@@ -29,12 +29,19 @@ export function Meter({
 	label,
 	detail,
 	format = pct,
+	tone,
 }: {
 	value: number | null;
 	label: string;
 	detail?: string;
 	/** how the 0..1 value reads out; temperatures aren't percentages */
 	format?: (value: number | null) => string;
+	/**
+	 * Colour for the fill. Defaults to reading the bar as pressure on a resource,
+	 * which is wrong for any meter where full is the healthy end — those pass
+	 * `readyTone(value)` or a tone of their own.
+	 */
+	tone?: Tone;
 }) {
 	return (
 		<div className="meter">
@@ -44,7 +51,7 @@ export function Meter({
 			</div>
 			<div className="meter-track">
 				<div
-					className={`meter-fill ${usageTone(value)}`}
+					className={`meter-fill ${tone ?? usageTone(value)}`}
 					style={{ width: `${Math.min(100, (value ?? 0) * 100)}%` }}
 				/>
 			</div>
@@ -208,7 +215,8 @@ export function DataTable({
 	children,
 	className,
 }: {
-	columns: string[];
+	/** a caption, or one that says which edge its column reads against */
+	columns: (string | { label: string; align?: "left" | "right" })[];
 	children: React.ReactNode;
 	className?: string;
 }) {
@@ -217,9 +225,20 @@ export function DataTable({
 			<table>
 				<thead>
 					<tr>
-						{columns.map((column) => (
-							<th key={column}>{column}</th>
-						))}
+						{columns.map((column) => {
+							const { label, align } =
+								typeof column === "string"
+									? { label: column, align: "left" }
+									: column;
+							return (
+								<th
+									key={label}
+									className={align === "right" ? "right" : undefined}
+								>
+									{label}
+								</th>
+							);
+						})}
 					</tr>
 				</thead>
 				<tbody>{children}</tbody>

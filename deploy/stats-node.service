@@ -24,6 +24,17 @@
 #     anyway, because through the dashboard you effectively have.
 #
 # Add --no-terminal and/or --no-control to ExecStart to refuse either outright.
+#
+# UPDATES: `stats update` run on this host always works. Letting the *hub* ask
+# this node to update itself needs --allow-remote-update on ExecStart and, as
+# written below, two more things — ProtectSystem=full makes /usr read-only and
+# User=stats doesn't own the binary. To allow it:
+#
+#   ReadWritePaths=/usr/local/bin        (here or in a drop-in)
+#   sudo chown stats /usr/local/bin/stats
+#
+# That means anything compromising the stats user can rewrite a binary root
+# runs. Without it the node refuses cleanly rather than half-updating.
 
 [Unit]
 Description=stats node (telemetry, projects and control for one host)

@@ -34,6 +34,9 @@ needs no inbound rule and no fixed address — only the hub does.
   start/stop/restart/reload from the dashboard.
 - **Docker** — containers grouped by compose project, health and restart counts,
   CPU and memory, start/stop/restart, log tails.
+- **Proxmox** — VMs and containers across a PVE host or cluster, with per-host
+  load and storage. On the hypervisor it uses `pvesh` and needs no credentials;
+  from anywhere else, an API token.
 - **Projects** — a file on each node declares what that host runs; the node
   supervises those processes and reports them as first-class things. See below.
 - **Logs** — live tails from journald, Docker, files, or a supervised process,
@@ -207,8 +210,8 @@ and address changes — and the hub keys everything on it.
 
 ## Modules
 
-Docker, systemd, terminals, processes, ports, logs and projects are modules, not
-built-in special cases. A module owns a slice of the telemetry frame, the
+Docker, systemd, Proxmox, terminals, processes, ports, logs and projects are
+modules, not built-in special cases. A module owns a slice of the telemetry frame, the
 control actions that go with it, the tab it draws in the detail pane, and the
 faces it offers the front of a node card. Turn one off and all four go with it —
 no tab, no actions, no empty section.
@@ -254,6 +257,62 @@ hand over the machine, so a module holding either has to be in the policy's
 trust list — the modules in this repo are, and nothing else is unless you say
 so. Asking for a grant the policy won't give means the module doesn't load at
 all, reported at startup rather than discovered when it first misbehaves.
+
+### Installing a module from a git repository
+
+A module doesn't have to ship in this repo. One git repository with a
+`stats.module.json` at its root is a module, and a node can install it:
+
+```bash
+stats modules install https://git.example.com/you/stats-module-weather
+stats modules install owner/repo --ref v2      # GitHub shorthand, a tag
+stats modules install ./path/to/checkout       # a repository on this machine
+stats modules                                  # what's installed, and at which commit
+stats modules update                           # fast-forward all of them
+stats modules remove weather
+```
+
+They land in `/var/lib/stats/modules` (`~/.local/share/stats/modules` when the
+node doesn't run as root, `STATS_MODULE_DIR` to override), and a node loads them
+on its next start. From then on an installed module is an ordinary one: it can
+be switched off with `--modules -weather`, narrowed away fleet-wide from
+`hub.json`, and it appears in `stats modules` next to the builtins.
+
+Configure one in the node's `agent.json`:
+
+```jsonc
+{
+  "moduleSettings": {
+    "weather": { "cities": ["Bristol", "Leeds"] }
+  }
+}
+```
+
+**Installing a module means running its code on that host.** The grant policy is
+what limits it: an installed module gets the open set and nothing more, so it
+can make HTTP requests but cannot run a command unless you add its id to
+`trustedModules` in the node config. It never gets the supervisor, the terminal
+manager or the log streams — those are builtin territory.
+
+Its dashboard half is a *declaration*, not code. The manifest says which columns
+its tab has and which tiles and meter its card face shows, and the dashboard
+renders that; nothing from the module executes in a browser. The node returns
+matching data every tick:
+
+```ts
+export default {
+  available: (ctx) => true,
+  collect: async (ctx) => ({
+    values: { cities: 2, reporting: 2 },   // scalars the card face reads
+    rows: [{ city: "Bristol", tempC: 14 }],// the tab's table
+    status: "ok",                          // colours the meter, badges the tab
+  }),
+  actions: { "weather.refresh": async (params, ctx) => ({}) },
+};
+```
+
+`examples/stats-module-endpoints/` is a complete, working one — HTTP checks
+against a list of URLs — written to be read.
 
 ## Notion mirror
 
@@ -394,6 +453,13 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `STATS_PROJECTS` | node | `/etc/stats/projects.json`, `/etc/stats/projects.d` |
 | `STATS_LOG_DIRS` | node | `/var/log` |
 | `DOCKER_SOCKET` | node | `/var/run/docker.sock` |
+| `PROXMOX_URL` | node | none (unset means "use pvesh on this host") |
+| `PROXMOX_TOKEN` | node | none |
+| `PROXMOX_INSECURE` | node | `0` |
+| `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
+| `STATS_HOST` | both | `git.tinnyterr.com` (where updates come from) |
+| `STATS_REPO` | both | `tinnyterr/stats` |
+| `STATS_ASSET` | both | detected from arch, libc and AVX2 |
 | `NOTION_TOKEN` | hub | none (only if `hub.json` refers to it) |
 
 ## Building executables
@@ -444,31 +510,100 @@ Every node reports its version, so `/api/nodes` exposes `version` and
 its own. Mismatches are reported, not enforced — payloads are additive, so a
 slightly stale node keeps working.
 
+## Updating
+
+**Update the hub first, then the nodes.** Payloads are additive and nothing
+validates the frame's version byte, so a node one release behind keeps
+reporting — it just has nothing to say about whatever the new release added.
+The other order works too, but an older hub silently drops modules it has never
+heard of, so a new node looks like it lost capabilities.
+
+The dashboard tracks the rollout for you: any online node not on the hub's
+version gets a pill on its card, and the header shows `5/7 up to date` until
+they all are.
+
+Three ways to move a machine, in increasing order of "I would like to stop
+ssh-ing into things":
+
+```bash
+# 1. the installer, re-run — always works, upgrades the binary and restarts
+curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --node
+
+# 2. the binary updating itself
+stats update                 # to the latest release
+stats update --check         # exit 0 up to date, 10 if there's a newer one
+stats update --version v0.4.0 --no-restart
+```
+
+`stats update` does what the installer does — resolves the release, picks the
+build for this CPU (arch, libc, and AVX2 vs baseline), checks it against the
+release's `SHA256SUMS`, proves the new binary runs *before* installing it, then
+swaps it atomically and restarts the unit it's running under. It refuses to
+install anything it can't verify, and it refuses to run from source, where the
+"binary" would be Bun itself.
+
+3. From the dashboard: a node's **overview** tab has *check for updates*, and an
+**update** button when one is waiting. This is off by default — a node has to be
+started with `--allow-remote-update` (or `allowRemoteUpdate: true` in
+`agent.json`, or `STATS_ALLOW_REMOTE_UPDATE=1`) before it will accept one.
+
+The hub can only ask. It cannot say where from: the node resolves the release
+from the forge *it* is configured with and verifies it against that release's
+published checksums, so a compromised hub can at worst ask for an update the
+node was already willing to install.
+
+### Making a hardened node able to update itself
+
+The shipped `stats-node.service` runs as `User=stats` with
+`ProtectSystem=full`, which makes `/usr` read-only — so the node cannot replace
+its own binary, and `update.apply` fails with a clear permission error rather
+than half-swapping anything. That's the safe default. If you want option 3 on a
+non-root node, you have to open exactly that hole:
+
+```ini
+# /etc/systemd/system/stats-node.service.d/update.conf
+[Service]
+ReadWritePaths=/usr/local/bin
+```
+
+```bash
+sudo chown stats /usr/local/bin/stats
+```
+
+Weigh that: it means anything that compromises the `stats` user can rewrite a
+binary root runs. On a node already running as root (the "full control" mode in
+the unit's comments) neither step is needed. If neither appeals, options 1 and 2
+stay available and need no privilege the node didn't already have.
+
 ## Layout
 
 ```
 index.ts                CLI: `hub`, `node`, `check`, `version`
 src/version.ts          release version + wire protocol number
+src/update.ts           resolving, verifying and swapping the binary in place
 src/types.ts            every type that crosses the wire
 src/http.ts             the little HTTP that's left: health, JSON mirror, auth
 src/proto/frame.ts      the binary frame codec
 src/proto/messages.ts   payload shapes and control action names
 src/proto/link.ts       PeerLink: correlation, streams, acks, heartbeats
 src/collect/            system.ts, facts.ts, systemd.ts, docker.ts,
-                        processes.ts, logs.ts
+                        proxmox.ts, processes.ts, logs.ts
 src/agent/agent.ts      the node: dial, telemetry loop, control dispatch
 src/agent/config.ts     node configuration and hub URL normalisation
 src/agent/projects.ts   projects file loading and validation
 src/agent/supervisor.ts runs and watches declared processes
 src/agent/terminal.ts   pty sessions
 src/agent/modules/      the node half of each module
-src/modules/            the manifest all three peers read, and the gated host
+src/modules/            the manifest all three peers read, the gated host, and
+                        the git-backed store for installed modules
+examples/               a complete example module, written to be read
 src/hub/config.ts       hub.json loading
 src/hub/db.ts           SQLite history, events and known nodes
 src/hub/registry.ts     who's connected, and the alerts derived from telemetry
 src/hub/notion.ts       outbound mirror of projects into a Notion database
 src/hub/server.ts       node and browser endpoints, and the relay between them
-web/                    React dashboard (link.ts, panels.tsx, modules.tsx, …)
+web/                    React dashboard (link.ts, panels.tsx, modules.tsx,
+                        external.tsx — the renderer for installed modules)
 schema/                 the projects JSON Schema
 scripts/build.ts        cross-compiles the standalone binaries into dist/
 install.sh              download/verify/install + systemd units, either role

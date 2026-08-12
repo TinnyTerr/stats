@@ -16,6 +16,7 @@ import { logsModule } from "./logs.ts";
 import type { NodeModule, NodeModuleContext, TelemetryParts } from "./mod.ts";
 import { portsModule, processesModule } from "./processes.ts";
 import { projectsModule } from "./projects.ts";
+import { proxmoxModule } from "./proxmox.ts";
 import { systemModule } from "./system.ts";
 import { systemdModule } from "./systemd.ts";
 import { terminalModule } from "./terminal.ts";
@@ -32,6 +33,7 @@ export const BUILTIN_MODULES: NodeModule[] = [
 	projectsModule,
 	dockerModule,
 	systemdModule,
+	proxmoxModule,
 	processesModule,
 	portsModule,
 	logsModule,
@@ -120,8 +122,12 @@ export async function loadModules(
 			if (handler) return handler;
 			// A known action belonging to a module that isn't loaded deserves a
 			// better answer than "no such action" — the caller asked for something
-			// real that this node chose not to offer.
-			const owner = moduleForAction(action);
+			// real that this node chose not to offer. Installed modules aren't in
+			// the builtin table, so their manifests come along too.
+			const owner = moduleForAction(
+				action,
+				modules.map((module) => module.manifest),
+			);
 			if (owner) {
 				throw new RemoteError(
 					"module_disabled",
@@ -140,7 +146,13 @@ export async function loadModules(
 					if (!module.collect) return;
 					const id = module.manifest.id;
 					try {
-						Object.assign(parts, await module.collect(contexts.get(id)!));
+						const slice = await module.collect(contexts.get(id)!);
+						// Every module owns different keys except this one: `extras` is
+						// where installed modules put their reports, so it merges rather
+						// than the last module to finish winning.
+						const { extras, ...rest } = slice;
+						Object.assign(parts, rest);
+						if (extras) parts.extras = { ...parts.extras, ...extras };
 					} catch (err) {
 						// Collectors degrade, never throw the snapshot away.
 						errors[id] = err instanceof Error ? err.message : String(err);

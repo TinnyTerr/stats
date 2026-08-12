@@ -40,3 +40,6 @@ servers.json
 stats.db
 stats.db-shm
 stats.db-wal
+
+# generated declaration files — the .ts sources are the contract
+*.d.ts

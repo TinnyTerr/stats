@@ -5,9 +5,19 @@ import {
 	moduleOn,
 } from "../src/modules/manifest.ts";
 import type { NodeSummary } from "../src/types.ts";
-import { bytes, duration, pct, rate, usageTone } from "./format.ts";
+import { externalUiModules } from "./external.tsx";
+import {
+	bytes,
+	duration,
+	pct,
+	rate,
+	readyTone,
+	systemStateTone,
+	usageTone,
+} from "./format.ts";
 import {
 	ContainersPanel,
+	GuestsPanel,
 	LogsPanel,
 	type LogTarget,
 	OverviewPanel,
@@ -392,6 +402,11 @@ export const UI_MODULES: UiModule[] = [
 							<Meter
 								value={total ? running / total : null}
 								label="Healthy"
+								tone={
+									projects?.degraded
+										? "crit"
+										: readyTone(total ? running / total : null)
+								}
 								detail={`${running} of ${total} projects running`}
 							/>
 							<dl className="facts">
@@ -455,6 +470,11 @@ export const UI_MODULES: UiModule[] = [
 							<Meter
 								value={total ? running / total : null}
 								label="Up"
+								tone={
+									containers?.unhealthy
+										? "crit"
+										: readyTone(total ? running / total : null)
+								}
 								detail={`${running} of ${total} containers`}
 							/>
 							<dl className="facts">
@@ -517,6 +537,14 @@ export const UI_MODULES: UiModule[] = [
 							<Meter
 								value={systemd?.total ? systemd.active / systemd.total : null}
 								label={`systemd ${systemd?.state ?? "unknown"}`}
+								// The bar is the fraction of units that came up, so its colour
+								// is the system's own verdict — `is-system-running` plus the
+								// failed list — not how full the bar is.
+								tone={
+									failed.length
+										? "crit"
+										: systemStateTone(systemd?.state ?? null)
+								}
 								detail={
 									failed.length
 										? failed.slice(0, 2).join(", ")
@@ -535,6 +563,74 @@ export const UI_MODULES: UiModule[] = [
 								<div>
 									<dt>CPU</dt>
 									<dd>{pct(node.cpu)}</dd>
+								</div>
+								<div>
+									<dt>Uptime</dt>
+									<dd>{duration(node.uptimeSec)}</dd>
+								</div>
+							</dl>
+						</>
+					);
+				},
+			},
+		],
+	},
+
+	{
+		id: "proxmox",
+		tab: {
+			id: "guests",
+			label: "guests",
+			render: (props) => <GuestsPanel {...props} />,
+			badge: (node) =>
+				Boolean(node.proxmox?.hosts.some((host) => host.status !== "online")),
+		},
+		faces: [
+			{
+				id: "guests",
+				label: "Guests",
+				module: "proxmox",
+				available: ({ node }) => Boolean(node.proxmox?.available),
+				render: ({ node }) => {
+					const proxmox = node.proxmox;
+					const total = proxmox?.total ?? 0;
+					const running = proxmox?.running ?? 0;
+					const offline =
+						proxmox?.hosts.filter((host) => host.status !== "online") ?? [];
+					return (
+						<>
+							<div className="metrics">
+								<Tile label="Running" value={running} />
+								<Tile label="Stopped" value={proxmox?.stopped ?? 0} />
+								<Tile
+									label="Hosts"
+									value={proxmox?.hosts.length ?? 0}
+									tone={offline.length ? "crit" : undefined}
+									detail={offline.length ? `${offline.length} offline` : ""}
+								/>
+							</div>
+							<Meter
+								value={total ? running / total : null}
+								label={proxmox?.cluster ?? "Proxmox"}
+								tone={
+									offline.length
+										? "crit"
+										: readyTone(total ? running / total : null)
+								}
+								detail={`${running} of ${total} guests running`}
+							/>
+							<dl className="facts">
+								<div>
+									<dt>Version</dt>
+									<dd>{proxmox?.version ?? "—"}</dd>
+								</div>
+								<div>
+									<dt>Templates</dt>
+									<dd>{proxmox?.templates ?? 0}</dd>
+								</div>
+								<div>
+									<dt>Via</dt>
+									<dd>{proxmox?.via ?? "—"}</dd>
 								</div>
 								<div>
 									<dt>Uptime</dt>
@@ -593,11 +689,23 @@ const REGISTRY = [...UI_MODULES].sort(
 	(a, b) => (ORDER.get(a.id) ?? 99) - (ORDER.get(b.id) ?? 99),
 );
 
+/**
+ * The builtins plus whatever this node installed. Installed modules aren't in
+ * the static registry — the browser has never heard of them — so they are built
+ * from the manifests the node announced, and sort after the builtins because
+ * they have no place in the manifest order.
+ */
+function registryFor(node: NodeSummary): UiModule[] {
+	return [...REGISTRY, ...externalUiModules(node)];
+}
+
 /** The tabs this node's modules put in the detail pane. */
 export function tabsFor(node: NodeSummary): ModuleTab[] {
-	return REGISTRY.filter(
-		(module) => module.tab && moduleOn(node.capabilities?.modules, module.id),
-	).map((module) => module.tab!);
+	return registryFor(node)
+		.filter(
+			(module) => module.tab && moduleOn(node.capabilities?.modules, module.id),
+		)
+		.map((module) => module.tab!);
 }
 
 /**
@@ -606,9 +714,8 @@ export function tabsFor(node: NodeSummary): ModuleTab[] {
  * what keeps a card from ever being blank.
  */
 export function facesFor(ctx: FaceContext): CardFace[] {
-	return REGISTRY.filter((module) =>
-		moduleOn(ctx.node.capabilities?.modules, module.id),
-	)
+	return registryFor(ctx.node)
+		.filter((module) => moduleOn(ctx.node.capabilities?.modules, module.id))
 		.flatMap((module) => module.faces ?? [])
 		.filter((face) => face.available(ctx));
 }

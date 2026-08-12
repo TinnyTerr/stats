@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
+import { toModuleManifest } from "../modules/external.ts";
 import {
-	isModuleId,
-	MODULE_IDS,
+	BUILTIN_MODULE_IDS,
+	isBuiltinModuleId,
 	MODULES,
 	type ModuleSet,
 	resolveModules,
 } from "../modules/manifest.ts";
+import { type InstalledModule, installedModules } from "../modules/store.ts";
 import { DEFAULT_SOURCES } from "./projects.ts";
 
 /**
@@ -31,10 +33,20 @@ export interface AgentConfig {
 	modules: ModuleSet;
 	/** allow start/stop/restart of projects, units and containers */
 	control: boolean;
+	/**
+	 * Let the hub ask this node to replace its own binary. Off unless asked for:
+	 * everything else the hub can do is bounded by what's already installed, and
+	 * this one changes what's installed. Absent means off.
+	 */
+	allowRemoteUpdate?: boolean;
 	/** projects files/directories, in load order */
 	projectPaths: string[];
 	/** module ids permitted to hold the privileged exec/pty grants */
 	trustedModules: string[];
+	/** what `stats modules install` put in the store, ready to load */
+	installed?: InstalledModule[];
+	/** per-module configuration, keyed by module id — installed modules only */
+	moduleSettings?: Record<string, Record<string, unknown>>;
 }
 
 const DEFAULT_CONFIG_PATH =
@@ -50,9 +62,11 @@ interface RawAgentConfig {
 	telemetryIntervalMs?: number;
 	terminal?: boolean;
 	control?: boolean;
+	allowRemoteUpdate?: boolean;
 	projects?: string | string[];
 	modules?: Record<string, boolean>;
 	trustedModules?: string[];
+	moduleSettings?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -115,7 +129,11 @@ function envBool(name: string, fallback: boolean): boolean {
  * Mixing the two forms is allowed and means what it looks like: the positive
  * entries are the set, and the negative ones are then removed from it.
  */
-export function parseModuleList(spec: string): Record<string, boolean> {
+export function parseModuleList(
+	spec: string,
+	/** ids of installed modules, which "only these" also has to be able to drop */
+	known: readonly string[] = [],
+): Record<string, boolean> {
 	const entries = spec
 		.split(",")
 		.map((entry) => entry.trim())
@@ -129,7 +147,11 @@ export function parseModuleList(spec: string): Record<string, boolean> {
 	// off are left alone either way — naming one is fine, omitting it isn't a
 	// request to remove it.
 	if (positives.length) {
-		for (const id of MODULE_IDS) if (!MODULES[id].required) modules[id] = false;
+		for (const id of BUILTIN_MODULE_IDS)
+			if (!MODULES[id].required) modules[id] = false;
+		// An installed module isn't in the builtin table, so "only these" has to
+		// switch it off by name or it would survive a list it wasn't on.
+		for (const id of known) modules[id] = false;
 	}
 
 	for (const entry of entries) {
@@ -137,7 +159,7 @@ export function parseModuleList(spec: string): Record<string, boolean> {
 		const id = entry.replace(/^[-!]|^no-/, "");
 		// A required module named positively is a no-op; named negatively it is a
 		// mistake, and resolveModules is where that gets reported.
-		if (!off && isModuleId(id) && MODULES[id].required) continue;
+		if (!off && isBuiltinModuleId(id) && MODULES[id].required) continue;
 		modules[id] = !off;
 	}
 	return modules;
@@ -152,6 +174,7 @@ export interface AgentOverrides {
 	interval?: string;
 	terminal?: boolean;
 	control?: boolean;
+	allowRemoteUpdate?: boolean;
 	projects?: string;
 	config?: string;
 	/** "docker,systemd" or "-terminal"; see parseModuleList */
@@ -193,12 +216,25 @@ export async function loadAgentConfig(
 	const projects =
 		flags.projects ?? process.env.STATS_PROJECTS ?? file.projects;
 
+	// What `stats modules install` left in the store counts as known from here
+	// on: it can be named in --modules, switched off in agent.json, and it gets
+	// the same "unknown module" error for a typo as a builtin does.
+	const installed = await installedModules().catch(() => []);
+	const installedManifests = installed.map((module) =>
+		toModuleManifest(module.manifest),
+	);
+
 	// Three ways to ask for a module set, in the usual precedence. --no-terminal
 	// predates modules and still works: it is the terminal module's switch.
 	const spec = flags.modules ?? process.env.STATS_MODULES;
 	const requested: Record<string, boolean> = {
 		...(file.modules ?? {}),
-		...(spec ? parseModuleList(spec) : {}),
+		...(spec
+			? parseModuleList(
+					spec,
+					installedManifests.map((module) => module.id),
+				)
+			: {}),
 	};
 	const terminal = flags.terminal ?? envBool("STATS_TERMINAL", true);
 	if (flags.terminal !== undefined || process.env.STATS_TERMINAL !== undefined)
@@ -206,7 +242,7 @@ export async function loadAgentConfig(
 	else if (file.terminal !== undefined) requested.terminal ??= file.terminal;
 
 	const moduleErrors: string[] = [];
-	const modules = resolveModules(requested, moduleErrors);
+	const modules = resolveModules(requested, moduleErrors, installedManifests);
 	if (moduleErrors.length) {
 		throw new Error(`invalid modules:\n  - ${moduleErrors.join("\n  - ")}`);
 	}
@@ -233,6 +269,9 @@ export async function loadAgentConfig(
 			: 3000,
 		modules,
 		control: flags.control ?? envBool("STATS_CONTROL", file.control ?? true),
+		allowRemoteUpdate:
+			flags.allowRemoteUpdate ??
+			envBool("STATS_ALLOW_REMOTE_UPDATE", file.allowRemoteUpdate ?? false),
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(
 					Boolean,
@@ -240,6 +279,8 @@ export async function loadAgentConfig(
 			: DEFAULT_SOURCES,
 		// The modules in this repo are the ones trusted with exec and pty; a
 		// module from anywhere else has to be named here to get either.
-		trustedModules: file.trustedModules ?? [...MODULE_IDS],
+		trustedModules: file.trustedModules ?? [...BUILTIN_MODULE_IDS],
+		installed,
+		moduleSettings: file.moduleSettings ?? {},
 	};
 }

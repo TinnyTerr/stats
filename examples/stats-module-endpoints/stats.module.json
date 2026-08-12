@@ -1,0 +1,38 @@
+{
+	"id": "endpoints",
+	"label": "Endpoints",
+	"description": "HTTP checks against a list of URLs, with status and latency.",
+	"version": "1.0.0",
+	"entry": "./node.ts",
+	"grants": ["http"],
+	"actions": ["endpoints.check"],
+	"tab": {
+		"label": "endpoints",
+		"empty": "No endpoints configured — set moduleSettings.endpoints.urls on the node.",
+		"columns": [
+			{ "key": "name", "label": "Endpoint" },
+			{ "key": "state", "label": "State", "format": "state" },
+			{ "key": "status", "label": "Code", "align": "right" },
+			{ "key": "ms", "label": "Latency", "align": "right", "suffix": " ms" },
+			{ "key": "checkedAt", "label": "Checked", "format": "ago" }
+		]
+	},
+	"face": {
+		"label": "Endpoints",
+		"tiles": [
+			{ "label": "Up", "value": "up" },
+			{ "label": "Checked", "value": "total" },
+			{ "label": "Down", "value": "down", "critWhenSet": true }
+		],
+		"meter": {
+			"label": "Reachable",
+			"value": "up",
+			"of": "total",
+			"good": "high"
+		},
+		"facts": [
+			{ "label": "Slowest", "value": "slowest" },
+			{ "label": "Checked", "value": "checkedAt", "format": "ago" }
+		]
+	}
+}

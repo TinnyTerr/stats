@@ -12,7 +12,7 @@ import {
 	type ModulePolicy,
 } from "./host.ts";
 import {
-	MODULE_IDS,
+	BUILTIN_MODULE_IDS,
 	MODULE_LIST,
 	MODULES,
 	type ModuleManifest,
@@ -27,7 +27,7 @@ import {
  * declare.
  */
 
-const policy = defaultPolicy(MODULE_IDS);
+const policy = defaultPolicy(BUILTIN_MODULE_IDS);
 
 function manifest(overrides: Partial<ModuleManifest> = {}): ModuleManifest {
 	return { ...MODULES.docker, ...overrides };
@@ -48,7 +48,9 @@ describe("the manifest", () => {
 
 	test("resolving fills in every id and refuses unknown ones", () => {
 		const resolved = resolveModules({ docker: false });
-		expect(Object.keys(resolved).sort()).toEqual([...MODULE_IDS].sort());
+		expect(Object.keys(resolved).sort()).toEqual(
+			[...BUILTIN_MODULE_IDS].sort(),
+		);
 		expect(resolved.docker).toBe(false);
 		expect(resolved.systemd).toBe(true);
 
@@ -122,7 +124,7 @@ describe("loading", () => {
 	} satisfies Omit<NodeModuleContext, "host">;
 
 	const fake = (
-		id: (typeof MODULE_IDS)[number],
+		id: (typeof BUILTIN_MODULE_IDS)[number],
 		extra: Partial<NodeModule> = {},
 	): NodeModule => ({ manifest: MODULES[id], ...extra });
 

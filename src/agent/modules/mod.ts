@@ -1,3 +1,4 @@
+import type { ModuleReport } from "../../modules/external.ts";
 import type { ModuleHost } from "../../modules/host.ts";
 import type { ModuleManifest } from "../../modules/manifest.ts";
 import type { InboundRequest } from "../../proto/link.ts";
@@ -8,6 +9,8 @@ import type {
 	ListeningPort,
 	ProcessInfo,
 	ProjectStatus,
+	ProxmoxGuest,
+	ProxmoxSummary,
 	SystemdSummary,
 	SystemdUnit,
 	SystemStats,
@@ -45,6 +48,10 @@ export interface TelemetryParts {
 	processes?: ProcessInfo[];
 	ports?: ListeningPort[];
 	projects?: ProjectStatus[];
+	proxmox?: ProxmoxSummary;
+	guests?: ProxmoxGuest[];
+	/** installed modules' reports, keyed by module id — merged, not replaced */
+	extras?: Record<string, ModuleReport>;
 }
 
 export type ModuleActionHandler = (

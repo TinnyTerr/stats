@@ -4,8 +4,18 @@
  * once.
  */
 
+import type {
+	ExternalManifest,
+	ModuleHeadline,
+	ModuleReport,
+} from "./modules/external.ts";
 import type { ModuleSet } from "./modules/manifest.ts";
 
+export type {
+	ExternalManifest,
+	ModuleHeadline,
+	ModuleReport,
+} from "./modules/external.ts";
 export type { ModuleId, ModuleSet } from "./modules/manifest.ts";
 
 /* ---------- host metrics ---------- */
@@ -207,6 +217,79 @@ export interface ListeningPort {
 	process: string | null;
 }
 
+/* ---------- proxmox ---------- */
+
+/** A VM or container, as `/cluster/resources` reports it. */
+export interface ProxmoxGuest {
+	/** qemu is a VM, lxc a container — different enough to show in the table */
+	type: "qemu" | "lxc";
+	vmid: number;
+	name: string;
+	/** the PVE host it currently runs on; HA can move it between ticks */
+	node: string;
+	/** running | stopped | paused | unknown */
+	status: string;
+	/** 0..1 of the guest's own cores, not the host's */
+	cpu: number | null;
+	cores: number | null;
+	memUsed: number | null;
+	memMax: number | null;
+	diskUsed: number | null;
+	diskMax: number | null;
+	uptimeSec: number | null;
+	/** templates are clone sources, not things that run */
+	template: boolean;
+	tags: string[];
+	/** backup, migrate, snapshot… — why an action would be refused right now */
+	lock: string | null;
+	/** HA state when the guest is managed by the cluster's resource manager */
+	haState: string | null;
+}
+
+/** One host in the cluster — or the only one, on a standalone install. */
+export interface ProxmoxHost {
+	node: string;
+	/** online | offline | unknown */
+	status: string;
+	cpu: number | null;
+	cores: number | null;
+	memUsed: number | null;
+	memMax: number | null;
+	diskUsed: number | null;
+	diskMax: number | null;
+	uptimeSec: number | null;
+}
+
+export interface ProxmoxStorage {
+	/** the resource id, e.g. "storage/pve/local-lvm" */
+	id: string;
+	storage: string;
+	node: string;
+	/** dir | lvmthin | zfspool | cephfs | … */
+	type: string;
+	status: string;
+	used: number | null;
+	total: number | null;
+}
+
+/** Enough of a Proxmox install for a headline without opening the guest list. */
+export interface ProxmoxSummary {
+	available: boolean;
+	/** how the node reached it: pvesh on the hypervisor, or the HTTPS API */
+	via: "pvesh" | "api" | null;
+	/** pve-manager version */
+	version: string | null;
+	/** cluster name, null on a standalone host */
+	cluster: string | null;
+	hosts: ProxmoxHost[];
+	storage: ProxmoxStorage[];
+	/** counts exclude templates, which never run and would skew every ratio */
+	total: number;
+	running: number;
+	stopped: number;
+	templates: number;
+}
+
 /* ---------- projects ---------- */
 
 export type RestartPolicy = "always" | "on-failure" | "never";
@@ -353,6 +436,13 @@ export interface NodeCapabilities {
 	modules: ModuleSet;
 	/** start/stop/restart projects, units and containers */
 	control: boolean;
+	/**
+	 * Manifests for the modules this node installed from a git repository. The
+	 * dashboard has no code for these — it draws the tab and the card face from
+	 * what the manifest declares, which is why the declaration travels with the
+	 * capabilities rather than being compiled into the browser bundle.
+	 */
+	externals?: ExternalManifest[];
 }
 
 /** One tick of everything a node reports. */
@@ -368,6 +458,10 @@ export interface Telemetry {
 	units: SystemdUnit[];
 	ports: ListeningPort[];
 	projects: ProjectStatus[];
+	proxmox: ProxmoxSummary;
+	guests: ProxmoxGuest[];
+	/** what each installed module reported this tick, keyed by module id */
+	extras: Record<string, ModuleReport>;
 	/** non-fatal collection errors, keyed by collector name */
 	errors: Record<string, string>;
 }
@@ -481,5 +575,8 @@ export interface NodeSummary {
 	containers: { total: number; running: number; unhealthy: number } | null;
 	systemd: SystemdSummary | null;
 	projects: { total: number; running: number; degraded: number } | null;
+	proxmox: ProxmoxSummary | null;
+	/** installed modules' scalars — the rows stay in telemetry, see ModuleHeadline */
+	extras: Record<string, ModuleHeadline>;
 	collectorErrors: Record<string, string>;
 }

@@ -1,3 +1,4 @@
+import { headline } from "../modules/external.ts";
 import { narrowModules } from "../modules/manifest.ts";
 import type { PeerLink } from "../proto/link.ts";
 import type { HelloPayload } from "../proto/messages.ts";
@@ -188,9 +189,18 @@ export class NodeRegistry {
 	private narrow(capabilities: NodeCapabilities | undefined): NodeCapabilities {
 		// A node old enough to predate modules announces none, and gets none: it
 		// still reports telemetry, it just can't be asked to do anything.
+		const modules = narrowModules(
+			capabilities?.modules ?? {},
+			this.config.modules,
+		);
 		return {
 			control: capabilities?.control ?? false,
-			modules: narrowModules(capabilities?.modules ?? {}, this.config.modules),
+			modules,
+			// A manifest for a module the hub just switched off would put a tab in
+			// the dashboard for something the node will refuse to talk about.
+			externals: (capabilities?.externals ?? []).filter(
+				(external) => modules[external.id] === true,
+			),
 		};
 	}
 
@@ -346,6 +356,9 @@ export class NodeRegistry {
 					}
 				: null,
 			systemd: t?.systemd ?? null,
+			// Only a node that actually reached Proxmox gets a summary; an empty one
+			// would put a guests face on every card in the fleet.
+			proxmox: t?.proxmox?.available ? t.proxmox : null,
 			projects: t
 				? {
 						total: projects.length,
@@ -353,6 +366,14 @@ export class NodeRegistry {
 						degraded: projects.filter((p) => p.summary === "degraded").length,
 					}
 				: null,
+			// Scalars only: a summary goes to every browser on every tick, and the
+			// rows behind an installed module's table ride in telemetry instead.
+			extras: Object.fromEntries(
+				Object.entries(t?.extras ?? {}).map(([id, report]) => [
+					id,
+					headline(report),
+				]),
+			),
 			collectorErrors: t?.errors ?? {},
 		};
 	}

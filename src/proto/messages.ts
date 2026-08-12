@@ -11,16 +11,20 @@
 import type { ModuleSet } from "../modules/manifest.ts";
 import type {
 	Container,
+	ExternalManifest,
 	HostFacts,
 	ListeningPort,
 	LogLine,
 	LogQuery,
+	ModuleReport,
 	NodeCapabilities,
 	NodeIdentity,
 	NodeSummary,
 	ProcessInfo,
 	ProjectSpec,
 	ProjectStatus,
+	ProxmoxGuest,
+	ProxmoxSummary,
 	SystemdSummary,
 	SystemdUnit,
 	SystemdUnitDetail,
@@ -76,6 +80,8 @@ export interface ControlResponse<R = unknown> {
 export const NodeAction = {
 	Snapshot: "snapshot",
 	Modules: "modules",
+	UpdateCheck: "update.check",
+	UpdateApply: "update.apply",
 	FactsRefresh: "facts.refresh",
 	LogsTail: "logs.tail",
 	TerminalOpen: "terminal.open",
@@ -84,6 +90,7 @@ export const NodeAction = {
 	UnitShow: "unit.show",
 	UnitAction: "unit.action",
 	ContainerAction: "container.action",
+	GuestAction: "guest.action",
 	ProjectsList: "projects.list",
 	ProjectsReload: "projects.reload",
 	ProjectAction: "project.action",
@@ -152,6 +159,27 @@ export interface ContainerActionParams extends Partial<NodeScoped> {
 	verb: ContainerVerb;
 }
 
+/**
+ * `stop` cuts the power and `shutdown` asks the guest to go quietly — on a VM
+ * that difference is a filesystem, so both are offered rather than one being
+ * chosen for the operator.
+ */
+export type ProxmoxVerb =
+	| "start"
+	| "stop"
+	| "shutdown"
+	| "reboot"
+	| "suspend"
+	| "resume";
+
+export interface ProxmoxActionParams extends Partial<NodeScoped> {
+	/** the PVE host the guest is on — telemetry says which */
+	node: string;
+	vmid: number;
+	type: "qemu" | "lxc";
+	verb: ProxmoxVerb;
+}
+
 export type ProjectVerb = "start" | "stop" | "restart";
 
 export interface ProjectActionParams extends Partial<NodeScoped> {
@@ -176,6 +204,9 @@ export interface SnapshotResult {
 	processes: ProcessInfo[];
 	ports: ListeningPort[];
 	projects: ProjectStatus[];
+	proxmox: ProxmoxSummary;
+	guests: ProxmoxGuest[];
+	extras: Record<string, ModuleReport>;
 	errors: Record<string, string>;
 }
 
@@ -206,12 +237,48 @@ export interface HubInfoResult {
 	time: number;
 }
 
+/**
+ * Asking a node to update itself.
+ *
+ * There is deliberately no URL here. The node resolves the release from the
+ * forge *it* is configured to trust and checks it against that release's
+ * published checksums, so the worst a compromised hub can do is ask for an
+ * update the node was already willing to install. A node that hasn't opted in
+ * with `allowRemoteUpdate` refuses outright.
+ */
+export interface UpdateApplyParams extends Partial<NodeScoped> {
+	/** a release tag; the node's own idea of "latest" when omitted */
+	version?: string;
+	/** swap the binary but leave the service running the old one */
+	restart?: boolean;
+}
+
+export interface UpdateCheckResult {
+	current: string;
+	latest: string;
+	behind: boolean;
+	/** the build this host would install */
+	asset: string;
+	/** whether this node accepts update.apply at all */
+	allowed: boolean;
+}
+
+export interface UpdateApplyResult {
+	from: string;
+	to: string;
+	/** the unit about to be restarted, null when not running under systemd */
+	unit: string | null;
+	restarting: boolean;
+}
+
 /** What a node reports about its own module set, on request. */
 export interface ModulesResult {
 	modules: ModuleSet;
 	control: boolean;
 	/** why a module isn't loaded: disabled, denied by policy, or unavailable */
 	notes: string[];
+	/** manifests for the ones it installed rather than shipped with */
+	externals?: ExternalManifest[];
 }
 
 /* ---------- what the hub pushes to browsers ---------- */

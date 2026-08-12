@@ -4,7 +4,74 @@ Versions are semver on the repo as a whole — hub and node ship together.
 `protocol` moves separately, only when the wire shape changes in a way an older
 peer can't read. It is also the version byte in every frame.
 
-## Unreleased
+## 0.4.0 — protocol 4
+
+- **Updating, three ways.** Re-running `install.sh` still works and is still
+  the fallback that needs nothing. On top of it:
+
+  `stats update` does the same job from inside the binary — resolves the
+  release, picks the build for this CPU, checks it against the release's
+  `SHA256SUMS`, proves the new binary *runs* before installing it, swaps it
+  atomically and restarts its own unit. `--check` exits 0 when up to date and
+  10 when there's a newer release, so a fleet loop can branch on it. It refuses
+  to install anything it can't verify, and refuses to run from source.
+
+  From the dashboard, a node's overview tab can check for updates and apply
+  one — but only if the node was started with `--allow-remote-update`. The hub
+  can ask; it cannot say where from. The node resolves and verifies the release
+  against the forge *it* trusts, so a compromised hub can at worst ask for an
+  update the node would already have accepted. The shipped hardened unit runs
+  as `User=stats` with `ProtectSystem=full`, so this fails with a clear
+  permission error until an operator deliberately opens it up — see "Updating"
+  in the README.
+
+- **The dashboard tracks a rollout.** Any online node not on the hub's version
+  gets a pill on its card, and the header shows `5/7 up to date` until they all
+  are. A node *ahead* of the hub is called out separately, because that means
+  the upgrade happened in the wrong order.
+
+- **Modules can be installed from a git repository.** A repository with a
+  `stats.module.json` at its root is a module:
+
+  ```bash
+  stats modules install https://git.example.com/you/stats-module-weather
+  stats modules install owner/repo --ref v2
+  stats modules update
+  stats modules remove weather
+  ```
+
+  They live in `/var/lib/stats/modules` (`STATS_MODULE_DIR` overrides), and from
+  the node's point of view an installed module is an ordinary one: same manifest
+  row, same grant check, same `--modules -weather` switch, same fleet-wide
+  narrowing from `hub.json`. `stats modules` lists them with the commit each is
+  running.
+
+  The node half is code and runs on the host, behind the same gate as
+  everything else — the open grants only, unless an operator names the module in
+  `trustedModules`, and never the supervisor, terminals or streams. The browser
+  half is *not* code: the manifest declares a table and a card face and the
+  dashboard renders them, so nothing from a third party executes in a browser.
+  Data rides in `telemetry.extras[id]`, and its scalars in the node summary.
+  `examples/stats-module-endpoints/` is a working one.
+
+- **Proxmox.** VMs and containers across a PVE host or cluster, with per-host
+  CPU, memory and uptime, storage, tags, HA state and locks, and
+  start/shutdown/stop/reboot from the dashboard. On the hypervisor itself it
+  uses `pvesh`, which is already authenticated, so there is nothing to
+  configure; from another node, set `PROXMOX_URL` and `PROXMOX_TOKEN`
+  (and `PROXMOX_INSECURE=1` for PVE's default self-signed certificate).
+
+- **Meters where full is good are no longer red at full.** A card's bar was
+  always coloured as pressure on a resource, which is right for CPU and disk
+  and backwards for "units active", "containers up" and "projects running" —
+  99% of systemd's units running rendered as an alarm. Those three now colour
+  from the thing they actually measure: systemd's own `is-system-running`
+  verdict and failed list, and the unhealthy/degraded counts.
+
+  **Protocol 4**: telemetry carries `proxmox`, `guests` and `extras`, and
+  capabilities carry installed modules' manifests.
+
+## 0.3.0 — protocol 3
 
 - **Modules.** Docker, systemd, terminals, processes, ports, logs and projects
   are no longer wired through the codebase as special cases: each is a module

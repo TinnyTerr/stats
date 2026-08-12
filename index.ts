@@ -16,7 +16,23 @@ import {
 import { loadProjects } from "./src/agent/projects.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
+import { toModuleManifest } from "./src/modules/external.ts";
 import { MODULE_LIST, resolveModules } from "./src/modules/manifest.ts";
+import {
+	installedModules,
+	installModule,
+	isBroken,
+	listModules,
+	moduleStoreDir,
+	removeModule,
+	updateModule,
+} from "./src/modules/store.ts";
+import {
+	applyUpdate,
+	checkForUpdate,
+	currentUnit,
+	restartUnit,
+} from "./src/update.ts";
 import { PROTOCOL, VERSION } from "./src/version.ts";
 
 function flag(name: string): string | undefined {
@@ -49,8 +65,13 @@ Usage:
   ${invocation} node   --hub ws://hub:3000 [--token T] [--id ID] [--name NAME]
                        [--tags a,b] [--interval 3000] [--projects PATH]
                        [--modules docker,systemd | --modules -terminal]
-                       [--no-terminal] [--no-control]
-  ${invocation} modules                      list the modules a node can load
+                       [--no-terminal] [--no-control] [--allow-remote-update]
+  ${invocation} modules                      list builtin and installed modules
+  ${invocation} modules install <repo>       install a module from a git repository
+  ${invocation} modules update [ID]          fast-forward installed modules
+  ${invocation} modules remove ID            uninstall one
+  ${invocation} update [--check] [--version TAG] [--no-restart]
+                       replace this binary with the latest release
   ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
 
@@ -63,11 +84,218 @@ Environment:
   STATS_NODE_NAME     display name (default hostname)
   STATS_PROJECTS      projects file or directory (colon-separated)
   STATS_MODULES       modules to load, e.g. "docker,systemd" or "-terminal"
+  STATS_MODULE_DIR    where installed modules live (default /var/lib/stats/modules
+                      as root, ~/.local/share/stats/modules otherwise)
+  STATS_HOST          forge to check for updates (default git.tinnyterr.com)
+  STATS_REPO          owner/repo for updates (default tinnyterr/stats)
+  STATS_ASSET         force a build, e.g. stats-linux-x64-baseline
   STATS_TERMINAL      set to 0 to refuse terminal sessions
   STATS_CONTROL       set to 0 to refuse start/stop/restart
   STATS_LOG_DIRS      dirs readable via kind=file (default /var/log)
   DOCKER_SOCKET       docker socket path (default /var/run/docker.sock)
+  PROXMOX_URL         PVE API base, e.g. https://pve.lan:8006 (a node running
+                      on the hypervisor uses pvesh and needs none of these)
+  PROXMOX_TOKEN       user@realm!tokenid=uuid, from 'pveum user token add'
+  PROXMOX_INSECURE    set to 1 to accept PVE's default self-signed certificate
 `;
+
+/* ---------- modules ---------- */
+
+function describeBuiltins() {
+	console.log("modules a node can load (--modules to choose):\n");
+	for (const module of MODULE_LIST) {
+		const flags = [
+			module.required ? "required" : null,
+			module.enabledByDefault ? "on by default" : "off by default",
+			module.tab ? `tab '${module.tab}'` : null,
+			`grants ${module.grants.join("+")}`,
+		].filter(Boolean);
+		console.log(`  ${module.id.padEnd(11)} ${module.description}`);
+		console.log(`  ${" ".repeat(11)} ${flags.join(" · ")}`);
+	}
+}
+
+async function describeInstalled() {
+	const store = moduleStoreDir();
+	const modules = await listModules(store);
+	if (!modules.length) {
+		console.log(
+			`\nno modules installed in ${store}\n` +
+				`  ${invocation} modules install <repo>   to add one`,
+		);
+		return;
+	}
+
+	console.log(`\ninstalled in ${store}:\n`);
+	for (const module of modules) {
+		if (isBroken(module)) {
+			console.log(`  ${module.id.padEnd(11)} unusable:`);
+			for (const problem of module.problems) {
+				console.log(`  ${" ".repeat(11)} - ${problem}`);
+			}
+			continue;
+		}
+		const { manifest, record } = module;
+		const flags = [
+			manifest.version ? `v${manifest.version}` : null,
+			manifest.tab ? `tab '${manifest.tab.id ?? manifest.id}'` : null,
+			`grants ${manifest.grants.join("+") || "none"}`,
+			record.commit ? `commit ${record.commit.slice(0, 8)}` : null,
+		].filter(Boolean);
+		console.log(`  ${manifest.id.padEnd(11)} ${manifest.description}`);
+		console.log(`  ${" ".repeat(11)} ${flags.join(" · ")}`);
+		console.log(`  ${" ".repeat(11)} from ${record.source}`);
+	}
+}
+
+const modulesUsage = `Usage:
+  ${invocation} modules                          list builtin and installed modules
+  ${invocation} modules install <repo> [--ref R] [--force]
+  ${invocation} modules update [<id>]
+  ${invocation} modules remove <id>
+
+A module is a git repository with a stats.module.json at its root. <repo> is a
+URL, a git@host:owner/repo address, owner/repo (GitHub), or a path to a
+repository on this machine.`;
+
+async function modulesCommand(sub: string | undefined) {
+	switch (sub) {
+		case undefined:
+		case "list":
+			describeBuiltins();
+			await describeInstalled();
+			break;
+
+		case "install": {
+			const spec = process.argv[4];
+			if (!spec || spec.startsWith("--")) {
+				console.error(`error: no repository given\n\n${modulesUsage}`);
+				process.exit(1);
+			}
+			// Worth saying once, plainly: this is code that will run on this host.
+			console.log(`installing ${spec} — its node-side code runs on this host`);
+			const { module, replaced } = await installModule(spec, {
+				ref: flag("ref"),
+				force: toggle("force") === true,
+			});
+			const { manifest } = module;
+			console.log(
+				`${replaced ? "replaced" : "installed"} '${manifest.id}' (${manifest.label}) in ${module.dir}`,
+			);
+			console.log(`  grants ${manifest.grants.join("+") || "none"}`);
+			if (manifest.actions.length)
+				console.log(`  actions ${manifest.actions.join(", ")}`);
+			const privileged = manifest.grants.filter(
+				(grant) => grant === "exec" || grant === "pty",
+			);
+			if (privileged.length) {
+				console.warn(
+					`  note: this module wants ${privileged.join(" and ")}, which hands it the machine.\n` +
+						`  It will not load until you add '${manifest.id}' to trustedModules in the node config.`,
+				);
+			}
+			console.log("restart the node to load it");
+			break;
+		}
+
+		case "update": {
+			const id = process.argv[4];
+			const targets = id
+				? [id]
+				: (await installedModules()).map((module) => module.manifest.id);
+			if (!targets.length) {
+				console.log("nothing installed to update");
+				break;
+			}
+			for (const target of targets) {
+				const { from, to } = await updateModule(target);
+				console.log(
+					from === to
+						? `${target}: already up to date`
+						: `${target}: ${from?.slice(0, 8) ?? "?"} → ${to?.slice(0, 8) ?? "?"}`,
+				);
+			}
+			console.log("restart the node to pick up the changes");
+			break;
+		}
+
+		case "remove": {
+			const id = process.argv[4];
+			if (!id) {
+				console.error(`error: no module named\n\n${modulesUsage}`);
+				process.exit(1);
+			}
+			console.log(`removed ${await removeModule(id)}`);
+			break;
+		}
+
+		default:
+			console.error(`error: unknown subcommand '${sub}'\n\n${modulesUsage}`);
+			process.exit(1);
+	}
+}
+
+/* ---------- update ---------- */
+
+/**
+ * Exit codes are the point of `--check`: it goes in a loop over a fleet, and
+ * "up to date" and "an update is waiting" have to be distinguishable without
+ * parsing prose.
+ *
+ *   0   up to date (or the update was applied)
+ *   10  an update is available (--check only)
+ *   1   something went wrong
+ */
+async function updateCommand() {
+	const check = toggle("check") === true;
+	const wanted = flag("version");
+	const noRestart = toggle("restart") === false;
+
+	const status = await checkForUpdate();
+	const target = wanted ?? status.latest;
+
+	console.log(
+		`current ${status.current}, ${status.latest} is the latest release`,
+	);
+
+	if (check) {
+		if (status.behind) {
+			console.log(
+				`an update is available: ${status.current} → ${status.latest}`,
+			);
+			process.exit(10);
+		}
+		console.log("up to date");
+		return;
+	}
+
+	if (!wanted && !status.behind) {
+		console.log("nothing to do");
+		return;
+	}
+
+	console.log(`installing ${target} (${status.asset})`);
+	const result = await applyUpdate({ version: wanted });
+	console.log(`${result.from} → ${result.to} at ${result.binary}`);
+
+	if (noRestart) {
+		console.log("left the service alone — restart it to pick this up");
+		return;
+	}
+
+	const unit = await currentUnit();
+	if (!unit) {
+		// Run over ssh rather than from the unit, which is the normal case: there
+		// is no service *here* to restart, and guessing at one would be worse.
+		console.log(
+			"not running under systemd — restart the service to pick this up:\n" +
+				"  systemctl restart stats-node   (or stats-hub)",
+		);
+		return;
+	}
+	console.log(`restarting ${unit}`);
+	await restartUnit(unit);
+}
 
 /**
  * Wrapped in a function rather than run at the top level so the entry point
@@ -82,20 +310,13 @@ async function main(role: string | undefined) {
 			console.log(`stats ${VERSION} (protocol ${PROTOCOL})`);
 			break;
 
-		case "modules": {
-			console.log("modules a node can load (--modules to choose):\n");
-			for (const module of MODULE_LIST) {
-				const flags = [
-					module.required ? "required" : null,
-					module.enabledByDefault ? "on by default" : "off by default",
-					module.tab ? `tab '${module.tab}'` : null,
-					`grants ${module.grants.join("+")}`,
-				].filter(Boolean);
-				console.log(`  ${module.id.padEnd(11)} ${module.description}`);
-				console.log(`  ${" ".repeat(11)} ${flags.join(" · ")}`);
-			}
+		case "modules":
+			await modulesCommand(process.argv[3]);
 			break;
-		}
+
+		case "update":
+			await updateCommand();
+			break;
 
 		case "check": {
 			const paths = flag("projects")?.split(":");
@@ -138,6 +359,7 @@ async function main(role: string | undefined) {
 				modules: flag("modules"),
 				terminal: toggle("terminal"),
 				control: toggle("control"),
+				allowRemoteUpdate: toggle("allow-remote-update"),
 			};
 			const config = await loadAgentConfig(overrides);
 
@@ -196,7 +418,9 @@ async function main(role: string | undefined) {
 
 			if (config.embeddedNode) {
 				// The hub watching its own machine: a node like any other, over
-				// loopback, so there is exactly one code path for collection.
+				// loopback, so there is exactly one code path for collection — which
+				// includes loading whatever this machine has installed.
+				const installed = await installedModules().catch(() => []);
 				const node = startNode({
 					hubUrl: `ws://127.0.0.1:${config.port}/node`,
 					token: config.nodeToken,
@@ -206,17 +430,25 @@ async function main(role: string | undefined) {
 					telemetryIntervalMs: config.telemetryIntervalMs,
 					// The hub's own switches apply, and STATS_MODULES still trims
 					// further — this node is in the hub's process, but it is a node.
-					modules: resolveModules({
-						...config.modules,
-						...(process.env.STATS_MODULES
-							? parseModuleList(process.env.STATS_MODULES)
-							: {}),
-					}),
+					modules: resolveModules(
+						{
+							...config.modules,
+							...(process.env.STATS_MODULES
+								? parseModuleList(
+										process.env.STATS_MODULES,
+										installed.map((module) => module.manifest.id),
+									)
+								: {}),
+						},
+						[],
+						installed.map((module) => toModuleManifest(module.manifest)),
+					),
 					control: true,
 					projectPaths: (process.env.STATS_PROJECTS ?? "./projects.json").split(
 						":",
 					),
 					trustedModules: MODULE_LIST.map((module) => module.id),
+					installed,
 				});
 				process.on("SIGINT", () => void node.stop());
 				process.on("SIGTERM", () => void node.stop());

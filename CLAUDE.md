@@ -21,6 +21,19 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   and `socket` for anyone, `exec` and `pty` for modules in the policy's trust
   list. `src/modules/host.ts` is the enforcement, and it is checked at load —
   a module wanting more than the policy allows doesn't start.
+- **A module can come from a git repository, and then it isn't in the
+  manifest.** `src/modules/store.ts` clones one per directory; the repo's
+  `stats.module.json` becomes an ordinary `ModuleManifest` via
+  `toModuleManifest()` and everything downstream stops being able to tell.
+  `ModuleId` is therefore `string` — `BUILTIN_MODULE_IDS` is the closed set for
+  the code in this repo, and anything iterating "all modules" has to work off
+  the ids a peer actually announced.
+- **An installed module's browser half is a declaration, never code.** The
+  manifest's `tab` and `face` are drawn by the one renderer in
+  `web/external.tsx`; the node's data rides in `telemetry.extras[id]` and its
+  scalars in `NodeSummary.extras[id]`. Rows stay out of summaries — those go to
+  every browser on every tick. A capability that needs a real widget is a
+  builtin in `web/modules.tsx`, not an install.
 - **One protocol, three peers.** `src/proto/` is the whole wire contract:
   `frame.ts` (12-byte header codec), `messages.ts` (payload shapes and control
   action names), `link.ts` (`PeerLink` — correlation ids, streams, acks,
@@ -36,6 +49,12 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   decides which modules it loads and whether it allows control; `hub.json`'s
   `modules` block can turn them off for everyone but can't turn them on.
   `narrowModules()` is the one place that rule is implemented.
+- **The hub can ask a node to update; it can never say where from.**
+  `src/update.ts` resolves the release from the node's own forge and verifies it
+  against that release's `SHA256SUMS`, so `update.apply` carries a version tag
+  at most. It is also off unless the node was started with
+  `--allow-remote-update`. Anything that would let the hub name a URL, a
+  checksum or a file path breaks the one rule this feature rests on.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
   a test asserts the two agree.
@@ -62,12 +81,25 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 - `Bun.file(dir).exists()` is false for directories — stat it instead.
 - `systemd-detect-virt` exits non-zero when the answer is "none", which is
   still an answer.
+- A collector's `collect()` result is `Object.assign`ed into the frame, so two
+  modules writing the same key means the last one to finish wins. `extras` is
+  the exception and is merged — see `loadModules().collect()`.
+- Proxmox's `/cluster/resources` reports templates alongside real guests. The
+  counts exclude them; the list doesn't.
+- `Bun.write(path, response)` never completes for a body the size of a release
+  asset. `src/update.ts` reads the stream and hashes it in the same pass, which
+  it wants to do anyway.
+- The hub's relay times out a one-shot at 30s. `update.apply` is in
+  `SLOW_ACTIONS` because a download isn't a click; a timeout there wouldn't stop
+  the node updating, it would just tell the operator it failed.
 
 ## Commands
 
 ```bash
 bun run hub                                  # hub on :3000
 bun index.ts modules                         # what a node can load
+bun index.ts modules install <repo>          # add one from a git repository
+bun index.ts update --check                  # 0 up to date, 10 if behind
 bun run node -- --hub ws://127.0.0.1:3000    # a node against it
 bun run check                                # validate the projects file
 bun test && bun run typecheck

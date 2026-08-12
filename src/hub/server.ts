@@ -4,6 +4,7 @@ import projectsSchema from "../../schema/projects.schema.json" with {
 };
 import index from "../../web/index.html";
 import { json, requireToken, unauthorized } from "../http.ts";
+import { toModuleManifest } from "../modules/external.ts";
 import { moduleForAction, moduleOn } from "../modules/manifest.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
@@ -13,6 +14,7 @@ import {
 	type HistoryParams,
 	HubAction,
 	type HubInfoResult,
+	NodeAction,
 	type NodeScoped,
 	type WelcomePayload,
 } from "../proto/messages.ts";
@@ -46,6 +48,15 @@ const STREAMING_ACTIONS = new Set(["logs.tail", "terminal.open"]);
 
 /** How long a relayed one-shot may take before the browser gets an error. */
 const RELAY_TIMEOUT_MS = 30_000;
+
+/**
+ * Actions that legitimately outlast a click. Timing out on the browser's side
+ * wouldn't stop a node mid-update — it would just tell the operator it failed
+ * while it carried on, and invite them to press the button again.
+ */
+const SLOW_ACTIONS = new Map<string, number>([
+	[NodeAction.UpdateApply, 10 * 60_000],
+]);
 
 export function startHub(config: HubConfig) {
 	const store = new MetricStore(config.dbPath);
@@ -103,11 +114,14 @@ export function startHub(config: HubConfig) {
 		const link = registry.linkFor(nodeId);
 		// The node would refuse this anyway; refusing it here means a disabled
 		// module costs nothing on the wire and says the same thing every time.
-		const owner = moduleForAction(req.action);
-		if (
-			owner &&
-			!moduleOn(registry.get(nodeId)?.capabilities?.modules, owner)
-		) {
+		const capabilities = registry.get(nodeId)?.capabilities;
+		// The builtin table doesn't know an installed module's actions, so the
+		// node's own manifests are consulted alongside it.
+		const owner = moduleForAction(
+			req.action,
+			(capabilities?.externals ?? []).map(toModuleManifest),
+		);
+		if (owner && !moduleOn(capabilities?.modules, owner)) {
 			throw new RemoteError(
 				"module_disabled",
 				`the '${owner}' module is not enabled on node '${nodeId}'`,
@@ -119,7 +133,7 @@ export function startHub(config: HubConfig) {
 
 		if (!STREAMING_ACTIONS.has(req.action)) {
 			return await link.request(req.action, params, {
-				timeoutMs: RELAY_TIMEOUT_MS,
+				timeoutMs: SLOW_ACTIONS.get(req.action) ?? RELAY_TIMEOUT_MS,
 			});
 		}
 

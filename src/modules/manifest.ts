@@ -12,18 +12,28 @@
  * survived.
  */
 
-export const MODULE_IDS = [
+/** The modules that ship in this repo. Installed ones are ids too — see below. */
+export const BUILTIN_MODULE_IDS = [
 	"system",
 	"projects",
 	"docker",
 	"systemd",
+	"proxmox",
 	"processes",
 	"ports",
 	"logs",
 	"terminal",
 ] as const;
 
-export type ModuleId = (typeof MODULE_IDS)[number];
+export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
+
+/**
+ * A module id is a string, not a union, because a node can install modules from
+ * a git repository (see src/modules/store.ts) and the hub and browser have to
+ * be able to name one they have never heard of. {@link BuiltinModuleId} is the
+ * closed set for the code in this repo.
+ */
+export type ModuleId = string;
 
 /** Which modules a peer has, keyed by id. Absent ids read as off. */
 export type ModuleSet = Partial<Record<ModuleId, boolean>>;
@@ -67,7 +77,7 @@ export interface ModuleManifest {
 	provides: string[];
 }
 
-export const MODULES: Record<ModuleId, ModuleManifest> = {
+export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 	system: {
 		id: "system",
 		label: "System",
@@ -113,6 +123,20 @@ export const MODULES: Record<ModuleId, ModuleManifest> = {
 		actions: ["unit.show", "unit.action"],
 		tab: "services",
 		provides: ["systemd", "units"],
+	},
+	proxmox: {
+		id: "proxmox",
+		label: "Proxmox",
+		description:
+			"VMs and containers from a Proxmox VE host, via pvesh or its API.",
+		required: false,
+		enabledByDefault: true,
+		// `exec` is pvesh on the hypervisor itself; `http` is the API token path for
+		// a node watching a PVE host it isn't running on.
+		grants: ["read", "exec", "http"],
+		actions: ["guest.action"],
+		tab: "guests",
+		provides: ["proxmox", "guests"],
 	},
 	processes: {
 		id: "processes",
@@ -160,7 +184,8 @@ export const MODULES: Record<ModuleId, ModuleManifest> = {
 	},
 };
 
-export const MODULE_LIST: ModuleManifest[] = MODULE_IDS.map(
+/** The builtins, in the order their tabs and faces appear. */
+export const MODULE_LIST: ModuleManifest[] = BUILTIN_MODULE_IDS.map(
 	(id) => MODULES[id],
 );
 
@@ -171,8 +196,21 @@ const OWNER_BY_ACTION = new Map<string, ModuleId>(
 	),
 );
 
-export function moduleForAction(action: string): ModuleId | null {
-	return OWNER_BY_ACTION.get(action) ?? null;
+/**
+ * An installed module's actions aren't in the builtin table, so callers that
+ * might see one — the node's dispatcher, the hub's relay — pass the manifests
+ * they know about alongside.
+ */
+export function moduleForAction(
+	action: string,
+	extra: readonly ModuleManifest[] = [],
+): ModuleId | null {
+	const owner = OWNER_BY_ACTION.get(action);
+	if (owner) return owner;
+	for (const module of extra) {
+		if (module.actions.includes(action)) return module.id;
+	}
+	return null;
 }
 
 /** Reads a module set the way every caller wants to: absent means off. */
@@ -183,8 +221,8 @@ export function moduleOn(
 	return modules?.[id] === true;
 }
 
-export function isModuleId(value: string): value is ModuleId {
-	return (MODULE_IDS as readonly string[]).includes(value);
+export function isBuiltinModuleId(value: string): value is BuiltinModuleId {
+	return (BUILTIN_MODULE_IDS as readonly string[]).includes(value);
 }
 
 /**
@@ -192,23 +230,35 @@ export function isModuleId(value: string): value is ModuleId {
  * reported rather than ignored — a typo in `modules` should not silently mean
  * "the default", which is the failure mode of every feature-flag file ever
  * written.
+ *
+ * `installed` is what a node found in its module store; naming one is as valid
+ * as naming a builtin, and naming something neither is the typo this catches.
  */
 export function resolveModules(
-	requested: Record<string, boolean> | undefined,
+	requested: ModuleSet | undefined,
 	errors: string[] = [],
+	installed: readonly ModuleManifest[] = [],
 ): ModuleSet {
+	const known = new Map<string, ModuleManifest>();
+	for (const module of [...MODULE_LIST, ...installed])
+		known.set(module.id, module);
+
 	const resolved: ModuleSet = {};
-	for (const module of MODULE_LIST)
+	for (const module of known.values())
 		resolved[module.id] = module.enabledByDefault;
 
 	for (const [key, value] of Object.entries(requested ?? {})) {
-		if (!isModuleId(key)) {
+		// A key spread in from another set but never actually set says nothing
+		// either way, and must not read as "on".
+		if (value === undefined) continue;
+		const module = known.get(key);
+		if (!module) {
 			errors.push(
-				`unknown module '${key}' — known modules are ${MODULE_IDS.join(", ")}`,
+				`unknown module '${key}' — known modules are ${[...known.keys()].join(", ")}`,
 			);
 			continue;
 		}
-		if (MODULES[key].required && value === false) {
+		if (module.required && value === false) {
 			errors.push(`module '${key}' is required and cannot be disabled`);
 			continue;
 		}
@@ -224,13 +274,27 @@ export function resolveModules(
  */
 export function narrowModules(node: ModuleSet, hub: ModuleSet): ModuleSet {
 	const narrowed: ModuleSet = {};
-	for (const module of MODULE_LIST) {
-		narrowed[module.id] = moduleOn(node, module.id) && hub[module.id] !== false;
+	// The node's own keys, not the builtin table: a module it installed is one
+	// the hub has never heard of, and narrowing must still be able to switch it
+	// off across the fleet.
+	const ids = new Set([
+		...(BUILTIN_MODULE_IDS as readonly string[]),
+		...Object.keys(node),
+	]);
+	for (const id of ids) {
+		narrowed[id] = moduleOn(node, id) && hub[id] !== false;
 	}
 	return narrowed;
 }
 
-/** The ids that are on, in manifest order — the order tabs and faces appear. */
+/**
+ * The ids that are on, builtins first in manifest order and installed modules
+ * after them — the order tabs and faces appear.
+ */
 export function enabledModules(modules: ModuleSet): ModuleId[] {
-	return MODULE_IDS.filter((id) => moduleOn(modules, id));
+	const builtin = BUILTIN_MODULE_IDS.filter((id) => moduleOn(modules, id));
+	const installed = Object.keys(modules)
+		.filter((id) => moduleOn(modules, id) && !isBuiltinModuleId(id))
+		.sort();
+	return [...builtin, ...installed];
 }

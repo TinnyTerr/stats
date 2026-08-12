@@ -1,12 +1,19 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { moduleOn } from "../src/modules/manifest.ts";
-import { HubAction, NodeAction } from "../src/proto/messages.ts";
+import {
+	HubAction,
+	NodeAction,
+	type ProxmoxVerb,
+	type UpdateApplyResult,
+	type UpdateCheckResult,
+} from "../src/proto/messages.ts";
 import type {
 	Container,
 	LogLine,
 	NodeSummary,
 	ProjectStatus,
+	ProxmoxGuest,
 	SystemdUnit,
 	SystemdUnitDetail,
 	Telemetry,
@@ -24,6 +31,7 @@ import {
 	rate,
 	systemdTime,
 	systemStateTone,
+	type Tone,
 	unitTone,
 	virtualization,
 } from "./format.ts";
@@ -55,6 +63,125 @@ export interface PanelProps {
 export interface LogTarget {
 	kind: "docker" | "journal" | "file" | "project";
 	target: string;
+}
+
+/* ---------- updates ---------- */
+
+/**
+ * What version a node is on, and — if it opted in — a button to move it.
+ *
+ * The check is on demand rather than on every telemetry tick: it costs the node
+ * an HTTPS request to its forge, and a fleet of fifty asking every three
+ * seconds would be a small denial of service against whoever hosts the
+ * releases.
+ */
+function UpdatePanel({ node, hub }: { node: NodeSummary; hub: HubConnection }) {
+	const [status, setStatus] = useState<UpdateCheckResult | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [applied, setApplied] = useState<UpdateApplyResult | null>(null);
+
+	// A node that dropped out mid-update is the expected case, not a failure:
+	// the restart takes the socket with it.
+	const offline = node.status === "offline";
+
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>Version</h4>
+				<Pill tone={status?.behind ? "warn" : "idle"}>
+					{node.version ? `stats ${node.version}` : "unknown"}
+				</Pill>
+			</header>
+
+			<div className="toolbar">
+				<ActionButton
+					disabled={offline}
+					onAction={async () => {
+						setError(null);
+						setApplied(null);
+						try {
+							setStatus(
+								(await hub.request(NodeAction.UpdateCheck, {
+									nodeId: node.id,
+								})) as UpdateCheckResult,
+							);
+						} catch (err) {
+							setError(err instanceof Error ? err.message : String(err));
+							throw err;
+						}
+					}}
+				>
+					check for updates
+				</ActionButton>
+
+				{status?.behind && status.allowed && (
+					<ActionButton
+						danger
+						disabled={offline}
+						title={`download ${status.latest}, verify it, and restart the service`}
+						onAction={async () => {
+							setError(null);
+							try {
+								setApplied(
+									(await hub.request(NodeAction.UpdateApply, {
+										nodeId: node.id,
+									})) as UpdateApplyResult,
+								);
+							} catch (err) {
+								setError(err instanceof Error ? err.message : String(err));
+								throw err;
+							}
+						}}
+					>
+						update to {status.latest}
+					</ActionButton>
+				)}
+			</div>
+
+			{status && !applied && (
+				<dl className="facts">
+					<div>
+						<dt>Running</dt>
+						<dd>{status.current}</dd>
+					</div>
+					<div>
+						<dt>Latest</dt>
+						<dd>{status.latest}</dd>
+					</div>
+					<div>
+						<dt>Build</dt>
+						<dd className="mono">{status.asset}</dd>
+					</div>
+					<div>
+						<dt>Remote update</dt>
+						<dd>{status.allowed ? "allowed" : "refused"}</dd>
+					</div>
+				</dl>
+			)}
+
+			{status && !status.behind && !applied && (
+				<p className="dim">Up to date.</p>
+			)}
+
+			{status?.behind && !status.allowed && !applied && (
+				<p className="dim">
+					This node refuses remote updates. Run <code>stats update</code> on the
+					host, or start it with <code>--allow-remote-update</code>.
+				</p>
+			)}
+
+			{applied && (
+				<p className="dim">
+					{applied.from} → {applied.to}.{" "}
+					{applied.restarting
+						? `Restarting ${applied.unit} — it will reconnect in a few seconds.`
+						: "Restart the service to pick it up."}
+				</p>
+			)}
+
+			{error && <ErrorNote>{error}</ErrorNote>}
+		</section>
+	);
 }
 
 /* ---------- overview ---------- */
@@ -159,6 +286,8 @@ export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
 					<Stat label="Address" value={node.remoteAddress ?? "—"} />
 				</dl>
 			</section>
+
+			<UpdatePanel node={node} hub={hub} />
 
 			{systemd?.available && (
 				<section className="panel">
@@ -714,6 +843,227 @@ export function ContainersPanel({ node, telemetry, hub, go }: PanelProps) {
 					</DataTable>
 				</section>
 			))}
+		</div>
+	);
+}
+
+/* ---------- proxmox guests ---------- */
+
+/** Running is the only green state; a lock means "ask again in a minute". */
+function guestTone(guest: ProxmoxGuest): Tone {
+	if (guest.template) return "idle";
+	if (guest.lock) return "warn";
+	switch (guest.status) {
+		case "running":
+			return "ok";
+		case "paused":
+			return "warn";
+		case "unknown":
+			return "crit";
+		default:
+			return "idle";
+	}
+}
+
+export function GuestsPanel({ node, telemetry, hub, go }: PanelProps) {
+	const guests = telemetry?.guests ?? [];
+	const proxmox = telemetry?.proxmox ?? node.proxmox;
+	const canControl = node.capabilities?.control ?? false;
+	const [filter, setFilter] = useState("");
+
+	if (!guests.length) {
+		return (
+			<Empty>
+				{moduleOn(node.capabilities?.modules, "proxmox")
+					? "No guests reported by this Proxmox host."
+					: "The proxmox module isn't loaded on this node."}
+			</Empty>
+		);
+	}
+
+	const needle = filter.trim().toLowerCase();
+	const shown = needle
+		? guests.filter(
+				(guest) =>
+					guest.name.toLowerCase().includes(needle) ||
+					String(guest.vmid).includes(needle) ||
+					guest.tags.some((tag) => tag.toLowerCase().includes(needle)),
+			)
+		: guests;
+
+	const act = (guest: ProxmoxGuest, verb: ProxmoxVerb) =>
+		hub.request(NodeAction.GuestAction, {
+			nodeId: node.id,
+			node: guest.node,
+			vmid: guest.vmid,
+			type: guest.type,
+			verb,
+		});
+
+	// One table per PVE host: on a cluster that grouping is the first thing you
+	// want, and on a standalone install it costs one header.
+	const byHost = new Map<string, ProxmoxGuest[]>();
+	for (const guest of shown) {
+		const key = guest.node || "unknown";
+		if (!byHost.has(key)) byHost.set(key, []);
+		byHost.get(key)!.push(guest);
+	}
+
+	return (
+		<div className="stack">
+			<div className="toolbar">
+				<input
+					placeholder="filter by name, vmid or tag…"
+					value={filter}
+					onChange={(event) => setFilter(event.target.value)}
+				/>
+				<span className="dim">
+					{proxmox?.running ?? 0}/{proxmox?.total ?? 0} running
+					{proxmox?.cluster ? ` · cluster ${proxmox.cluster}` : ""}
+					{proxmox?.version ? ` · pve ${proxmox.version}` : ""}
+				</span>
+			</div>
+
+			{[...byHost].map(([host, group]) => {
+				const stats = proxmox?.hosts.find((entry) => entry.node === host);
+				return (
+					<section key={host} className="panel">
+						<header className="panel-head">
+							<h4>
+								<Dot tone={stats?.status === "online" ? "ok" : "idle"} />
+								{host}
+							</h4>
+							<span className="dim">
+								{stats
+									? `${pct(stats.cpu)} cpu · ${bytes(stats.memUsed)} of ${bytes(
+											stats.memMax,
+										)} · up ${duration(stats.uptimeSec)}`
+									: `${group.length} guest(s)`}
+							</span>
+						</header>
+						<DataTable
+							columns={["Guest", "Type", "Status", "CPU", "Memory", "Disk", ""]}
+						>
+							{group.map((guest) => (
+								<tr key={`${guest.node}/${guest.type}/${guest.vmid}`}>
+									<td>
+										<Dot tone={guestTone(guest)} />
+										<span className="mono dim">{guest.vmid}</span> {guest.name}
+										{guest.tags.map((tag) => (
+											<Pill key={tag}>{tag}</Pill>
+										))}
+									</td>
+									<td className="dim">{guest.type === "lxc" ? "LXC" : "VM"}</td>
+									<td>
+										{guest.template ? "template" : guest.status}
+										{guest.lock && <Pill tone="warn">{guest.lock}</Pill>}
+										{guest.haState && guest.haState !== "started" && (
+											<Pill tone="info">ha {guest.haState}</Pill>
+										)}
+										{guest.uptimeSec ? (
+											<span className="dim">
+												{" "}
+												· up {duration(guest.uptimeSec)}
+											</span>
+										) : null}
+									</td>
+									<td>{pct(guest.cpu)}</td>
+									<td>
+										{guest.memMax
+											? `${bytes(guest.memUsed)} / ${bytes(guest.memMax)}`
+											: "—"}
+									</td>
+									<td>
+										{guest.diskMax
+											? `${bytes(guest.diskUsed)} / ${bytes(guest.diskMax)}`
+											: "—"}
+									</td>
+									<td className="row-actions">
+										{guest.template ? (
+											<span className="dim">—</span>
+										) : (
+											<>
+												<ActionButton
+													disabled={!canControl || guest.status !== "running"}
+													title="reboot"
+													onAction={() => act(guest, "reboot")}
+												>
+													↻
+												</ActionButton>
+												<ActionButton
+													disabled={!canControl || guest.status !== "running"}
+													title="shut down from inside the guest"
+													onAction={() => act(guest, "shutdown")}
+												>
+													⏻
+												</ActionButton>
+												<ActionButton
+													danger
+													disabled={!canControl || guest.status !== "running"}
+													title="stop — pulls the power"
+													onAction={() => act(guest, "stop")}
+												>
+													■
+												</ActionButton>
+												<ActionButton
+													disabled={!canControl || guest.status === "running"}
+													title="start"
+													onAction={() => act(guest, "start")}
+												>
+													▶
+												</ActionButton>
+											</>
+										)}
+										{guest.type === "lxc" && (
+											<button
+												type="button"
+												className="action"
+												onClick={() =>
+													go("logs", {
+														kind: "journal",
+														target: `pve-container@${guest.vmid}.service`,
+													})
+												}
+											>
+												logs
+											</button>
+										)}
+									</td>
+								</tr>
+							))}
+						</DataTable>
+					</section>
+				);
+			})}
+
+			{proxmox?.storage.length ? (
+				<section className="panel">
+					<header className="panel-head">
+						<h4>Storage</h4>
+					</header>
+					<DataTable columns={["Storage", "Node", "Type", "Used", "Status"]}>
+						{proxmox.storage.map((store) => (
+							<tr key={store.id}>
+								<td>{store.storage}</td>
+								<td className="dim">{store.node}</td>
+								<td className="dim">{store.type}</td>
+								<td>
+									{store.total
+										? `${bytes(store.used)} / ${bytes(store.total)} (${pct(
+												(store.used ?? 0) / store.total,
+											)})`
+										: "—"}
+								</td>
+								<td>
+									<Pill tone={store.status === "available" ? "ok" : "idle"}>
+										{store.status}
+									</Pill>
+								</td>
+							</tr>
+						))}
+					</DataTable>
+				</section>
+			) : null}
 		</div>
 	);
 }

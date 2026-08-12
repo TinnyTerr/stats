@@ -3,7 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startNode } from "../agent/agent.ts";
-import { MODULE_IDS, moduleOn, resolveModules } from "../modules/manifest.ts";
+import {
+	BUILTIN_MODULE_IDS,
+	moduleOn,
+	resolveModules,
+} from "../modules/manifest.ts";
 import { COMPRESS_THRESHOLD, Flags, MessageType } from "../proto/frame.ts";
 import { PeerLink } from "../proto/link.ts";
 import { HubAction, NodeAction } from "../proto/messages.ts";
@@ -435,7 +439,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: true }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -515,7 +519,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -572,7 +576,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -607,7 +611,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: true }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -693,7 +697,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -753,7 +757,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -785,6 +789,39 @@ describe("hub and node over a websocket", () => {
 		}
 	}, 30_000);
 
+	test("a node refuses a hub-driven update unless it opted in", async () => {
+		const h = await harness();
+		const node = startNode({
+			hubUrl: `ws://127.0.0.1:${h.port}/node`,
+			token: null,
+			id: "unwilling",
+			name: "Unwilling",
+			tags: [],
+			telemetryIntervalMs: 2000,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...BUILTIN_MODULE_IDS],
+			control: true,
+			// allowRemoteUpdate not set: the default has to be "no".
+			projectPaths: [join(h.dir, "nothing.json")],
+		});
+
+		let ui: PeerLink | null = null;
+		try {
+			await node.connected;
+			ui = await browser(h.port);
+
+			// Control being on is not enough — replacing the binary is its own
+			// decision, and one the node makes rather than the hub.
+			expect(
+				ui.request(NodeAction.UpdateApply, { nodeId: "unwilling" }),
+			).rejects.toThrow(/does not accept remote updates/);
+		} finally {
+			ui?.close();
+			await node.stop();
+			await h.stop();
+		}
+	}, 30_000);
+
 	test("the hub rejects a node with the wrong token", async () => {
 		const h = await harness({ nodeToken: "correct-horse" });
 		const rejections: string[] = [];
@@ -799,7 +836,7 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...MODULE_IDS],
+			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
