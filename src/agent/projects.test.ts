@@ -447,6 +447,62 @@ describe("supervisor", () => {
 		}
 	});
 
+	test("a finished one-shot doesn't degrade a project that's otherwise up", async () => {
+		const { supervisor } = await withProjects({
+			projects: [
+				{
+					id: "demo",
+					processes: [
+						{ id: "server", command: ["sleep", "30"], restart: "on-failure" },
+						{ id: "build", command: ["true"], restart: "never" },
+					],
+				},
+			],
+		});
+
+		try {
+			await supervisor.load();
+			await eventually(
+				async () =>
+					(await supervisor.status())[0]!.processes[1]!.state === "exited",
+			);
+
+			const [project] = await supervisor.status();
+			expect(project!.processes[0]!.state).toBe("running");
+			expect(project!.summary).toBe("running");
+		} finally {
+			await supervisor.shutdown();
+		}
+	});
+
+	test("a failure nothing will retry is fatal, not a lingering crash", async () => {
+		const { supervisor } = await withProjects({
+			projects: [
+				{
+					id: "demo",
+					processes: [{ id: "build", command: ["false"], restart: "never" }],
+				},
+			],
+		});
+
+		try {
+			await supervisor.load();
+			await eventually(
+				async () =>
+					(await supervisor.status())[0]!.processes[0]!.state === "fatal",
+			);
+
+			const [project] = await supervisor.status();
+			const proc = project!.processes[0]!;
+			expect(proc.lastExitCode).toBe(1);
+			expect(proc.restarts).toBe(0);
+			expect(proc.error).toMatch(/restart policy: never/);
+			expect(project!.summary).toBe("degraded");
+		} finally {
+			await supervisor.shutdown();
+		}
+	});
+
 	test("a tcp healthcheck turns running into healthy", async () => {
 		const server = Bun.serve({ port: 0, fetch: () => new Response("ok") });
 		const { supervisor } = await withProjects({

@@ -313,7 +313,12 @@ class ManagedProcess {
 		const shouldRestart =
 			policy === "always" || (policy === "on-failure" && failed);
 		if (!shouldRestart) {
-			this.onChange();
+			// Nothing is going to retry this. A failure the supervisor has given up
+			// on is "fatal" whether it ran out of restarts or never had any — the
+			// project summary keys off that, so "crashed" stays a transient state
+			// between an exit and the restart that follows it.
+			if (failed) this.fail(`${how}, restart policy: ${policy}`);
+			else this.onChange();
 			return;
 		}
 
@@ -746,19 +751,15 @@ export class Supervisor {
 
 			const running = processes.filter((p) => p.state === "running").length;
 			const unhealthy = processes.some((p) => p.health === "unhealthy");
-			const broken = processes.some(
-				(p) => p.state === "crashed" || p.state === "fatal",
-			);
+			// Only a failure nothing will retry counts. A process that is merely not
+			// running is not a fault: one-shots exit, and a project may deliberately
+			// run some of its processes some of the time.
+			const broken = processes.some((p) => p.state === "fatal");
 
 			let summary: ProjectStatus["summary"];
 			if (!processes.length) summary = "empty";
-			else if (
-				broken ||
-				unhealthy ||
-				(running > 0 && running < processes.length)
-			)
-				summary = "degraded";
-			else if (running === processes.length) summary = "running";
+			else if (broken || unhealthy) summary = "degraded";
+			else if (running > 0) summary = "running";
 			else summary = "stopped";
 
 			return {
