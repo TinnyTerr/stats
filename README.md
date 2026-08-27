@@ -229,14 +229,76 @@ or in `/etc/stats/agent.json`:
 { "modules": { "terminal": false, "docker": true } }
 ```
 
-`system` is required — a card with no CPU or memory on it isn't a dashboard —
-and everything else defaults to on. A module whose host can't serve it (no
-docker socket, no systemd) drops itself at startup and says so in the node's
-log, so the dashboard hides it rather than showing an empty tab.
+Everything is a module, `system` included. A node's own report is its hostname
+and its addresses; CPU, memory, disks and host facts come from `system` like
+anything else comes from its module. A node that loads nothing still connects
+and still appears in the fleet — which is what makes bringing up a new platform
+additive rather than all-or-nothing.
 
-The hub narrows, never widens. `modules` in `hub.json` can switch something off
-across the whole fleet, but a hub cannot hand a node a module the node didn't
-load.
+A module whose host can't serve it (no docker socket, no systemd) drops itself
+at startup and says so in the node's log, so the dashboard hides it rather than
+showing an empty tab.
+
+### Platforms
+
+A module declares which hosts it runs on, the way `package.json` declares `os`:
+
+```bash
+stats modules      # the table, with a [not on this platform] marker
+```
+
+| Module | Runs on |
+| --- | --- |
+| `system` | Linux, macOS, Windows — one probe per platform |
+| `projects`, `logs`, `proxmox` | any platform |
+| `docker`, `processes`, `ports` | Linux, macOS |
+| `systemd` | Linux |
+| `terminal` | Linux, macOS, Windows |
+
+An empty list means portable, which is the default and the honest answer for a
+module made of HTTP calls. The loader drops anything that doesn't name the host
+it woke up on, before asking the module anything.
+
+Only the Linux probe for `system` is implemented today; macOS and Windows are
+declared stubs that report unavailable, so a node on either connects, shows its
+hostname and addresses, and runs its portable modules with the system card
+absent. `src/collect/probe.ts` is the seam and `src/collect/platform/` is where
+a new one goes.
+
+### Managing modules from the hub
+
+The dashboard's **modules** page lists every node beside every module it could
+run, and lets you set the hub's intent per node. The page deliberately keeps two
+things apart:
+
+| State | Means |
+| --- | --- |
+| `on` | the node is running it |
+| `off` | nothing asked for it |
+| `pending` | the hub asked; the node applies it the next time it connects |
+| `refused` | the hub asked, but that node won't take module direction |
+| `n/a` | the module doesn't run on that node's platform |
+| `blocked` | `hub.json` has it off for the whole fleet |
+
+Intent is stored on the hub and survives a node being offline when it was set —
+the node picks it up on its next connection without anyone touching it.
+
+**Narrowing always works; widening depends on who the node is.** The hub can
+take a module away from any node. Turning one *on* is the hub reaching into a
+machine, so it needs `--allow-hub-modules` — which **a node running as root
+defaults to on**, because a root node has already handed the machine over and
+the hub is the source of truth for what it should be running. A node running as
+anyone else has it off until asked, answers "no", and the page shows `refused`
+rather than pretending it worked.
+
+```bash
+stats node --hub … --allow-hub-modules     # let a non-root node take additions
+STATS_ALLOW_HUB_MODULES=1 stats node …     # same, from the environment
+STATS_ALLOW_HUB_MODULES=0 stats node …     # refuse them even as root
+```
+
+`modules` in `hub.json` stays fleet-wide and stays subtractive: it beats
+per-node intent in both directions, and no node can turn one back on.
 
 ### What a module may touch
 
@@ -257,6 +319,17 @@ hand over the machine, so a module holding either has to be in the policy's
 trust list — the modules in this repo are, and nothing else is unless you say
 so. Asking for a grant the policy won't give means the module doesn't load at
 all, reported at startup rather than discovered when it first misbehaves.
+
+**All of which stops applying when the node runs as root.** A root node's policy
+is unrestricted: every grant is held, every path readable, every socket and host
+reachable, and the trust list goes unread. This is not a shortcut, it is the
+honest version — a module denied `exec` inside a root process is one `Bun.spawn`
+away from having it, so the refusal bought nothing and cost you an evening
+working out why your module wouldn't load. The confinement that does the work is
+*who can run the node as root* and *who can reach the hub*. The grants stay in
+the manifest either way: `stats modules install` prints them and the module page
+shows them, so you can still see what a module says it touches before you
+install it.
 
 ### Installing a module from a git repository
 
@@ -288,11 +361,14 @@ Configure one in the node's `agent.json`:
 }
 ```
 
-**Installing a module means running its code on that host.** The grant policy is
-what limits it: an installed module gets the open set and nothing more, so it
-can make HTTP requests but cannot run a command unless you add its id to
-`trustedModules` in the node config. It never gets the supervisor, the terminal
-manager or the log streams — those are builtin territory.
+**Installing a module means running its code on that host.** On an unprivileged
+node the grant policy is what limits it: it gets the open set and nothing more,
+so it can make HTTP requests but cannot run a command unless you add its id to
+`trustedModules` in the node config. **On a root node it gets everything it
+asked for and everything it didn't** — read the manifest before you install it,
+and treat installing on a root node as what it is: running someone else's code
+as root. Either way it never gets the supervisor, the terminal manager or the
+log streams — those are builtin territory.
 
 Its dashboard half is a *declaration*, not code. The manifest says which columns
 its tab has and which tiles and meter its card face shows, and the dashboard
@@ -310,6 +386,29 @@ export default {
   actions: { "weather.refresh": async (params, ctx) => ({}) },
 };
 ```
+
+An installed module declares its platforms the same way a builtin does, and can
+ship one entry per platform when it needs to:
+
+```jsonc
+{
+  "id": "weather",
+  "entry": "./node.ts",              // one file, portable
+  "platforms": []                    // ...which is also the default
+}
+```
+
+```jsonc
+{
+  "id": "eventlog",
+  "entry": { "win32": "./windows.ts", "linux": "./journal.ts" },
+  // omitted: a map with no "default" declares its platforms on its own
+}
+```
+
+A `default` key catches everything the map didn't name. Declaring a platform you
+ship no entry for is refused at install time rather than at start-up on the one
+host it mattered on.
 
 `examples/stats-module-endpoints/` is a complete, working one — HTTP checks
 against a list of URLs — written to be read.
@@ -426,10 +525,14 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 - **Set `nodeToken`.** Without one, any host that can reach the hub can
   register as a node and appear on your dashboard. Set
   `allowUnknownNodes: false` to accept only ids you've listed.
-- Terminals and supervised processes run as the user the node runs as. The
-  packaged unit uses an unprivileged `stats` user; running it as root is what
-  makes `user:` in projects and unit control work, and is equivalent to handing
-  out a root shell. Choose deliberately.
+- **Terminals and supervised processes run as the user the node runs as, and
+  the packaged node unit runs as root.** That is what makes `user:` in projects,
+  unit control and unrestricted modules work, and it is equivalent to handing
+  out a root shell to whoever can reach the dashboard. A root node also takes
+  module changes and update requests from the hub by default. Install with
+  `--user stats` for the sandboxed, least-privilege node instead — modules keep
+  the grant policy and both hub-directed switches go back to off. Choose
+  deliberately.
 - Traffic is plain WebSocket. Run it over a private network (Tailscale,
   WireGuard, LAN) or put a TLS proxy in front and point nodes at `wss://`.
 - The `file` log source is allowlisted to `STATS_LOG_DIRS` (default `/var/log`)
@@ -457,6 +560,7 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `PROXMOX_TOKEN` | node | none |
 | `PROXMOX_INSECURE` | node | `0` |
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
+| `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
 | `STATS_HOST` | both | `git.tinnyterr.com` (where updates come from) |
 | `STATS_REPO` | both | `tinnyterr/stats` |
 | `STATS_ASSET` | both | detected from arch, libc and AVX2 |
@@ -543,9 +647,10 @@ install anything it can't verify, and it refuses to run from source, where the
 "binary" would be Bun itself.
 
 3. From the dashboard: a node's **overview** tab has *check for updates*, and an
-**update** button when one is waiting. This is off by default — a node has to be
-started with `--allow-remote-update` (or `allowRemoteUpdate: true` in
-`agent.json`, or `STATS_ALLOW_REMOTE_UPDATE=1`) before it will accept one.
+**update** button when one is waiting. A node running as root accepts these by
+default; any other node has to be started with `--allow-remote-update` (or
+`allowRemoteUpdate: true` in `agent.json`, or `STATS_ALLOW_REMOTE_UPDATE=1`)
+first. Setting any of those to false refuses them on a root node too.
 
 The hub can only ask. It cannot say where from: the node resolves the release
 from the forge *it* is configured with and verifies it against that release's
@@ -554,11 +659,11 @@ node was already willing to install.
 
 ### Making a hardened node able to update itself
 
-The shipped `stats-node.service` runs as `User=stats` with
-`ProtectSystem=full`, which makes `/usr` read-only — so the node cannot replace
-its own binary, and `update.apply` fails with a clear permission error rather
-than half-swapping anything. That's the safe default. If you want option 3 on a
-non-root node, you have to open exactly that hole:
+The root unit replaces its own binary without any of this. But a node installed
+with `--user stats` runs with `ProtectSystem=full`, which makes `/usr`
+read-only — so it cannot replace its own binary, and `update.apply` fails with a
+clear permission error rather than half-swapping anything. If you want option 3
+on such a node, you have to open exactly that hole:
 
 ```ini
 # /etc/systemd/system/stats-node.service.d/update.conf
@@ -571,9 +676,8 @@ sudo chown stats /usr/local/bin/stats
 ```
 
 Weigh that: it means anything that compromises the `stats` user can rewrite a
-binary root runs. On a node already running as root (the "full control" mode in
-the unit's comments) neither step is needed. If neither appeals, options 1 and 2
-stay available and need no privilege the node didn't already have.
+binary root runs. If it doesn't appeal, options 1 and 2 stay available and need
+no privilege the node didn't already have.
 
 ## Layout
 
@@ -586,9 +690,12 @@ src/http.ts             the little HTTP that's left: health, JSON mirror, auth
 src/proto/frame.ts      the binary frame codec
 src/proto/messages.ts   payload shapes and control action names
 src/proto/link.ts       PeerLink: correlation, streams, acks, heartbeats
-src/collect/            system.ts, facts.ts, systemd.ts, docker.ts,
-                        proxmox.ts, processes.ts, logs.ts
+src/collect/            system.ts, facts.ts (the Linux probe's collectors),
+                        systemd.ts, docker.ts, proxmox.ts, processes.ts, logs.ts
+src/collect/probe.ts    the per-platform seam under the `system` module
+src/collect/platform/   linux.ts (real), darwin.ts and win32.ts (declared stubs)
 src/agent/agent.ts      the node: dial, telemetry loop, control dispatch
+src/agent/identity.ts   hostname and addresses — the only thing not from a module
 src/agent/config.ts     node configuration and hub URL normalisation
 src/agent/projects.ts   projects file loading and validation
 src/agent/supervisor.ts runs and watches declared processes
@@ -596,14 +703,17 @@ src/agent/terminal.ts   pty sessions
 src/agent/modules/      the node half of each module
 src/modules/            the manifest all three peers read, the gated host, and
                         the git-backed store for installed modules
+src/modules/platform.ts which hosts a module runs on, and per-platform entries
 examples/               a complete example module, written to be read
 src/hub/config.ts       hub.json loading
 src/hub/db.ts           SQLite history, events and known nodes
 src/hub/registry.ts     who's connected, and the alerts derived from telemetry
+src/hub/modules.ts      module intent vs. reality, and what the hub may decide
 src/hub/notion.ts       outbound mirror of projects into a Notion database
 src/hub/server.ts       node and browser endpoints, and the relay between them
 web/                    React dashboard (link.ts, panels.tsx, modules.tsx,
-                        external.tsx — the renderer for installed modules)
+                        external.tsx — the renderer for installed modules,
+                        modulespage.tsx — the fleet's module management page)
 schema/                 the projects JSON Schema
 scripts/build.ts        cross-compiles the standalone binaries into dist/
 install.sh              download/verify/install + systemd units, either role
@@ -627,5 +737,8 @@ error shows up on that node's card.
 
 ## Notes
 
-Linux-only for nodes — the collectors read `/proc`, `/sys`, `df`, `ps`, `ss`,
-`systemctl` and the Docker socket directly, and terminals need a pty.
+Linux is the only platform with collectors today: the `system` probe reads
+`/proc` and `/sys`, and `processes`, `ports` and `systemd` shell out to `ps`,
+`ss` and `systemctl`. macOS and Windows probes are declared but unwritten, so a
+node on either connects and reports its identity with an empty system card —
+see **Platforms** above. The hub itself runs anywhere Bun does.

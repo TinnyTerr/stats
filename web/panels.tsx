@@ -166,7 +166,8 @@ function UpdatePanel({ node, hub }: { node: NodeSummary; hub: HubConnection }) {
 			{status?.behind && !status.allowed && !applied && (
 				<p className="dim">
 					This node refuses remote updates. Run <code>stats update</code> on the
-					host, or start it with <code>--allow-remote-update</code>.
+					host, or start it with <code>--allow-remote-update</code> — a node
+					running as root takes them by default.
 				</p>
 			)}
 
@@ -1091,7 +1092,7 @@ export function ServicesPanel({ node, telemetry, hub, go }: PanelProps) {
 	if (!telemetry?.systemd.available) {
 		return (
 			<Empty>
-				This host doesn't run systemd ({telemetry?.facts.init ?? "unknown"}{" "}
+				This host doesn't run systemd ({telemetry?.facts?.init ?? "unknown"}{" "}
 				instead).
 			</Empty>
 		);

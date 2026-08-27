@@ -17,7 +17,13 @@ import { loadProjects } from "./src/agent/projects.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
 import { toModuleManifest } from "./src/modules/external.ts";
-import { MODULE_LIST, resolveModules } from "./src/modules/manifest.ts";
+import { isRoot } from "./src/modules/host.ts";
+import {
+	MODULE_LIST,
+	moduleRunsOn,
+	resolveModules,
+} from "./src/modules/manifest.ts";
+import { currentPlatform, PLATFORM_LABELS } from "./src/modules/platform.ts";
 import {
 	installedModules,
 	installModule,
@@ -66,6 +72,7 @@ Usage:
                        [--tags a,b] [--interval 3000] [--projects PATH]
                        [--modules docker,systemd | --modules -terminal]
                        [--no-terminal] [--no-control] [--allow-remote-update]
+                       [--allow-hub-modules]
   ${invocation} modules                      list builtin and installed modules
   ${invocation} modules install <repo>       install a module from a git repository
   ${invocation} modules update [ID]          fast-forward installed modules
@@ -74,6 +81,11 @@ Usage:
                        replace this binary with the latest release
   ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
+
+A node running as root is unrestricted: every module gets every grant, and the
+hub — the source of truth for the fleet — may switch modules on and ask for an
+update without either --allow flag. Run it as anyone else and both are off
+until asked for, and modules only reach what they declared.
 
 Environment:
   STATS_CONFIG        hub config path (default ./hub.json)
@@ -91,6 +103,7 @@ Environment:
   STATS_ASSET         force a build, e.g. stats-linux-x64-baseline
   STATS_TERMINAL      set to 0 to refuse terminal sessions
   STATS_CONTROL       set to 0 to refuse start/stop/restart
+  STATS_ALLOW_HUB_MODULES  set to 1 to let the hub turn modules on, not just off
   STATS_LOG_DIRS      dirs readable via kind=file (default /var/log)
   DOCKER_SOCKET       docker socket path (default /var/run/docker.sock)
   PROXMOX_URL         PVE API base, e.g. https://pve.lan:8006 (a node running
@@ -102,15 +115,27 @@ Environment:
 /* ---------- modules ---------- */
 
 function describeBuiltins() {
-	console.log("modules a node can load (--modules to choose):\n");
+	const here = currentPlatform();
+	console.log(
+		`modules a node can load (--modules to choose) — this host is ` +
+			`${here ? PLATFORM_LABELS[here] : process.platform}:\n`,
+	);
 	for (const module of MODULE_LIST) {
+		const runs = moduleRunsOn(module, here);
 		const flags = [
-			module.required ? "required" : null,
 			module.enabledByDefault ? "on by default" : "off by default",
 			module.tab ? `tab '${module.tab}'` : null,
-			`grants ${module.grants.join("+")}`,
+			`grants ${module.grants.join("+") || "none"}`,
+			module.platforms.length
+				? module.platforms.map((p) => PLATFORM_LABELS[p]).join("/")
+				: "any platform",
 		].filter(Boolean);
-		console.log(`  ${module.id.padEnd(11)} ${module.description}`);
+		// A module that can't run here is listed anyway — the table is what a node
+		// *could* load, and "why isn't docker here" deserves an answer on the same
+		// screen as the question.
+		console.log(
+			`  ${module.id.padEnd(11)} ${module.description}${runs ? "" : "  [not on this platform]"}`,
+		);
 		console.log(`  ${" ".repeat(11)} ${flags.join(" · ")}`);
 	}
 }
@@ -164,6 +189,14 @@ async function modulesCommand(sub: string | undefined) {
 		case "list":
 			describeBuiltins();
 			await describeInstalled();
+			// Whoever is reading this list wants to know whether the grants in it
+			// are a limit, and that depends on who runs the node — which is very
+			// often not whoever is typing this.
+			console.log(
+				isRoot()
+					? "\na node run as root loads modules unrestricted: the grants above are a\ndeclaration of what a module touches, not a limit on what it can."
+					: "\na node run as this user is held to the grants above, and to trustedModules\nfor exec and pty. A node run as root is held to neither.",
+			);
 			break;
 
 		case "install": {
@@ -191,7 +224,9 @@ async function modulesCommand(sub: string | undefined) {
 			if (privileged.length) {
 				console.warn(
 					`  note: this module wants ${privileged.join(" and ")}, which hands it the machine.\n` +
-						`  It will not load until you add '${manifest.id}' to trustedModules in the node config.`,
+						(isRoot()
+							? `  A node running as root gives it that: the grants are a declaration there, not a request.`
+							: `  It will not load until you add '${manifest.id}' to trustedModules in the node config.`),
 				);
 			}
 			console.log("restart the node to load it");
@@ -360,6 +395,7 @@ async function main(role: string | undefined) {
 				terminal: toggle("terminal"),
 				control: toggle("control"),
 				allowRemoteUpdate: toggle("allow-remote-update"),
+				allowHubModules: toggle("allow-hub-modules"),
 			};
 			const config = await loadAgentConfig(overrides);
 
@@ -448,6 +484,11 @@ async function main(role: string | undefined) {
 						":",
 					),
 					trustedModules: MODULE_LIST.map((module) => module.id),
+					// This node is the hub's own machine, so the hub is as much the
+					// source of truth here as anywhere — under root it takes both
+					// directions, same as a node that went through loadAgentConfig.
+					allowHubModules: isRoot(),
+					allowRemoteUpdate: isRoot(),
 					installed,
 				});
 				process.on("SIGINT", () => void node.stop());

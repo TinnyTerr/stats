@@ -1,8 +1,9 @@
 import { headline } from "../modules/external.ts";
-import { narrowModules } from "../modules/manifest.ts";
+import { type ModuleSet, narrowModules } from "../modules/manifest.ts";
 import type { PeerLink } from "../proto/link.ts";
 import type { HelloPayload } from "../proto/messages.ts";
 import type {
+	HostIdentity,
 	HubConfig,
 	NodeCapabilities,
 	NodeOverride,
@@ -10,6 +11,12 @@ import type {
 	Telemetry,
 } from "../types.ts";
 import { type MetricStore, statusMessage } from "./db.ts";
+import {
+	type NodeModuleView,
+	nodePlatform,
+	plannedModules,
+	resolveNodeModules,
+} from "./modules.ts";
 
 /**
  * Who is connected, what they last said, and how to reach them.
@@ -26,6 +33,8 @@ export interface NodeRecord {
 	notes: string | null;
 	link: PeerLink | null;
 	capabilities: NodeCapabilities | null;
+	/** name, addresses and platform, from Hello — never module-derived */
+	host: HostIdentity | null;
 	telemetry: Telemetry | null;
 	version: string | null;
 	protocol: number | null;
@@ -81,6 +90,9 @@ export class NodeRegistry {
 				notes: override?.notes ?? null,
 				link: null,
 				capabilities: null,
+				// Restored from SQLite, which keeps a hostname but not the rest of the
+				// identity; the next Hello fills it in.
+				host: null,
 				telemetry: null,
 				version: known.version,
 				protocol: null,
@@ -153,6 +165,9 @@ export class NodeRegistry {
 			notes: override?.notes ?? null,
 			link,
 			capabilities: this.narrow(hello.capabilities),
+			// A node that predates the identity block still has telemetry to fall
+			// back on; one that loads no modules has nothing else at all.
+			host: hello.host ?? existing?.host ?? null,
 			telemetry: existing?.telemetry ?? null,
 			version: hello.node.version ?? null,
 			protocol: hello.node.protocol ?? null,
@@ -166,7 +181,7 @@ export class NodeRegistry {
 			id,
 			name: record.name,
 			version: record.version,
-			hostname: hello.facts?.hostname ?? null,
+			hostname: hello.host?.hostname ?? hello.facts?.hostname ?? null,
 		});
 		const message = statusMessage(
 			record.name,
@@ -195,6 +210,10 @@ export class NodeRegistry {
 		);
 		return {
 			control: capabilities?.control ?? false,
+			// The node's own answer, passed through untouched: whether it accepts
+			// hub-directed modules is its decision, and narrowing is not the place
+			// to have an opinion about it.
+			acceptsHubModules: capabilities?.acceptsHubModules === true,
 			modules,
 			// A manifest for a module the hub just switched off would put a tab in
 			// the dashboard for something the node will refuse to talk about.
@@ -230,12 +249,15 @@ export class NodeRegistry {
 		const previous = record.telemetry;
 		record.telemetry = telemetry;
 		record.lastSeen = Date.now();
-		this.store.record(id, telemetry.stats);
+		// History is the system module's data; a node without it still connects,
+		// still raises alerts and still appears — it just has no graph.
+		if (telemetry.stats) this.store.record(id, telemetry.stats);
+		if (telemetry.host) record.host = telemetry.host;
 		this.store.seen({
 			id,
 			name: record.name,
 			version: record.version,
-			hostname: telemetry.stats.hostname,
+			hostname: telemetry.host?.hostname ?? telemetry.stats?.hostname ?? null,
 		});
 
 		for (const alert of diffAlerts(previous, telemetry)) {
@@ -249,6 +271,57 @@ export class NodeRegistry {
 
 	get(id: string): NodeRecord | undefined {
 		return this.nodes.get(id);
+	}
+
+	/* ---------- modules ---------- */
+
+	/**
+	 * What this node should be running, per the hub. Sent in Welcome, so a node
+	 * picks up intent recorded while it was offline simply by reconnecting.
+	 * Narrowing is unconditional; widening depends on the node's opt-in, and
+	 * plannedModules() is where those two stop being symmetric.
+	 */
+	plannedModules(id: string): ModuleSet {
+		const record = this.nodes.get(id);
+		return plannedModules({
+			announced: record?.capabilities?.modules ?? {},
+			desired: this.store.desiredModules(id),
+			fleet: this.config.modules,
+			acceptsHubModules: record?.capabilities?.acceptsHubModules === true,
+		});
+	}
+
+	/** One node's rows on the hub's module page: intent beside reality. */
+	moduleView(record: NodeRecord): NodeModuleView {
+		return {
+			nodeId: record.id,
+			name: record.name,
+			online: Boolean(record.link && !record.link.closed),
+			platform: nodePlatform(
+				record.host?.platform ?? record.telemetry?.host?.platform ?? null,
+			),
+			acceptsHubModules: record.capabilities?.acceptsHubModules === true,
+			modules: resolveNodeModules({
+				announced: record.capabilities?.modules ?? {},
+				desired: this.store.desiredModules(record.id),
+				fleet: this.config.modules,
+				acceptsHubModules: record.capabilities?.acceptsHubModules === true,
+				platform: nodePlatform(
+					record.host?.platform ?? record.telemetry?.host?.platform ?? null,
+				),
+				externals: record.capabilities?.externals,
+			}),
+		};
+	}
+
+	/** Records the hub's intent. Null for a module drops the hub's opinion. */
+	setDesiredModules(id: string, modules: Record<string, boolean | null>) {
+		const set: Record<string, boolean> = {};
+		for (const [moduleId, wanted] of Object.entries(modules)) {
+			if (wanted === null) this.store.clearDesiredModule(id, moduleId);
+			else set[moduleId] = wanted;
+		}
+		if (Object.keys(set).length) this.store.setDesiredModules(id, set);
 	}
 
 	/** The live link for a node, or an explanation of why there isn't one. */
@@ -330,18 +403,29 @@ export class NodeRegistry {
 			version: record.version,
 			protocol: record.protocol,
 			capabilities: record.capabilities,
-			hostname: t?.stats.hostname ?? t?.facts.hostname ?? null,
+			// Identity first: it is the one thing that doesn't depend on a module
+			// having loaded, which is the whole point of it being separate.
+			hostname:
+				record.host?.hostname ??
+				t?.host?.hostname ??
+				t?.stats?.hostname ??
+				t?.facts?.hostname ??
+				null,
+			addresses: record.host?.addresses ?? t?.host?.addresses ?? [],
+			platform: record.host?.platform ?? t?.host?.platform ?? null,
 			facts: t?.facts ?? null,
 			// Everything below is "as of the last telemetry"; on an offline node the
 			// UI dims it rather than pretending it's current.
-			uptimeSec: t?.stats.uptimeSec ?? null,
-			cpu: t?.stats.cpu.usage ?? null,
-			cores: t?.stats.cpu.cores ?? null,
-			loadavg: t?.stats.loadavg ?? null,
-			mem: t ? { used: t.stats.mem.used, total: t.stats.mem.total } : null,
-			disks: t?.stats.disks ?? [],
-			temps: t?.stats.temps ?? [],
-			net: t
+			uptimeSec: t?.stats?.uptimeSec ?? null,
+			cpu: t?.stats?.cpu.usage ?? null,
+			cores: t?.stats?.cpu.cores ?? null,
+			loadavg: t?.stats?.loadavg ?? null,
+			mem: t?.stats
+				? { used: t.stats.mem.used, total: t.stats.mem.total }
+				: null,
+			disks: t?.stats?.disks ?? [],
+			temps: t?.stats?.temps ?? [],
+			net: t?.stats
 				? {
 						rxRate: t.stats.net.reduce((sum, n) => sum + (n.rxRate ?? 0), 0),
 						txRate: t.stats.net.reduce((sum, n) => sum + (n.txRate ?? 0), 0),

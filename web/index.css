@@ -1067,3 +1067,84 @@ th.right {
 	flex: 1;
 	min-height: 240px;
 }
+
+/* ---------- view switcher and the modules page ---------- */
+
+/*
+ * The topbar's fleet/modules switch. Same visual language as the node drawer's
+ * tabs — it is the same gesture at a different scale — but it lives in the
+ * topbar, so it gets no bottom border of its own.
+ */
+.views {
+	display: flex;
+	gap: 2px;
+}
+
+.views button {
+	background: none;
+	border: none;
+	border-bottom: 2px solid transparent;
+	color: var(--dim);
+	padding: 6px 10px;
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+	text-transform: lowercase;
+}
+
+.views button.active {
+	color: var(--text);
+	border-bottom-color: var(--accent);
+}
+
+/* A full-width page in the slot the node grid usually occupies. */
+.page {
+	grid-area: grid;
+	overflow: auto;
+	padding: 18px 20px 28px;
+}
+
+.page-head {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+
+.page-head h2 {
+	margin: 0;
+	font-size: 15px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.modules-page {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	max-width: 1100px;
+}
+
+.module-node header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 10px;
+}
+
+.module-node header h3 {
+	margin: 0;
+	font-size: 14px;
+}
+
+/* The action column holds three buttons; without this they collide on narrow
+   screens rather than wrapping under each other. */
+.module-node td.right {
+	white-space: nowrap;
+}
+
+.module-node td.right .action + .action {
+	margin-left: 4px;
+}

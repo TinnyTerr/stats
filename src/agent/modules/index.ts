@@ -8,7 +8,10 @@ import {
 	type ModuleSet,
 	moduleForAction,
 	moduleOn,
+	modulePlatformNote,
+	moduleRunsOn,
 } from "../../modules/manifest.ts";
+import { currentPlatform, type Platform } from "../../modules/platform.ts";
 import type { InboundRequest } from "../../proto/link.ts";
 import { RemoteError } from "../../proto/link.ts";
 import { dockerModule } from "./docker.ts";
@@ -22,10 +25,16 @@ import { systemdModule } from "./systemd.ts";
 import { terminalModule } from "./terminal.ts";
 
 /**
- * Everything that ships in the box. Loading is three gates in a row — the
- * config asked for it, the policy allows the grants it wants, and the host can
- * actually serve it — and a module that fails any of them is simply absent:
- * no tab, no actions, no empty section in telemetry.
+ * Everything that ships in the box. Loading is four gates in a row — this
+ * platform is one the module claims, the config asked for it, the policy allows
+ * the grants it wants, and the host can actually serve it — and a module that
+ * fails any of them is simply absent: no tab, no actions, no empty section in
+ * telemetry.
+ *
+ * The platform gate is first because it is the only one that is a fact about
+ * the machine rather than a decision about it: "systemd isn't for Windows" is a
+ * better thing to read than "systemd is unavailable", and it costs no host
+ * access to answer.
  */
 
 export const BUILTIN_MODULES: NodeModule[] = [
@@ -61,6 +70,8 @@ export async function loadModules(
 	requested: ModuleSet,
 	policy: ModulePolicy,
 	modules: NodeModule[] = BUILTIN_MODULES,
+	/** the host to load for; the running one unless a test says otherwise */
+	platform: Platform | null = currentPlatform(),
 ): Promise<LoadedModules> {
 	const active: NodeModule[] = [];
 	const set: ModuleSet = {};
@@ -70,6 +81,11 @@ export async function loadModules(
 	for (const module of modules) {
 		const { id, label, required } = module.manifest;
 		set[id] = false;
+
+		if (!moduleRunsOn(module.manifest, platform)) {
+			notes.push(modulePlatformNote(module.manifest, platform));
+			continue;
+		}
 
 		if (!required && !moduleOn(requested, id)) {
 			notes.push(`${id}: disabled by config`);

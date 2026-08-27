@@ -50,6 +50,7 @@ UNINSTALL=0
 PURGE=0
 ASSUME_YES=0
 SERVICE_USER="stats"
+USER_SET=0
 
 BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; RESET=""
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -82,7 +83,11 @@ Source:
 Placement:
   --prefix DIR         where the binary goes (default: /usr/local/bin,
                        or ~/.local/bin when not running as root)
-  --user NAME          system user the services run as (default: stats)
+  --user NAME          system user the services run as (default: root for a
+                       node, stats for the hub). A root node is the permissive
+                       one: modules get every grant, and the hub may switch
+                       modules on and ask it to update. --user stats gives you
+                       the sandboxed, least-privilege node instead.
 
 Service:
   --hub-url URL        (--node) the hub to dial, e.g. ws://hub.lan:3000
@@ -125,8 +130,8 @@ while [ $# -gt 0 ]; do
     --url=*)      BASE_URL="${1#--url=}" ;;
     --prefix)     PREFIX="${2:?--prefix needs a directory}"; shift ;;
     --prefix=*)   PREFIX="${1#--prefix=}" ;;
-    --user)       SERVICE_USER="${2:?--user needs a name}"; shift ;;
-    --user=*)     SERVICE_USER="${1#--user=}" ;;
+    --user)       SERVICE_USER="${2:?--user needs a name}"; USER_SET=1; shift ;;
+    --user=*)     SERVICE_USER="${1#--user=}"; USER_SET=1 ;;
     --port)       PORT="${2:?--port needs a number}"; shift ;;
     --port=*)     PORT="${1#--port=}" ;;
     --host)       HUB_HOST="${2:?--host needs an address}"; shift ;;
@@ -407,6 +412,7 @@ if [ "$IS_ROOT" -ne 1 ]; then
 fi
 
 ensure_user() {
+  if [ "$SERVICE_USER" = "root" ]; then return; fi
   if id "$SERVICE_USER" >/dev/null 2>&1; then return; fi
   step "creating system user '$SERVICE_USER'"
   if have useradd; then
@@ -453,6 +459,12 @@ restart_unit() {
     exit 1
   fi
 }
+
+# A node runs as root unless asked otherwise: that is where it is unrestricted,
+# and where the hub — the source of truth for the fleet — can switch its modules
+# on and ask it to update. The hub keeps its own unprivileged user; it only
+# needs its database and its port.
+if [ "$MODE" = "node" ] && [ "$USER_SET" -eq 0 ]; then SERVICE_USER="root"; fi
 
 ensure_user
 mkdir -p "$CONF_DIR"
@@ -518,6 +530,26 @@ EOF
   [ "$NO_TERMINAL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-terminal"
   [ "$NO_CONTROL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-control"
 
+  # Root gets neither a User= line nor the sandbox: ProtectSystem=full alone
+  # would make the self-update it now accepts fail on a read-only /usr, and a
+  # node kept from reading /home is a node lying about the disk it reports.
+  # Under any other user both come back, and so does the grant policy.
+  if [ "$SERVICE_USER" = "root" ]; then
+    UNIT_USER=""
+    UNIT_SANDBOX=""
+  else
+    UNIT_USER="User=$SERVICE_USER
+Group=$SERVICE_USER${GROUPS_LINE:+
+SupplementaryGroups=$GROUPS_LINE}"
+    UNIT_SANDBOX="NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes"
+  fi
+
   if [ "$NO_SERVICE" -eq 0 ]; then
     step "writing $UNIT_DIR/stats-node.service"
     cat > "$UNIT_DIR/stats-node.service" <<EOF
@@ -534,22 +566,14 @@ Restart=always
 RestartSec=5
 EnvironmentFile=$ENV_FILE
 
-User=$SERVICE_USER
-Group=$SERVICE_USER
-${GROUPS_LINE:+SupplementaryGroups=$GROUPS_LINE}
+$UNIT_USER
 
 # Supervised project processes are children of this unit.
 TasksMax=512
 LimitNOFILE=8192
 TimeoutStopSec=30
 
-NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
-LockPersonality=yes
+$UNIT_SANDBOX
 
 [Install]
 WantedBy=multi-user.target
@@ -564,7 +588,13 @@ EOF
   if [ "$NO_TERMINAL" -eq 0 ] || [ "$NO_CONTROL" -eq 0 ]; then
     log ""
     log "${YELLOW}This node accepts${RESET}${BOLD}$([ "$NO_TERMINAL" -eq 0 ] && printf ' shells')$([ "$NO_CONTROL" -eq 0 ] && printf ' start/stop')${RESET}${YELLOW} from the hub,"
-    log "as the '$SERVICE_USER' user. Re-run with --no-terminal / --no-control to refuse.$RESET"
+    if [ "$SERVICE_USER" = "root" ]; then
+      log "as root — and the hub may also switch its modules on and ask it to update."
+      log "Re-run with --no-terminal / --no-control to refuse either, or --user stats"
+      log "for an unprivileged node that keeps the module grant policy.$RESET"
+    else
+      log "as the '$SERVICE_USER' user. Re-run with --no-terminal / --no-control to refuse.$RESET"
+    fi
   fi
   exit 0
 fi

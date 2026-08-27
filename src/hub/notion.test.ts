@@ -51,6 +51,7 @@ function node(over: Partial<NodeRecord> = {}): NodeRecord {
 		name: "Web 1",
 		tags: [],
 		notes: null,
+		host: null,
 		link: { closed: false } as unknown as PeerLink,
 		capabilities: null,
 		telemetry: { projects: [project()] } as NodeRecord["telemetry"],

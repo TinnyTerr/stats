@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { $ } from "bun";
 import { type ExternalManifest, parseExternalManifest } from "./external.ts";
 import { BUILTIN_MODULE_IDS } from "./manifest.ts";
+import { currentPlatform, resolveEntry } from "./platform.ts";
 
 /**
  * Where installed modules live, and how they get there.
@@ -111,16 +112,23 @@ async function readModule(
 		};
 	}
 
-	const entry = resolve(dir, manifest.entry);
-	if (!entry.startsWith(`${dir}/`)) {
-		return {
-			dir,
-			id,
-			problems: [`entry '${manifest.entry}' escapes the module`],
-		};
-	}
-	if (!(await Bun.file(entry).exists())) {
-		return { dir, id, problems: [`entry '${manifest.entry}' does not exist`] };
+	// A module can be installed on a host it doesn't run on — that isn't broken,
+	// it's a module for a different platform sitting in a store shared by a fleet.
+	// The loader is what drops it; the store only refuses to lie about the entry.
+	const platform = currentPlatform();
+	const entryPath = resolveEntry(manifest.entry, platform);
+	if (entryPath) {
+		const entry = resolve(dir, entryPath);
+		if (!entry.startsWith(`${dir}/`)) {
+			return {
+				dir,
+				id,
+				problems: [`entry '${entryPath}' escapes the module`],
+			};
+		}
+		if (!(await Bun.file(entry).exists())) {
+			return { dir, id, problems: [`entry '${entryPath}' does not exist`] };
+		}
 	}
 
 	const record = (await Bun.file(join(dir, RECORD_FILE))

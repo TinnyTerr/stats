@@ -14,6 +14,11 @@ import {
 	type HistoryParams,
 	HubAction,
 	type HubInfoResult,
+	type ModulesApplyResult,
+	type ModulesFleetParams,
+	type ModulesFleetResult,
+	type ModulesSetParams,
+	type ModulesSetResult,
 	NodeAction,
 	type NodeScoped,
 	type WelcomePayload,
@@ -200,6 +205,50 @@ export function startHub(config: HubConfig) {
 				return { ok: true, nodes: registry.summaries() };
 			}
 
+			case HubAction.Modules: {
+				const p = params as ModulesFleetParams;
+				const records = p.nodeId
+					? [registry.get(p.nodeId)].filter((r) => r !== undefined)
+					: registry.list();
+				return {
+					nodes: records.map((record) => registry.moduleView(record)),
+					fleet: config.modules,
+				} satisfies ModulesFleetResult;
+			}
+
+			case HubAction.ModulesSet: {
+				const p = params as unknown as ModulesSetParams;
+				const record = registry.get(p.nodeId);
+				if (!record) {
+					throw new RemoteError("unknown_node", `no node '${p.nodeId}'`);
+				}
+				registry.setDesiredModules(p.nodeId, p.modules ?? {});
+
+				// Intent is recorded either way. Pushing it now is the difference
+				// between "it takes effect" and "it takes effect when that machine
+				// next dials in", which the page needs to be able to say.
+				let applied = false;
+				let refused: string | undefined;
+				if (record.link && !record.link.closed) {
+					const result = (await relay(
+						{
+							action: NodeAction.ModulesApply,
+							params: { modules: registry.plannedModules(p.nodeId) },
+						} as InboundRequest,
+						p.nodeId,
+					).catch(() => null)) as ModulesApplyResult | null;
+					applied = result?.accepted === true;
+					if (result && !result.accepted) refused = result.reason;
+				}
+
+				return {
+					nodeId: p.nodeId,
+					modules: registry.moduleView(record).modules,
+					applied,
+					refused,
+				} satisfies ModulesSetResult;
+			}
+
 			default: {
 				const nodeId = params.nodeId;
 				if (typeof nodeId !== "string" || !nodeId) {
@@ -261,7 +310,10 @@ export function startHub(config: HubConfig) {
 				hub: versionInfo,
 				name: record.name,
 				telemetryIntervalMs: config.telemetryIntervalMs,
-				modules: config.modules,
+				// The plan for *this* node, not the fleet switches: narrowing folded
+				// together with whatever the module page recorded for it, including
+				// while it was offline. See src/hub/modules.ts.
+				modules: registry.plannedModules(record.id),
 				time: Date.now(),
 			};
 			link.send(MessageType.Welcome, welcome);

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import pkg from "../package.json" with { type: "json" };
 import { loadAgentConfig, normaliseHubUrl } from "./agent/config.ts";
+import {
+	MODULE_LIST,
+	MODULES,
+	moduleRunsOn,
+	modulesForPlatform,
+} from "./modules/manifest.ts";
 import { PROTOCOL_VERSION } from "./proto/frame.ts";
 import { PROTOCOL, VERSION, versionInfo } from "./version.ts";
 
@@ -93,11 +99,12 @@ describe("agent config", () => {
 	});
 
 	test("--modules picks a set, and a leading dash removes one", async () => {
-		// The positive form is exhaustive: asking for docker means docker and the
-		// modules that can't be turned off, and nothing else.
+		// The positive form is exhaustive: asking for docker means docker and
+		// nothing else. Since everything is a module — including system — that
+		// really does mean nothing else.
 		const only = await loadAgentConfig({ hub: "h", modules: "docker" });
 		expect(only.modules).toMatchObject({
-			system: true,
+			system: false,
 			docker: true,
 			systemd: false,
 			terminal: false,
@@ -115,9 +122,36 @@ describe("agent config", () => {
 		});
 	});
 
-	test("the system module cannot be switched off", async () => {
-		await expect(
-			loadAgentConfig({ hub: "h", modules: "-system" }),
-		).rejects.toThrow(/required/);
+	test("every module can be switched off, including system", async () => {
+		// The node's core report is its hostname and addresses; everything else,
+		// system included, is a module an operator can decline. A node running no
+		// modules at all is a valid node — see src/agent/identity.ts.
+		const bare = await loadAgentConfig({ hub: "h", modules: "-system" });
+		expect(bare.modules.system).toBe(false);
+
+		// And nothing in the builtin table claims to be required any more, which
+		// is the invariant that keeps a platform with no probes bootable.
+		expect(MODULE_LIST.filter((module) => module.required)).toEqual([]);
+	});
+
+	test("a module names the platforms it runs on", async () => {
+		// The declaration is what the loader gates on and what the hub shows for a
+		// node it has never seen. Portable is the empty list, not a missing field.
+		expect(MODULES.systemd.platforms).toEqual(["linux"]);
+		expect(MODULES.projects.platforms).toEqual([]);
+
+		expect(moduleRunsOn(MODULES.systemd, "linux")).toBe(true);
+		expect(moduleRunsOn(MODULES.systemd, "win32")).toBe(false);
+		// Portable means portable, including on a platform we have no name for.
+		expect(moduleRunsOn(MODULES.projects, "win32")).toBe(true);
+		expect(moduleRunsOn(MODULES.projects, null)).toBe(true);
+
+		expect(modulesForPlatform("win32").map((m) => m.id)).toEqual([
+			"system",
+			"projects",
+			"proxmox",
+			"logs",
+			"terminal",
+		]);
 	});
 });

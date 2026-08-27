@@ -12,6 +12,13 @@
  * survived.
  */
 
+import {
+	currentPlatform,
+	type Platform,
+	platformNote,
+	supportsPlatform,
+} from "./platform.ts";
+
 /** The modules that ship in this repo. Installed ones are ids too — see below. */
 export const BUILTIN_MODULE_IDS = [
 	"system",
@@ -55,6 +62,12 @@ export const OPEN_GRANTS: readonly ModuleGrant[] = [
 
 export const PRIVILEGED_GRANTS: readonly ModuleGrant[] = ["exec", "pty"];
 
+/** Every grant there is. What a root node hands out — see `rootPolicy()`. */
+export const ALL_GRANTS: readonly ModuleGrant[] = [
+	...OPEN_GRANTS,
+	...PRIVILEGED_GRANTS,
+];
+
 export function isPrivilegedGrant(grant: ModuleGrant): boolean {
 	return PRIVILEGED_GRANTS.includes(grant);
 }
@@ -63,8 +76,19 @@ export interface ModuleManifest {
 	id: ModuleId;
 	label: string;
 	description: string;
-	/** the dashboard has nothing to draw without it, so it can't be switched off */
+	/**
+	 * The node's identity — hostname and addresses — is the only thing the core
+	 * reports; a required module is one the *dashboard* can't lay out a card
+	 * without. Nothing is required today, and new modules should not be: a node
+	 * on a platform none of them support is a valid node with an empty card.
+	 */
 	required: boolean;
+	/**
+	 * Which hosts this module runs on, as `process.platform` values. Empty means
+	 * portable — see src/modules/platform.ts for why that's the default rather
+	 * than an omission.
+	 */
+	platforms: Platform[];
 	/** loaded unless the config says otherwise */
 	enabledByDefault: boolean;
 	/** everything this module may touch; enforced by src/modules/host.ts */
@@ -82,9 +106,15 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		id: "system",
 		label: "System",
 		description:
-			"CPU, memory, disks, network, temperatures and the host's identity.",
-		required: true,
+			"CPU, memory, disks, network and temperatures, from the host's own probe.",
+		// Not required: the node core reports hostname and addresses, and a host
+		// with no probe for its platform still connects and still runs every
+		// other module. See src/collect/probe.ts.
+		required: false,
 		enabledByDefault: true,
+		// One module, one probe per platform. freebsd has no probe yet, and
+		// declaring it here would mean announcing a tab that never fills in.
+		platforms: ["linux", "darwin", "win32"],
 		grants: ["read", "exec"],
 		actions: ["facts.refresh"],
 		tab: "overview",
@@ -97,6 +127,9 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 			"Runs and supervises the processes declared in the projects file.",
 		required: false,
 		enabledByDefault: true,
+		// Spawning and watching a child process is the one thing every platform
+		// agrees on, so this stays portable.
+		platforms: [],
 		grants: ["read", "http", "exec"],
 		actions: ["projects.list", "projects.reload", "project.action"],
 		tab: "projects",
@@ -108,6 +141,10 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "Containers from the engine API over its unix socket.",
 		required: false,
 		enabledByDefault: true,
+		// The engine speaks the same HTTP either way, but reaching it on Windows
+		// is a named pipe rather than a unix socket — a `socket` grant that
+		// doesn't exist yet.
+		platforms: ["linux", "darwin"],
 		grants: ["socket"],
 		actions: ["container.action"],
 		tab: "containers",
@@ -119,6 +156,7 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "Unit list, system state and per-unit detail.",
 		required: false,
 		enabledByDefault: true,
+		platforms: ["linux"],
 		grants: ["read", "exec"],
 		actions: ["unit.show", "unit.action"],
 		tab: "services",
@@ -131,6 +169,10 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 			"VMs and containers from a Proxmox VE host, via pvesh or its API.",
 		required: false,
 		enabledByDefault: true,
+		// Portable because the API-token path is just HTTP: a node anywhere can
+		// watch a PVE host. `pvesh` is the local shortcut, and availability —
+		// not the platform — is what decides between them.
+		platforms: [],
 		// `exec` is pvesh on the hypervisor itself; `http` is the API token path for
 		// a node watching a PVE host it isn't running on.
 		grants: ["read", "exec", "http"],
@@ -144,6 +186,8 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "The busiest processes on the host.",
 		required: false,
 		enabledByDefault: true,
+		// `ps` and /proc. Windows wants a different probe entirely.
+		platforms: ["linux", "darwin"],
 		grants: ["read", "exec"],
 		actions: [],
 		tab: "processes",
@@ -155,6 +199,7 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "What is listening, and which process owns it.",
 		required: false,
 		enabledByDefault: true,
+		platforms: ["linux", "darwin"],
 		grants: ["read", "exec"],
 		actions: [],
 		tab: "ports",
@@ -166,6 +211,9 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "Tails journal units, containers, files and project output.",
 		required: false,
 		enabledByDefault: true,
+		// Files and project output work anywhere; journalctl is gated by
+		// availability, not by platform, so the module itself is portable.
+		platforms: [],
 		grants: ["read", "socket", "exec"],
 		actions: ["logs.tail"],
 		tab: "logs",
@@ -177,6 +225,7 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "An interactive shell on the host, over the same socket.",
 		required: false,
 		enabledByDefault: true,
+		platforms: ["linux", "darwin", "win32"],
 		grants: ["pty"],
 		actions: ["terminal.open", "terminal.resize", "terminal.close"],
 		tab: "terminal",
@@ -297,4 +346,40 @@ export function enabledModules(modules: ModuleSet): ModuleId[] {
 		.filter((id) => moduleOn(modules, id) && !isBuiltinModuleId(id))
 		.sort();
 	return [...builtin, ...installed];
+}
+
+/* ---------- platform ---------- */
+
+/**
+ * Whether a module's declaration allows it to run here. This is the *stated*
+ * answer, not the working one — a module can name a platform and still be
+ * unavailable on it (no docker socket, no PVE). The loader asks this first
+ * because it is free and needs no host access.
+ *
+ * The hub and the browser call it too, with a node's platform rather than their
+ * own, which is why the platform is a parameter and not read from the process.
+ */
+export function moduleRunsOn(
+	manifest: ModuleManifest,
+	platform: Platform | null = currentPlatform(),
+): boolean {
+	return supportsPlatform(manifest.platforms, platform);
+}
+
+/** The line the CLI and the dashboard show for a module that can't run here. */
+export function modulePlatformNote(
+	manifest: ModuleManifest,
+	platform: Platform | null = currentPlatform(),
+): string {
+	return platformNote(manifest.id, manifest.platforms, platform);
+}
+
+/**
+ * The builtins a given platform can run, which is what the hub's module page
+ * lists for a node before that node has ever reported its set.
+ */
+export function modulesForPlatform(
+	platform: Platform | null,
+): ModuleManifest[] {
+	return MODULE_LIST.filter((module) => moduleRunsOn(module, platform));
 }

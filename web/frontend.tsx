@@ -32,6 +32,7 @@ import {
 	type NodeHistory,
 	tabsFor,
 } from "./modules.tsx";
+import { ModulesPage } from "./modulespage.tsx";
 import { ActionButton, DistroChip, Dot, Empty, Pill } from "./ui.tsx";
 import "./index.css";
 
@@ -325,7 +326,16 @@ function writeRotate(ms: number) {
 	localStorage.setItem(ROTATE_KEY, String(ms));
 }
 
+/**
+ * The two things this dashboard is: the fleet as it is, and the fleet as the
+ * operator wants it. Modules are the second, which is why they get a page
+ * rather than a corner of the node drawer — the question "which nodes are
+ * running docker" is a fleet question, not a per-node one.
+ */
+type View = "fleet" | "modules";
+
 function App() {
+	const [view, setView] = useState<View>("fleet");
 	const [nodes, setNodes] = useState<NodeSummary[]>([]);
 	const [telemetry, setTelemetry] = useState<Map<string, Telemetry>>(new Map());
 	const [history, setHistory] = useState<Map<string, NodeHistory>>(new Map());
@@ -365,7 +375,11 @@ function App() {
 				// A short in-memory series per face; the hub's SQLite history is for
 				// anything longer, and the cards deliberately don't ask for it.
 				setHistory((prev) => {
+					// The series is the system module's; a node without it keeps whatever
+					// it had rather than growing a run of zeroes that reads as an idle
+					// machine instead of an absent collector.
 					const stats = frame.telemetry.stats;
+					if (!stats) return prev;
 					const previous = prev.get(frame.nodeId) ?? EMPTY_HISTORY;
 					const hottest = stats.temps.length
 						? Math.max(...stats.temps.map((t) => t.celsius))
@@ -516,6 +530,18 @@ function App() {
 						{online.length - behind}/{online.length} up to date
 					</span>
 				)}
+				<nav className="views">
+					{(["fleet", "modules"] as View[]).map((id) => (
+						<button
+							key={id}
+							type="button"
+							className={view === id ? "active" : ""}
+							onClick={() => setView(id)}
+						>
+							{id}
+						</button>
+					))}
+				</nav>
 				<div className="spacer" />
 				{alerts.length > 0 && (
 					<details className="alerts">
@@ -578,7 +604,13 @@ function App() {
 				</p>
 			)}
 
-			<main className="grid">
+			{view === "modules" && hub.current && (
+				<main className="page">
+					<ModulesPage hub={hub.current} />
+				</main>
+			)}
+
+			<main className="grid" hidden={view !== "fleet"}>
 				{nodes.map((node) => (
 					<NodeCard
 						key={node.id}
@@ -624,7 +656,7 @@ function App() {
 				)}
 			</main>
 
-			{selected && hub.current && (
+			{view === "fleet" && selected && hub.current && (
 				<NodeDetail
 					node={selected}
 					telemetry={telemetry.get(selected.id) ?? null}

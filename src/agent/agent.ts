@@ -1,10 +1,17 @@
-import { collectFacts } from "../collect/facts.ts";
+import { selectProbe } from "../collect/probe.ts";
 import { emptyProxmoxSummary } from "../collect/proxmox.ts";
-import { defaultPolicy } from "../modules/host.ts";
+import { hostPolicy } from "../modules/host.ts";
+import {
+	type ModuleSet,
+	moduleOn,
+	narrowModules,
+} from "../modules/manifest.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
 import {
 	type HelloPayload,
+	type ModulesApplyParams,
+	type ModulesApplyResult,
 	NodeAction,
 	type SnapshotResult,
 	type UpdateApplyParams,
@@ -21,6 +28,7 @@ import {
 } from "../update.ts";
 import { versionInfo } from "../version.ts";
 import type { AgentConfig } from "./config.ts";
+import { collectIdentity } from "./identity.ts";
 import { loadExternalModules } from "./modules/external.ts";
 import {
 	BUILTIN_MODULES,
@@ -80,17 +88,55 @@ export function startNode(config: AgentConfig): AgentHandle {
 	let loaded: LoadedModules | null = null;
 	const installed = config.installed ?? [];
 
-	const modules = (async () => {
+	/**
+	 * The set the hub last asked for, from Welcome or from a modules.apply. Null
+	 * until a hub has an opinion, which is also the state of every node whose
+	 * operator never touches the module page.
+	 */
+	let hubModules: ModuleSet | null = null;
+
+	/**
+	 * What to load: the node's own configuration, then the hub's intent folded
+	 * over it. The fold is where the two directions stop being symmetric — see
+	 * src/hub/modules.ts — and it is deliberately done here rather than trusted
+	 * to the hub's planning: a node enforces its own opt-in.
+	 */
+	function requestedModules(): ModuleSet {
+		if (!hubModules) return config.modules;
+		const requested: ModuleSet = { ...config.modules };
+		for (const [id, on] of Object.entries(hubModules)) {
+			if (on === false) {
+				// Always honoured. The hub could achieve this by narrowing anyway.
+				requested[id] = false;
+			} else if (on === true && config.allowHubModules === true) {
+				requested[id] = true;
+			}
+		}
+		return requested;
+	}
+
+	/**
+	 * The set the current `loaded` was built from. The comparison for "did the
+	 * hub change anything" has to be against this and not against what actually
+	 * loaded: a module that was asked for and isn't available never appears in
+	 * the loaded set, so comparing the two would report a difference on every
+	 * connection and reload forever.
+	 */
+	let loadedRequest: ModuleSet = {};
+
+	async function load(): Promise<LoadedModules> {
 		// Installed modules are imported first and then join the builtins as
 		// equals: from loadModules down, nothing distinguishes them.
 		const external = await loadExternalModules(
 			installed,
 			config.moduleSettings ?? {},
 		);
+		const request = requestedModules();
+		loadedRequest = request;
 		const result = await loadModules(
 			{ config, supervisor, terminals, control: config.control },
-			config.modules,
-			defaultPolicy(config.trustedModules),
+			request,
+			hostPolicy(config.trustedModules),
 			[...BUILTIN_MODULES, ...external.modules],
 		);
 		result.notes.unshift(...external.notes);
@@ -100,7 +146,36 @@ export function startNode(config: AgentConfig): AgentHandle {
 		console.log(`modules: ${active || "none"}`);
 		for (const note of result.notes) console.log(`  ${note}`);
 		return result;
-	})();
+	}
+
+	let modules = load();
+
+	/**
+	 * Re-runs the load with the hub's set folded in. Only ever called between
+	 * connections: loading a module runs its availability check and builds it a
+	 * host, and doing that under an open terminal or log tail is a much bigger
+	 * promise than module management needs. The caller reconnects afterwards so
+	 * the new set is announced in a fresh Hello.
+	 */
+	async function reloadModules(): Promise<void> {
+		loaded = null;
+		modules = load();
+		await modules;
+	}
+
+	/** Whether the hub's intent would actually change what we asked to load. */
+	function wouldChangeModules(): boolean {
+		if (!loaded) return false;
+		const requested = requestedModules();
+		const ids = new Set([
+			...Object.keys(requested),
+			...Object.keys(loadedRequest),
+		]);
+		for (const id of ids) {
+			if (moduleOn(requested, id) !== moduleOn(loadedRequest, id)) return true;
+		}
+		return false;
+	}
 
 	/** The manifests for installed modules that actually loaded. */
 	function externals() {
@@ -114,6 +189,7 @@ export function startNode(config: AgentConfig): AgentHandle {
 			modules: loaded?.set ?? {},
 			control: config.control,
 			externals: externals(),
+			acceptsHubModules: config.allowHubModules === true,
 		};
 	}
 
@@ -124,6 +200,18 @@ export function startNode(config: AgentConfig): AgentHandle {
 	 * filled in stay empty rather than absent, so the hub and the dashboard don't
 	 * have to care which modules a given node runs.
 	 */
+	/**
+	 * Facts for the handshake, straight from the probe rather than through the
+	 * module: at Hello time the answer wanted is "what is this machine", and
+	 * whether the operator switched the `system` module off doesn't change it.
+	 * Null on a platform with no probe, which the hub renders as an unknown host.
+	 */
+	async function probeFacts() {
+		const probe = await selectProbe();
+		if (!probe || !(await probe.available())) return undefined;
+		return await probe.facts().catch(() => undefined);
+	}
+
 	async function collect(): Promise<{
 		telemetry: Telemetry;
 		snapshot: SnapshotResult;
@@ -131,16 +219,16 @@ export function startNode(config: AgentConfig): AgentHandle {
 		const active = loaded ?? (await modules);
 		const { parts, errors } = await active.collect();
 
-		if (!parts.stats || !parts.facts) {
-			throw new Error(
-				`the system module produced nothing: ${errors.system ?? "unknown reason"}`,
-			);
-		}
+		// No system module is a supported state, not a failure: a platform with no
+		// probe yet still reports its identity and everything else it loaded. If
+		// the module *is* loaded and failed, that lands in `errors` and shows on
+		// the node's card, which is where a collector failure belongs.
 
 		const projectErrors = supervisor.definitions.errors;
 		if (projectErrors.length) errors.projectsFile = projectErrors.join("; ");
 
 		const snapshot: SnapshotResult = {
+			host: collectIdentity(),
 			stats: parts.stats,
 			facts: parts.facts,
 			systemd: parts.systemd ?? {
@@ -188,6 +276,63 @@ export function startNode(config: AgentConfig): AgentHandle {
 		}
 	}
 
+	/* ---------- modules the hub asked for ---------- */
+
+	/**
+	 * The hub's half of module management, seen from the node.
+	 *
+	 * Narrowing is always honoured and needs no opt-in — it is the rule this
+	 * codebase has always had, and a hub that wants a module hidden gets it
+	 * hidden. Widening is the direction that needs `allowHubModules`, and a node
+	 * that hasn't opted in answers "no" rather than erroring: the hub is allowed
+	 * to ask, and the module page renders the refusal as a state.
+	 *
+	 * The new set takes effect on reconnect rather than here. Loading a module
+	 * runs its availability check and hands it a host built from the policy, and
+	 * doing that mid-flight — while a terminal or a log tail is open on a module
+	 * about to be dropped — is a much larger promise than this feature needs.
+	 * Recording the intent and reconnecting is the whole mechanism.
+	 */
+	async function applyModules(
+		params: ModulesApplyParams,
+	): Promise<ModulesApplyResult> {
+		const active = loaded ?? (await modules);
+
+		if (config.allowHubModules !== true) {
+			// Still apply the subtractive half: the hub could have done this by
+			// narrowing anyway, so refusing it outright would be theatre.
+			const narrowed = narrowModules(active.set, params.modules ?? {});
+			hubModules = narrowed;
+			return {
+				accepted: false,
+				modules: narrowed,
+				reason:
+					"this node does not accept hub-directed modules — start it with --allow-hub-modules, or run it as root, where that is the default",
+				restartRequired: false,
+			};
+		}
+
+		hubModules = { ...params.modules };
+		const changed = wouldChangeModules();
+		if (changed) {
+			// Reload after this reply is on the wire, not before it: the hub asked a
+			// question, and dropping the link mid-answer would look like a failure
+			// rather than the node doing exactly what it was told.
+			queueMicrotask(() => {
+				void reloadModules().then(() => {
+					socket?.close(1000, "reloading modules");
+				});
+			});
+		}
+		return {
+			accepted: true,
+			// What is running as this reply is written; `restartRequired` says the
+			// set is about to change, and the hub's next Hello is what confirms it.
+			modules: active.set,
+			restartRequired: changed,
+		};
+	}
+
 	/* ---------- control ---------- */
 
 	async function handle(req: InboundRequest): Promise<unknown> {
@@ -223,6 +368,9 @@ export function startNode(config: AgentConfig): AgentHandle {
 
 			case NodeAction.UpdateApply:
 				return await selfUpdate(req.params as UpdateApplyParams);
+
+			case NodeAction.ModulesApply:
+				return await applyModules(req.params as ModulesApplyParams);
 		}
 
 		const handler = active.dispatch(req.action);
@@ -248,7 +396,7 @@ export function startNode(config: AgentConfig): AgentHandle {
 		if (!config.allowRemoteUpdate) {
 			throw new RemoteError(
 				"forbidden",
-				"this node does not accept remote updates — start it with --allow-remote-update, or run 'stats update' on the host",
+				"this node does not accept remote updates — start it with --allow-remote-update (the default for a node running as root), or run 'stats update' on the host",
 			);
 		}
 		if (!config.control) {
@@ -349,6 +497,20 @@ export function startNode(config: AgentConfig): AgentHandle {
 				welcome.telemetryIntervalMs || config.telemetryIntervalMs,
 			);
 
+			// The hub's set arrives here on every connection, so a node picks up
+			// intent recorded while it was offline without anyone touching it.
+			hubModules = welcome.modules ?? null;
+			if (wouldChangeModules()) {
+				console.log("hub asked for a different module set — reloading");
+				void reloadModules().then(() => {
+					// Reconnect rather than announce in place: Hello is the only frame
+					// that carries capabilities, and a fresh connection is the one
+					// moment nothing is streaming off a module about to be dropped.
+					socket?.close(1000, "reloading modules");
+				});
+				return;
+			}
+
 			const skewMs = Math.abs(Date.now() - welcome.time);
 			const skew =
 				skewMs > 60_000
@@ -374,7 +536,10 @@ export function startNode(config: AgentConfig): AgentHandle {
 				node: { id: config.id, name: config.name, ...versionInfo },
 				token: config.token,
 				capabilities: capabilities(),
-				facts: await collectFacts(),
+				host: collectIdentity(),
+				// Best-effort: a platform with no probe says nothing here rather than
+				// holding up the handshake, and the hub renders what it was given.
+				facts: await probeFacts(),
 				startedAt: startedAt,
 			};
 			peer.send(MessageType.Hello, hello);
@@ -431,7 +596,12 @@ export function startNode(config: AgentConfig): AgentHandle {
 
 	return {
 		connected,
-		modules,
+		// A getter, not the promise: a hub-directed set replaces it, and a caller
+		// holding the first one would be looking at a module set that has since
+		// been reloaded.
+		get modules() {
+			return modules;
+		},
 		async stop() {
 			stopped = true;
 			if (reconnectTimer) clearTimeout(reconnectTimer);

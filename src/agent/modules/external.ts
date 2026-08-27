@@ -6,6 +6,7 @@ import {
 	toModuleManifest,
 } from "../../modules/external.ts";
 import type { ModuleHost } from "../../modules/host.ts";
+import { currentPlatform, resolveEntry } from "../../modules/platform.ts";
 import type { InstalledModule } from "../../modules/store.ts";
 import { RemoteError } from "../../proto/link.ts";
 import type { NodeModule, NodeModuleContext } from "./mod.ts";
@@ -120,14 +121,23 @@ export async function toNodeModule(
 	settings: Record<string, unknown> = {},
 ): Promise<NodeModule> {
 	const id = installed.manifest.id;
-	const entry = Bun.resolveSync(installed.manifest.entry, installed.dir);
+	// The loader already dropped modules that don't declare this platform, so an
+	// entry missing here means a manifest that declared one and shipped none.
+	const platform = currentPlatform();
+	const entryPath = resolveEntry(installed.manifest.entry, platform);
+	if (!entryPath) {
+		throw new Error(
+			`module '${id}' has no entry for ${platform ?? process.platform}`,
+		);
+	}
+	const entry = Bun.resolveSync(entryPath, installed.dir);
 	const loaded = (await import(pathToFileURL(entry).href)) as {
 		default?: ExternalNodeModule;
 	};
 	const impl = loaded.default;
 	if (!impl || typeof impl !== "object") {
 		throw new Error(
-			`${installed.manifest.entry} has no default export — a module entry exports { available?, collect?, actions? }`,
+			`${entryPath} has no default export — a module entry exports { available?, collect?, actions? }`,
 		);
 	}
 

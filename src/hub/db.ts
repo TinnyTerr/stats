@@ -122,6 +122,19 @@ export class MetricStore {
         version    TEXT,
         hostname   TEXT
       );
+
+      -- What the operator asked for from the hub's module page, per node and
+      -- module. Deliberately its own table rather than columns on nodes: this
+      -- is intent, and it has to outlive a node being forgotten and re-added,
+      -- survive the node being offline when it was set, and be readable for a
+      -- node that has never connected at all.
+      CREATE TABLE IF NOT EXISTS node_modules (
+        node_id   TEXT    NOT NULL,
+        module_id TEXT    NOT NULL,
+        enabled   INTEGER NOT NULL,
+        set_at    INTEGER NOT NULL,
+        PRIMARY KEY (node_id, module_id)
+      );
     `);
 	}
 
@@ -177,7 +190,64 @@ export class MetricStore {
 			.all() as KnownNode[];
 	}
 
+	/** The hub's per-node module intent, empty when nothing was ever set. */
+	desiredModules(nodeId: string): Record<string, boolean> {
+		const rows = this.db
+			.query(
+				"SELECT module_id AS id, enabled FROM node_modules WHERE node_id = ?",
+			)
+			.all(nodeId) as { id: string; enabled: number }[];
+		const desired: Record<string, boolean> = {};
+		for (const row of rows) desired[row.id] = row.enabled === 1;
+		return desired;
+	}
+
+	/** Every node the hub has an opinion about, for the fleet module page. */
+	allDesiredModules(): Record<string, Record<string, boolean>> {
+		const rows = this.db
+			.query(
+				"SELECT node_id AS node, module_id AS id, enabled FROM node_modules",
+			)
+			.all() as { node: string; id: string; enabled: number }[];
+		const all: Record<string, Record<string, boolean>> = {};
+		for (const row of rows) {
+			const forNode = all[row.node] ?? {};
+			forNode[row.id] = row.enabled === 1;
+			all[row.node] = forNode;
+		}
+		return all;
+	}
+
+	/**
+	 * Records intent for the modules named and leaves the rest alone. Partial on
+	 * purpose: two operators on two browsers toggling different modules should
+	 * not overwrite each other, and "not mentioned" has to keep meaning "no
+	 * opinion" rather than collapsing to false.
+	 */
+	setDesiredModules(nodeId: string, modules: Record<string, boolean>) {
+		const stmt = this.db.prepare(
+			`INSERT INTO node_modules (node_id, module_id, enabled, set_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(node_id, module_id) DO UPDATE SET
+         enabled = excluded.enabled,
+         set_at  = excluded.set_at`,
+		);
+		const now = Date.now();
+		for (const [id, enabled] of Object.entries(modules)) {
+			stmt.run(nodeId, id, enabled ? 1 : 0, now);
+		}
+	}
+
+	/** Drops the hub's opinion about one module, back to "no opinion". */
+	clearDesiredModule(nodeId: string, moduleId: string) {
+		this.db.run(
+			"DELETE FROM node_modules WHERE node_id = ? AND module_id = ?",
+			[nodeId, moduleId],
+		);
+	}
+
 	forget(nodeId: string) {
+		this.db.run("DELETE FROM node_modules WHERE node_id = ?", [nodeId]);
 		this.db.run("DELETE FROM nodes WHERE id = ?", [nodeId]);
 		this.db.run("DELETE FROM metrics WHERE node_id = ?", [nodeId]);
 		this.db.run("DELETE FROM events WHERE node_id = ?", [nodeId]);

@@ -881,6 +881,186 @@ describe("hub and node over a websocket", () => {
 		}
 	}, 20_000);
 
+	test("a node running no modules at all is still a node", async () => {
+		// The claim the module split rests on: hostname and addresses are the
+		// core's, everything else is a module's, so a host whose platform has no
+		// probe yet — or an operator who switched the lot off — still gets a node
+		// in the fleet that the hub can see, name and manage.
+		const h = await harness();
+		const node = startNode({
+			hubUrl: `ws://127.0.0.1:${h.port}/node`,
+			token: null,
+			id: "bare",
+			name: "Bare",
+			tags: [],
+			telemetryIntervalMs: 1000,
+			// Every builtin off, system included.
+			modules: resolveModules(
+				Object.fromEntries(BUILTIN_MODULE_IDS.map((id) => [id, false])),
+			),
+			trustedModules: [...BUILTIN_MODULE_IDS],
+			control: true,
+			projectPaths: [],
+		});
+
+		let ui: PeerLink | null = null;
+		try {
+			await node.connected;
+			ui = await browser(h.port);
+
+			const nodes = await eventually(
+				() => ui!.request<NodeSummary[]>(HubAction.Nodes),
+				(list) => list.length === 1 && list[0]!.status === "online",
+			);
+			const summary = nodes[0]!;
+
+			// Present, online, named and located.
+			expect(summary.id).toBe("bare");
+			expect(summary.hostname).toBeTruthy();
+			expect(summary.platform).toBe(process.platform);
+
+			// And empty everywhere a module would have filled in, rather than zeroed.
+			expect(summary.cpu).toBeNull();
+			expect(summary.mem).toBeNull();
+			expect(summary.facts).toBeNull();
+			expect(summary.disks).toEqual([]);
+
+			// A snapshot still answers; it just has a host and nothing else.
+			const snapshot = await ui.request<{
+				host: { hostname: string };
+				stats?: unknown;
+			}>(NodeAction.Snapshot, { nodeId: "bare" });
+			expect(snapshot.host.hostname).toBeTruthy();
+			expect(snapshot.stats).toBeUndefined();
+		} finally {
+			ui?.close();
+			await node.stop();
+			await h.stop();
+		}
+	}, 20_000);
+
+	test("the hub records module intent and a node applies it on reconnect", async () => {
+		const h = await harness();
+		const node = startNode({
+			hubUrl: `ws://127.0.0.1:${h.port}/node`,
+			token: null,
+			id: "managed",
+			name: "Managed",
+			tags: [],
+			telemetryIntervalMs: 1000,
+			modules: resolveModules({ terminal: true }),
+			trustedModules: [...BUILTIN_MODULE_IDS],
+			control: true,
+			projectPaths: [],
+			// The opt-in that lets the hub turn a module *on*. Narrowing works
+			// without it; see src/hub/modules.ts for why the two differ.
+			allowHubModules: true,
+		});
+
+		let ui: PeerLink | null = null;
+		try {
+			await node.connected;
+			ui = await browser(h.port);
+			await eventually(
+				() => ui!.request<NodeSummary[]>(HubAction.Nodes),
+				(list) => list.length === 1 && list[0]!.status === "online",
+			);
+
+			// The page's read: a row per module, reality and intent side by side.
+			const fleet = await ui.request<{
+				nodes: {
+					nodeId: string;
+					acceptsHubModules: boolean;
+					modules: { id: string; state: string; desired: boolean | null }[];
+				}[];
+			}>(HubAction.Modules);
+			expect(fleet.nodes).toHaveLength(1);
+			expect(fleet.nodes[0]!.acceptsHubModules).toBe(true);
+			const terminal = fleet.nodes[0]!.modules.find((m) => m.id === "terminal");
+			expect(terminal?.state).toBe("on");
+			expect(terminal?.desired).toBeNull();
+
+			// Switching one off is recorded and pushed.
+			const off = await ui.request<{
+				applied: boolean;
+				modules: { id: string; state: string }[];
+			}>(HubAction.ModulesSet, {
+				nodeId: "managed",
+				modules: { terminal: false },
+			});
+			expect(off.applied).toBe(true);
+
+			// The node reloads and reconnects, and announces the narrowed set.
+			const after = await eventually(
+				() => ui!.request<NodeSummary[]>(HubAction.Nodes),
+				(list) =>
+					moduleOn(list[0]?.capabilities?.modules, "terminal") === false,
+			);
+			expect(moduleOn(after[0]!.capabilities?.modules, "terminal")).toBe(false);
+
+			// And the intent outlives the reconnect that applied it.
+			const again = await ui.request<{
+				nodes: {
+					modules: { id: string; state: string; desired: boolean | null }[];
+				}[];
+			}>(HubAction.Modules);
+			const row = again.nodes[0]!.modules.find((m) => m.id === "terminal");
+			expect(row?.desired).toBe(false);
+			expect(row?.state).toBe("off");
+		} finally {
+			ui?.close();
+			await node.stop();
+			await h.stop();
+		}
+	}, 30_000);
+
+	test("a node that hasn't opted in refuses to have a module switched on", async () => {
+		const h = await harness();
+		const node = startNode({
+			hubUrl: `ws://127.0.0.1:${h.port}/node`,
+			token: null,
+			id: "narrow",
+			name: "Narrow",
+			tags: [],
+			telemetryIntervalMs: 1000,
+			modules: resolveModules({ terminal: false }),
+			trustedModules: [...BUILTIN_MODULE_IDS],
+			control: true,
+			projectPaths: [],
+			// allowHubModules left off: the old rule, still in force.
+		});
+
+		let ui: PeerLink | null = null;
+		try {
+			await node.connected;
+			ui = await browser(h.port);
+			await eventually(
+				() => ui!.request<NodeSummary[]>(HubAction.Nodes),
+				(list) => list.length === 1 && list[0]!.status === "online",
+			);
+
+			const result = await ui.request<{
+				applied: boolean;
+				refused?: string;
+				modules: { id: string; state: string }[];
+			}>(HubAction.ModulesSet, {
+				nodeId: "narrow",
+				modules: { terminal: true },
+			});
+
+			expect(result.applied).toBe(false);
+			expect(result.refused).toContain("--allow-hub-modules");
+			// The ask is recorded and visible, but it is not a lie about what runs.
+			expect(result.modules.find((m) => m.id === "terminal")?.state).toBe(
+				"refused",
+			);
+		} finally {
+			ui?.close();
+			await node.stop();
+			await h.stop();
+		}
+	}, 20_000);
+
 	test("the hub serves the projects schema so a node's file can point at it", async () => {
 		const h = await harness();
 		try {

@@ -83,6 +83,28 @@ export interface SystemStats {
 /* ---------- host identity ---------- */
 
 /**
+ * The only thing a node reports without a module.
+ *
+ * Everything else on a card — CPU, memory, disks, containers, units — arrives
+ * because some module collected it, and a node that loads no modules at all is
+ * still a node: it appears in the fleet, it says what it is and where it is,
+ * and it can be asked to load something. Hostname and address are what "where
+ * is it" means, so they are core and nothing else is.
+ *
+ * Keeping this deliberately tiny is what makes the platform work possible. A
+ * Windows node has no /proc and no `df`, but it has a name and an address, so
+ * it can connect and be managed before a single probe is written for it.
+ */
+export interface HostIdentity {
+	hostname: string;
+	/** non-loopback addresses, in the order the OS lists its interfaces */
+	addresses: string[];
+	/** process.platform, or null on something this build has no name for */
+	platform: string | null;
+	arch: string;
+}
+
+/**
  * The slow-moving description of a machine: distro, kernel, virtualisation,
  * init system. Collected once at startup and refreshed hourly rather than on
  * every telemetry tick, and rendered as its own panel in the dashboard.
@@ -443,6 +465,14 @@ export interface NodeCapabilities {
 	 * capabilities rather than being compiled into the browser bundle.
 	 */
 	externals?: ExternalManifest[];
+	/**
+	 * Whether this node will let the hub turn a module *on*. On by default for a
+	 * root node and off for any other, exactly like `allowRemoteUpdate`: the hub
+	 * can always take a module away, and this is the switch for the other
+	 * direction. See src/hub/modules.ts for why the two directions aren't the
+	 * same decision.
+	 */
+	acceptsHubModules?: boolean;
 }
 
 /** One tick of everything a node reports. */
@@ -450,8 +480,12 @@ export interface Telemetry {
 	node: NodeIdentity;
 	/** monotonically increasing per connection, so gaps are visible */
 	seq: number;
-	stats: SystemStats;
-	facts: HostFacts;
+	/** the core's own report — always present, never from a module */
+	host: HostIdentity;
+	/** from the `system` module; absent when no probe serves this platform */
+	stats?: SystemStats;
+	/** from the `system` module */
+	facts?: HostFacts;
 	systemd: SystemdSummary;
 	containers: Container[];
 	processes: ProcessInfo[];
@@ -563,6 +597,11 @@ export interface NodeSummary {
 	protocol: number | null;
 	capabilities: NodeCapabilities | null;
 	hostname: string | null;
+	/** non-loopback addresses, from the node's core identity */
+	addresses: string[];
+	/** process.platform of the node — what its modules had to support */
+	platform: string | null;
+	/** from the `system` module; null when this platform has no probe */
 	facts: HostFacts | null;
 	uptimeSec: number | null;
 	cpu: number | null;

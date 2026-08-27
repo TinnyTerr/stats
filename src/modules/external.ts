@@ -4,6 +4,14 @@ import {
 	OPEN_GRANTS,
 	PRIVILEGED_GRANTS,
 } from "./manifest.ts";
+import {
+	isPlatform,
+	type ModuleEntry,
+	PLATFORMS,
+	type Platform,
+	parsePlatforms,
+	platformsFromEntry,
+} from "./platform.ts";
 
 /**
  * Modules that don't ship in this repo.
@@ -132,8 +140,19 @@ export interface ExternalManifest {
 	id: string;
 	label: string;
 	description: string;
-	/** the node-side entry, relative to the module directory */
-	entry: string;
+	/**
+	 * The node-side entry, relative to the module directory. Either one file or
+	 * one per platform — see {@link ModuleEntry}:
+	 *
+	 *     "entry": "./node.ts"
+	 *     "entry": { "linux": "./linux.ts", "win32": "./windows.ts" }
+	 */
+	entry: ModuleEntry;
+	/**
+	 * Hosts this module runs on. Empty is portable. A per-platform `entry` with
+	 * no `default` fills this in on its own, so the common case states it once.
+	 */
+	platforms: Platform[];
 	grants: ModuleGrant[];
 	/** control action names this module answers; must be prefixed with its id */
 	actions: string[];
@@ -183,6 +202,47 @@ function problemsWithFormat(
 }
 
 /**
+ * `entry` is either a path or a map of platform → path. The map form is
+ * validated key by key so a typo ("windows" for "win32") is a named problem
+ * rather than a module that silently never loads on the one platform it was
+ * written for.
+ */
+function parseEntry(raw: unknown, problems: string[]): ModuleEntry {
+	if (raw === undefined || raw === null) return "./node.ts";
+	const single = str(raw);
+	if (single) return single;
+	if (typeof raw !== "object" || Array.isArray(raw)) {
+		problems.push("entry must be a path or a map of platform to path");
+		return "./node.ts";
+	}
+
+	const entry: ModuleEntry = {};
+	let named = 0;
+	for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+		const path = str(value);
+		if (!path) {
+			problems.push(`entry.${key}: must be a non-empty path`);
+			continue;
+		}
+		if (key === "default") {
+			entry.default = path;
+			named++;
+			continue;
+		}
+		if (!isPlatform(key)) {
+			problems.push(
+				`entry.${key}: unknown platform — one of ${PLATFORMS.join(", ")}, or 'default'`,
+			);
+			continue;
+		}
+		entry[key] = path;
+		named++;
+	}
+	if (!named) problems.push("entry names no usable platform");
+	return entry;
+}
+
+/**
  * Reads a manifest the way the loader has to: every problem at once, named, so
  * a module author fixes one file rather than playing whack-a-mole with the
  * installer. Returns null alongside the problems when it can't be used at all.
@@ -205,6 +265,28 @@ export function parseExternalManifest(
 		);
 	} else if (reserved.includes(id)) {
 		problems.push(`id '${id}' is the name of a module that ships with stats`);
+	}
+
+	const entry = parseEntry(source.entry, problems);
+
+	// An explicit list wins; otherwise a per-platform entry with no `default`
+	// already says which platforms the author wrote code for, and making them
+	// repeat it is how the two end up disagreeing.
+	const declared = parsePlatforms(source.platforms, "platforms", problems);
+	const platforms = declared.length
+		? declared
+		: (platformsFromEntry(entry) ?? []);
+
+	// A module can't declare a platform it ships no entry for — that is a
+	// promise the loader would have to break at start-up on that host.
+	if (typeof entry !== "string" && !entry.default) {
+		for (const platform of platforms) {
+			if (!entry[platform]) {
+				problems.push(
+					`platforms lists '${platform}' but entry has no '${platform}' or 'default'`,
+				);
+			}
+		}
 	}
 
 	const grants: ModuleGrant[] = [];
@@ -341,7 +423,8 @@ export function parseExternalManifest(
 			id,
 			label: str(source.label) ?? id,
 			description: str(source.description) ?? "",
-			entry: str(source.entry) ?? "./node.ts",
+			entry,
+			platforms,
 			grants,
 			actions,
 			tab,
@@ -368,6 +451,7 @@ export function toModuleManifest(external: ExternalManifest): ModuleManifest {
 		// It was installed on purpose; making an operator then enable it would be
 		// asking the same question twice.
 		enabledByDefault: true,
+		platforms: external.platforms,
 		grants: external.grants,
 		actions: external.actions,
 		tab: external.tab ? (external.tab.id ?? external.id) : null,

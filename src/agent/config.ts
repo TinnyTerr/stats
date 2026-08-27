@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import { toModuleManifest } from "../modules/external.ts";
+import { isRoot } from "../modules/host.ts";
 import {
 	BUILTIN_MODULE_IDS,
 	isBuiltinModuleId,
@@ -16,6 +17,15 @@ import { DEFAULT_SOURCES } from "./projects.ts";
  * usual one: command-line flags beat environment variables, which beat
  * /etc/stats/agent.json — so the installer can write a file and an operator can
  * still override it for one run.
+ *
+ * Whether the node is root is the fourth thing in that stack, underneath all of
+ * them: it decides the *defaults* for the two switches that hand the hub a
+ * direction it doesn't otherwise have. A root node has already given the
+ * machine away — the hub is the source of truth for what it should be running,
+ * so it accepts hub-directed modules and hub-directed updates unless told
+ * otherwise. A node running as anyone else keeps the old answer, "no", because
+ * there the switches are the difference between the hub narrowing what runs and
+ * the hub reaching in.
  */
 
 export interface AgentConfig {
@@ -34,14 +44,31 @@ export interface AgentConfig {
 	/** allow start/stop/restart of projects, units and containers */
 	control: boolean;
 	/**
-	 * Let the hub ask this node to replace its own binary. Off unless asked for:
-	 * everything else the hub can do is bounded by what's already installed, and
-	 * this one changes what's installed. Absent means off.
+	 * Let the hub ask this node to replace its own binary. Everything else the
+	 * hub can do is bounded by what's already installed and this one changes
+	 * what's installed, so it is a switch rather than a given — but a root node
+	 * defaults it on, because a hub that can open a root shell on this machine
+	 * can already replace the binary the long way round. Absent still means off:
+	 * the default is applied by {@link loadAgentConfig}, so a config built by
+	 * hand says exactly what it means.
 	 */
 	allowRemoteUpdate?: boolean;
+	/**
+	 * Let the hub decide which modules this node runs, rather than only which of
+	 * the ones it already loaded are visible. Same shape as allowRemoteUpdate,
+	 * and same reasoning: the hub can always take a capability away, this is the
+	 * switch for handing it the other direction, and a root node hands it over by
+	 * default because the hub is the source of truth for what it should be
+	 * running. See src/hub/modules.ts.
+	 */
+	allowHubModules?: boolean;
 	/** projects files/directories, in load order */
 	projectPaths: string[];
-	/** module ids permitted to hold the privileged exec/pty grants */
+	/**
+	 * Module ids permitted to hold the privileged exec/pty grants. Read only by
+	 * the unprivileged policy — a root node's policy is unrestricted and this
+	 * list goes unread. See src/modules/host.ts.
+	 */
 	trustedModules: string[];
 	/** what `stats modules install` put in the store, ready to load */
 	installed?: InstalledModule[];
@@ -63,6 +90,7 @@ interface RawAgentConfig {
 	terminal?: boolean;
 	control?: boolean;
 	allowRemoteUpdate?: boolean;
+	allowHubModules?: boolean;
 	projects?: string | string[];
 	modules?: Record<string, boolean>;
 	trustedModules?: string[];
@@ -175,6 +203,7 @@ export interface AgentOverrides {
 	terminal?: boolean;
 	control?: boolean;
 	allowRemoteUpdate?: boolean;
+	allowHubModules?: boolean;
 	projects?: string;
 	config?: string;
 	/** "docker,systemd" or "-terminal"; see parseModuleList */
@@ -183,6 +212,8 @@ export interface AgentOverrides {
 
 export async function loadAgentConfig(
 	flags: AgentOverrides = {},
+	/** who we are; the tests are the only caller that says */
+	root: boolean = isRoot(),
 ): Promise<AgentConfig> {
 	const path = flags.config ?? DEFAULT_CONFIG_PATH;
 	let file: RawAgentConfig = {};
@@ -269,17 +300,29 @@ export async function loadAgentConfig(
 			: 3000,
 		modules,
 		control: flags.control ?? envBool("STATS_CONTROL", file.control ?? true),
+		// Root defaults both on; a flag, an env var or the config file still says
+		// no, and on any other user the answer is no until someone says otherwise.
 		allowRemoteUpdate:
 			flags.allowRemoteUpdate ??
-			envBool("STATS_ALLOW_REMOTE_UPDATE", file.allowRemoteUpdate ?? false),
+			envBool("STATS_ALLOW_REMOTE_UPDATE", file.allowRemoteUpdate ?? root),
+		allowHubModules:
+			flags.allowHubModules ??
+			envBool("STATS_ALLOW_HUB_MODULES", file.allowHubModules ?? root),
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(
 					Boolean,
 				)
 			: DEFAULT_SOURCES,
 		// The modules in this repo are the ones trusted with exec and pty; a
-		// module from anywhere else has to be named here to get either.
-		trustedModules: file.trustedModules ?? [...BUILTIN_MODULE_IDS],
+		// module from anywhere else has to be named here to get either — unless
+		// this node is root, where the policy is unrestricted and every installed
+		// module gets both anyway. Naming them keeps the list honest about what is
+		// actually running rather than leaving it to be read as a restriction.
+		trustedModules:
+			file.trustedModules ??
+			(root
+				? [...BUILTIN_MODULE_IDS, ...installedManifests.map((m) => m.id)]
+				: [...BUILTIN_MODULE_IDS]),
 		installed,
 		moduleSettings: file.moduleSettings ?? {},
 	};

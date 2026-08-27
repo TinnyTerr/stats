@@ -8,11 +8,13 @@
  *                     relays the rest, verbatim, to the node named by `nodeId`
  */
 
+import type { NodeModuleView } from "../hub/modules.ts";
 import type { ModuleSet } from "../modules/manifest.ts";
 import type {
 	Container,
 	ExternalManifest,
 	HostFacts,
+	HostIdentity,
 	ListeningPort,
 	LogLine,
 	LogQuery,
@@ -39,7 +41,14 @@ export interface HelloPayload {
 	/** shared secret, checked against the hub's nodeToken */
 	token: string | null;
 	capabilities: NodeCapabilities;
-	facts: HostFacts;
+	/**
+	 * Name, addresses and platform. Present before any module has run, which is
+	 * what lets the hub's module page know what a node *could* load — a Windows
+	 * node that loaded nothing is still a node the hub can offer modules to.
+	 */
+	host: HostIdentity;
+	/** from the `system` module; absent when this platform has no probe */
+	facts?: HostFacts;
 	/** epoch ms the node process started */
 	startedAt: number;
 }
@@ -94,6 +103,8 @@ export const NodeAction = {
 	ProjectsList: "projects.list",
 	ProjectsReload: "projects.reload",
 	ProjectAction: "project.action",
+	/** the hub telling a node which modules it should be running */
+	ModulesApply: "modules.apply",
 } as const;
 
 /** Actions the browser sends to the hub. Anything else is relayed to a node. */
@@ -104,6 +115,10 @@ export const HubAction = {
 	Events: "events",
 	Info: "info",
 	Forget: "node.forget",
+	/** the fleet's module state, for the hub's module page */
+	Modules: "modules.fleet",
+	/** record the hub's intent for one node's modules */
+	ModulesSet: "modules.set",
 } as const;
 
 export interface NodeScoped {
@@ -196,8 +211,10 @@ export interface CommandResult {
 }
 
 export interface SnapshotResult {
-	stats: SystemStats;
-	facts: HostFacts;
+	/** the core's report; the only field here that is never a module's */
+	host: HostIdentity;
+	stats?: SystemStats;
+	facts?: HostFacts;
 	systemd: SystemdSummary;
 	units: SystemdUnit[];
 	containers: Container[];
@@ -243,8 +260,9 @@ export interface HubInfoResult {
  * There is deliberately no URL here. The node resolves the release from the
  * forge *it* is configured to trust and checks it against that release's
  * published checksums, so the worst a compromised hub can do is ask for an
- * update the node was already willing to install. A node that hasn't opted in
- * with `allowRemoteUpdate` refuses outright.
+ * update the node was already willing to install. A node without
+ * `allowRemoteUpdate` — the default for anything not running as root — refuses
+ * outright.
  */
 export interface UpdateApplyParams extends Partial<NodeScoped> {
 	/** a release tag; the node's own idea of "latest" when omitted */
@@ -271,6 +289,65 @@ export interface UpdateApplyResult {
 	restarting: boolean;
 }
 
+/* ---------- managing modules from the hub ---------- */
+
+export interface ModulesFleetParams {
+	/** just this node; the whole fleet when omitted */
+	nodeId?: string;
+}
+
+export interface ModulesFleetResult {
+	nodes: NodeModuleView[];
+	/** hub.json's fleet-wide switches, which no node can override */
+	fleet: ModuleSet;
+}
+
+export interface ModulesSetParams {
+	nodeId: string;
+	/**
+	 * Module id → wanted. Partial: a module not named keeps whatever the hub
+	 * already thought, so two operators toggling different rows don't overwrite
+	 * each other. Pass null to drop the hub's opinion entirely.
+	 */
+	modules: Record<string, boolean | null>;
+}
+
+export interface ModulesSetResult {
+	nodeId: string;
+	/** the node's rows after the change, resolved the same way the page reads them */
+	modules: NodeModuleView["modules"];
+	/**
+	 * True when the node was online and took the new set. False means the intent
+	 * is recorded and will be applied at its next Hello — which is the normal
+	 * path for a node that is offline right now.
+	 */
+	applied: boolean;
+	/** set when the node is online but refuses hub-directed modules */
+	refused?: string;
+}
+
+/**
+ * The hub asking a node to run a particular set.
+ *
+ * A node without `allowHubModules` — the default for anything not running as
+ * root — answers this with its own set unchanged and `accepted: false`, rather
+ * than an error: the hub is allowed to ask, and "no" is a complete answer that
+ * the module page can render.
+ */
+export interface ModulesApplyParams extends Partial<NodeScoped> {
+	modules: ModuleSet;
+}
+
+export interface ModulesApplyResult {
+	accepted: boolean;
+	/** what the node is running now */
+	modules: ModuleSet;
+	/** why not, when accepted is false */
+	reason?: string;
+	/** true when the new set only takes effect after the node reconnects */
+	restartRequired: boolean;
+}
+
 /** What a node reports about its own module set, on request. */
 export interface ModulesResult {
 	modules: ModuleSet;
@@ -279,6 +356,8 @@ export interface ModulesResult {
 	notes: string[];
 	/** manifests for the ones it installed rather than shipped with */
 	externals?: ExternalManifest[];
+	/** whether this node lets the hub decide its module set */
+	acceptsHubModules?: boolean;
 }
 
 /* ---------- what the hub pushes to browsers ---------- */

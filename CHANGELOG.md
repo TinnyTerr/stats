@@ -4,6 +4,75 @@ Versions are semver on the repo as a whole — hub and node ship together.
 `protocol` moves separately, only when the wire shape changes in a way an older
 peer can't read. It is also the version byte in every frame.
 
+## Unreleased — protocol 5
+
+Scaffolding for multiplatform nodes, and a hub that can manage the fleet's
+modules. Update the hub before the nodes.
+
+- **Everything is a module; hostname and addresses are the core.**
+  `src/agent/identity.ts` is now the whole of what a node collects on its own.
+  CPU, memory, disks and host facts come from the `system` module like anything
+  else does, so `telemetry.stats` and `telemetry.facts` are optional and
+  `telemetry.host` is not. Nothing in the manifest is `required` any more: a
+  node that loads no modules at all connects, appears in the fleet and reports a
+  true hostname instead of a zeroed card. This is what makes bringing up a new
+  platform additive rather than all-or-nothing.
+
+- **Modules declare the platforms they run on**, the way `package.json`
+  declares `os`. `platforms: []` is portable and the default; a non-empty list
+  is a closed set, and the loader drops anything that doesn't name the host it
+  woke up on — before asking the module anything, since the check needs no host
+  access. `stats modules` shows the column and marks what can't run here.
+  Installed modules can also ship one entry per platform
+  (`"entry": {"linux": "./linux.ts", "win32": "./windows.ts"}`); a map with no
+  `default` declares its platforms on its own, and declaring a platform you ship
+  no entry for is refused at install time.
+
+- **`system` is one module with one probe per platform.**
+  `src/collect/probe.ts` is the seam; the Linux probe is the implementation this
+  codebase grew up around, and macOS and Windows are declared stubs that report
+  unavailable — each carrying the list of what it needs. Probes load lazily and
+  one at a time, so a Linux node never imports the Windows one. A node on an
+  unprobed platform shows its identity with an empty system card rather than
+  failing to start.
+
+- **A modules page on the hub.** Every node beside every module it could run,
+  with the hub's intent set per node. Intent lives on the hub, survives a node
+  being offline when it was set, and is picked up on the node's next connection.
+  The page keeps reality and intent visibly apart — `on`, `off`, `pending`,
+  `refused`, `n/a`, `blocked` — because a node being offline or on the wrong
+  platform is an ordinary state, not an error.
+
+  **Narrowing is unconditional; widening is opt-in.** The hub can always take a
+  module away. Turning one *on* is the hub reaching into a machine, so it needs
+  `--allow-hub-modules` on the node — the same shape as `--allow-remote-update`.
+  A node that hasn't opted in answers "no" and the page says `refused`, rather
+  than the dashboard claiming something it didn't do. `hub.json`'s `modules`
+  block stays fleet-wide and subtractive, and beats per-node intent both ways.
+
+- **Root is the boundary now, and a root node is unrestricted.** The module
+  grant policy was a fence inside the node's own process: a module denied `exec`
+  was one `Bun.spawn` from having it, so on a root node it bought no safety and
+  cost an operator an evening. A node running as uid 0 now gets `rootPolicy()` —
+  every grant held, every path readable, every socket and host reachable, the
+  trust list unread — and it defaults `allowHubModules` and `allowRemoteUpdate`
+  to **on**, because the hub is the source of truth for what the fleet runs and
+  that machine has already been handed over. A flag, an env var or `agent.json`
+  still says no to any of it.
+
+  **Nothing changes for a node running as anyone else.** There the policy is the
+  only thing between a module and that account, so it keeps enforcing: declared
+  grants only, `exec`/`pty` for `trustedModules` only, both hub switches off
+  until asked for. The grants stay in every manifest either way — `stats modules
+  install` prints them and the module page shows them, so you can still see what
+  a module says it touches before installing it. They stop being a request and
+  go back to being a declaration.
+
+  **The shipped node unit and `install.sh --node` now default to root**, with
+  the old `User=stats` sandbox one `--user stats` (or a few uncommented lines)
+  away. Installing a module on a root node is running someone else's code as
+  root; the README says so where it matters.
+
 ## 0.4.0 — protocol 4
 
 - **Updating, three ways.** Re-running `install.sh` still works and is still

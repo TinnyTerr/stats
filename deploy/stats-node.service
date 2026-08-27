@@ -12,29 +12,35 @@
 # The node dials the hub — nothing listens on this machine, so no inbound
 # firewall rule is needed.
 #
-# NOTE ON PRIVILEGE: unlike the 0.1 agent, a node can open shells and start and
-# stop things, and it supervises whatever /etc/stats/projects.json declares.
-# Two ways to run it:
+# NOTE ON PRIVILEGE: a node can open shells and start and stop things, and it
+# supervises whatever /etc/stats/projects.json declares. As written it runs as
+# root, which is the configuration the rest of the design assumes:
 #
-#   - Least privilege (below): User=stats, so terminals and supervised
-#     processes run as that unprivileged user. Managed processes cannot use
-#     their `user:` field, and unit control needs polkit rules.
-#   - Full control: comment out User/Group and the sandboxing lines, and it
-#     runs as root. Only do that on hosts where you'd hand out a root shell
-#     anyway, because through the dashboard you effectively have.
+#   - Modules are unrestricted. The grant policy in src/modules/host.ts stops
+#     refusing anything, because a fence inside a root process is furniture —
+#     the module is one Bun.spawn from whatever it was denied.
+#   - The hub may switch modules on and ask this node to update itself, without
+#     --allow-hub-modules or --allow-remote-update. The hub is the source of
+#     truth for the fleet, and this machine has already been handed over.
+#   - Terminals, supervised processes and unit control are root's, so a managed
+#     process's `user:` field works and systemctl needs no polkit rules.
 #
-# Add --no-terminal and/or --no-control to ExecStart to refuse either outright.
+# Only run it this way on hosts where you'd hand out a root shell anyway,
+# because through the dashboard you have. The confinement is *who can reach the
+# hub*, not what the node will do once asked.
 #
-# UPDATES: `stats update` run on this host always works. Letting the *hub* ask
-# this node to update itself needs --allow-remote-update on ExecStart and, as
-# written below, two more things — ProtectSystem=full makes /usr read-only and
-# User=stats doesn't own the binary. To allow it:
+# LEAST PRIVILEGE instead: uncomment the User/Group, SupplementaryGroups and
+# sandboxing lines below. The node then runs as an unprivileged user, modules
+# get only the grants they declared and only the ones the policy hands out,
+# and the two hub-directed switches go back to being off unless you add the
+# flags to ExecStart. Managed processes lose their `user:` field, unit control
+# needs polkit rules, and self-update needs the binary to be writable:
 #
 #   ReadWritePaths=/usr/local/bin        (here or in a drop-in)
 #   sudo chown stats /usr/local/bin/stats
 #
-# That means anything compromising the stats user can rewrite a binary root
-# runs. Without it the node refuses cleanly rather than half-updating.
+# Add --no-terminal and/or --no-control to ExecStart to refuse either outright,
+# under any user.
 
 [Unit]
 Description=stats node (telemetry, projects and control for one host)
@@ -50,12 +56,13 @@ RestartSec=5
 # STATS_HUB and STATS_NODE_TOKEN live here, in a root-only file.
 EnvironmentFile=/etc/stats/node.env
 
-User=stats
-Group=stats
-
+# Least privilege: uncomment these three, the sandboxing block below, and give
+# ExecStart --allow-hub-modules / --allow-remote-update if you still want them.
+#User=stats
+#Group=stats
 # docker: container state and `docker exec` terminals.
-# systemd-journal: the journal log source.
-SupplementaryGroups=docker systemd-journal
+# systemd-journal: the journal log source. Root needs neither group.
+#SupplementaryGroups=docker systemd-journal
 
 # Supervised processes are children of this unit, so they share its limits.
 # Raise these if a project needs more.
@@ -66,13 +73,15 @@ LimitNOFILE=8192
 # the node; the supervisor also stops them itself on SIGTERM.
 TimeoutStopSec=30
 
-NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
-LockPersonality=yes
+# The other half of least privilege. ProtectSystem=full makes /usr read-only,
+# which is also what stops a self-update, so these come as a set with User=.
+#NoNewPrivileges=yes
+#ProtectSystem=full
+#ProtectHome=read-only
+#PrivateTmp=yes
+#RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+#RestrictSUIDSGID=yes
+#LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

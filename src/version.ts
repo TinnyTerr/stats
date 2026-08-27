@@ -11,6 +11,9 @@ export const VERSION: string = pkg.version;
  * payloads that ride on it. Bumped only when an older peer would misread a
  * newer one; the release version moves independently of it.
  *
+ * 5: a node's hostname and addresses are core (`host`) and everything else is
+ *    a module's, so `stats` and `facts` are optional; the hub carries a
+ *    per-node module plan in Welcome and can ask a node to change its set.
  * 4: telemetry carries proxmox and guests, plus `extras` — the reports of
  *    modules a node installed rather than shipped with — and capabilities
  *    carry those modules' manifests so the dashboard can draw them.
@@ -18,7 +21,7 @@ export const VERSION: string = pkg.version;
  * 2: nodes dial the hub over a WebSocket and speak the binary frame protocol.
  * 1: the hub polled each agent's HTTP API.
  */
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 
 /** What both roles report about themselves, on /api/health and in snapshots. */
 export interface VersionInfo {

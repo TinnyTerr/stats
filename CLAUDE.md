@@ -10,6 +10,27 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 
 ## Architecture rules
 
+- **The node's core report is its hostname and addresses. Everything else is a
+  module.** `src/agent/identity.ts` is the whole of what the agent collects on
+  its own; CPU, memory, disks and the host's facts come from the `system`
+  module like anything else, and `telemetry.stats` is therefore optional. A node
+  that loads no modules at all is a valid node: it connects, it appears in the
+  fleet, and its card says a true thing instead of a zeroed one. Nothing in the
+  manifest is `required` any more, and new modules should not be.
+- **A module declares the platforms it runs on, and the loader gates on it.**
+  `platforms: []` is portable — the default, and the honest answer for a module
+  made of HTTP calls; a non-empty list is a closed set. `src/modules/platform.ts`
+  is the vocabulary, the gate is the first thing `loadModules()` checks, and it
+  runs before the module is asked anything because it needs no host access.
+  An installed module can also ship one entry per platform
+  (`"entry": {"linux": "./linux.ts", "win32": "./windows.ts"}`), and a map with
+  no `default` declares its platforms on its own.
+- **`system` is one module with one probe per platform.** `src/collect/probe.ts`
+  is the seam; `src/collect/platform/linux.ts` is the implementation the rest of
+  the codebase grew up around, and darwin/win32 are declared stubs that report
+  unavailable. Probes are imported lazily and one at a time, so a Linux node
+  never loads the Windows probe. Adding a platform is a file and a row in
+  `PROBES` — not a change to the module, the agent, or the wire.
 - **Docker, systemd, terminals and the rest are modules, not special cases.**
   `src/modules/manifest.ts` is the table all three peers read — what a module
   provides, which actions it owns, which tab it draws, what it may touch.
@@ -17,10 +38,17 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   frame, action handlers); `web/modules.tsx` is the browser half (a tab and the
   card faces). Adding a capability is a row in the manifest plus those two
   halves; the shell doesn't change.
-- **A module only reaches what it declared.** Grants are `read`, `http`, `ws`
-  and `socket` for anyone, `exec` and `pty` for modules in the policy's trust
-  list. `src/modules/host.ts` is the enforcement, and it is checked at load —
-  a module wanting more than the policy allows doesn't start.
+- **A module only reaches what it declared — until the node is root.** Grants
+  are `read`, `http`, `ws` and `socket` for anyone, `exec` and `pty` for modules
+  in the policy's trust list. `src/modules/host.ts` is the enforcement, checked
+  at load, and a module wanting more than the policy allows doesn't start. That
+  is the *unprivileged* half: `hostPolicy()` hands a root node `rootPolicy()`
+  instead, where `unrestricted` is set and nothing is refused — a fence inside a
+  root process is furniture, since the module it stops is one `Bun.spawn` from
+  what it was denied. The grants survive as a declaration (the CLI prints them,
+  the module page shows them); they stop being a request. Root is the only thing
+  that switches this, and non-root keeps the real enforcement, because there the
+  policy is all that stands between a module and the account the node runs as.
 - **A module can come from a git repository, and then it isn't in the
   manifest.** `src/modules/store.ts` clones one per directory; the repo's
   `stats.module.json` becomes an ordinary `ModuleManifest` via
@@ -45,22 +73,41 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   response. This is what terminals and log tails depend on.
 - **Correlation id parity:** the hub allocates odd ids on every link it
   terminates; nodes and browsers allocate even ones. Don't break this.
-- **The hub can only narrow a node's capabilities, never widen them.** A node
-  decides which modules it loads and whether it allows control; `hub.json`'s
-  `modules` block can turn them off for everyone but can't turn them on.
-  `narrowModules()` is the one place that rule is implemented.
+- **The hub is the source of truth for module *intent*; the node is the source
+  of truth for module *state*.** `src/hub/modules.ts` is where the two are
+  resolved and `src/hub/db.ts`'s `node_modules` table is where intent is kept,
+  so it survives the node being offline when it was set. The asymmetry is the
+  whole design: **narrowing is unconditional** — the hub can always take a
+  module away, which is the rule this codebase has always had — but **widening
+  needs the node's `allowHubModules`**, the same opt-in shape as
+  `allowRemoteUpdate`, because turning a module *on* is the hub reaching into a
+  machine. Both default to **on for a root node** and off for any other, decided
+  in `loadAgentConfig()` and nowhere else: a config built by hand (tests, the
+  embedded node) means exactly what it says, and `agent.ts` only ever reads
+  `=== true`. A node that hasn't opted in answers "no" rather than erroring, and
+  the module page renders that as `refused` instead of pretending it worked.
+  `plannedModules()` carries intent and *only* intent: a module the hub has no
+  opinion about is absent from the plan, never echoed back from what the node
+  announced. Echoing it turns "docker isn't installed here" into "the hub wants
+  docker off", and the node reloads on every connection.
+- **`hub.json`'s `modules` block is still fleet-wide and still subtractive.** It
+  beats per-node intent in both directions, and no node can turn one back on.
 - **The hub can ask a node to update; it can never say where from.**
   `src/update.ts` resolves the release from the node's own forge and verifies it
   against that release's `SHA256SUMS`, so `update.apply` carries a version tag
-  at most. It is also off unless the node was started with
-  `--allow-remote-update`. Anything that would let the hub name a URL, a
-  checksum or a file path breaks the one rule this feature rests on.
+  at most. It is on by default for a root node and off for any other, the same
+  shape as `allowHubModules`. Anything that would let the hub name a URL, a
+  checksum or a file path breaks the one rule this feature rests on — that rule
+  holds under root too, where the hub may ask freely and still cannot say where
+  from.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
   a test asserts the two agree.
 - **Collectors degrade, never throw the snapshot away.** A host without Docker
   or systemd still reports everything else; the failure lands in
-  `telemetry.errors` and shows on the node's card.
+  `telemetry.errors` and shows on the node's card. A host with no *probe* is not
+  a failure at all — the `system` module is simply absent, which is how a new
+  platform is brought up additively.
 - **Outbound integrations mirror, they don't drive.** `src/hub/notion.ts`
   pushes projects into a Notion database and never reads anything back: the
   node's projects file is the source of truth, and the hub can only narrow it.
