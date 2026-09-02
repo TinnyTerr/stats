@@ -40,6 +40,9 @@ needs no inbound rule and no fixed address — only the hub does.
 - **Proxmox** — VMs and containers across a PVE host or cluster, with per-host
   load and storage. On the hypervisor it uses `pvesh` and needs no credentials;
   from anywhere else, an API token.
+- **Pi-hole** — queries, block rate, clients, top domains and upstreams from a
+  Pi-hole's own API, v5 or v6, with blocking pausable from the dashboard and a
+  timer so it comes back on by itself.
 - **Projects** — a file on each node declares what that host runs; the node
   supervises those processes and reports them as first-class things. See below.
 - **Logs** — live tails from journald, Docker, files, or a supervised process,
@@ -77,9 +80,13 @@ musl, and a no-AVX2 "baseline" build for older CPUs — verifies it against
 `SHA256SUMS`, and checks it actually runs before putting it in place. Useful
 flags: `--from dist` (install a local build), `--no-terminal`, `--no-control`,
 `--id`, `--name`, `--port`, `--host`, `--prefix`, `--no-service`,
-`--uninstall [--purge]`, `--help`.
+`--clean`, `--uninstall [--purge]`, `--help`.
 
 Re-running it upgrades in place; configs and tokens are never overwritten.
+`--clean` is the other thing: it drops this machine's config and units for the
+role being installed — scoped, so cleaning a node next to a hub leaves the hub
+alone — and installs fresh. It lists what it will remove and asks first, unless
+you pass `--yes`.
 
 ## Quick start (from source)
 
@@ -213,8 +220,8 @@ and address changes — and the hub keys everything on it.
 
 ## Modules
 
-Docker, systemd, Proxmox, terminals, processes, ports, logs and projects are
-modules, not built-in special cases. A module owns a slice of the telemetry frame, the
+Docker, systemd, Proxmox, Pi-hole, terminals, processes, ports, logs and
+projects are modules, not built-in special cases. A module owns a slice of the telemetry frame, the
 control actions that go with it, the tab it draws in the detail pane, and the
 faces it offers the front of a node card. Turn one off and all four go with it —
 no tab, no actions, no empty section.
@@ -253,7 +260,7 @@ stats modules      # the table, with a [not on this platform] marker
 | Module | Runs on |
 | --- | --- |
 | `system` | Linux, macOS, Windows — one probe per platform |
-| `projects`, `logs`, `proxmox` | any platform |
+| `projects`, `logs`, `proxmox`, `pihole` | any platform |
 | `docker`, `processes`, `ports` | Linux, macOS |
 | `systemd` | Linux |
 | `terminal` | Linux, macOS, Windows |
@@ -562,6 +569,9 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `PROXMOX_URL` | node | none (unset means "use pvesh on this host") |
 | `PROXMOX_TOKEN` | node | none |
 | `PROXMOX_INSECURE` | node | `0` |
+| `PIHOLE_URL` | node | none (unset means "no Pi-hole here") |
+| `PIHOLE_PASSWORD` | node | none (v6 app password) |
+| `PIHOLE_TOKEN` | node | none (v5 API token) |
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
 | `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
 | `STATS_HOST` | both | `git.tinnyterr.com` (where updates come from) |
@@ -694,7 +704,8 @@ src/proto/frame.ts      the binary frame codec
 src/proto/messages.ts   payload shapes and control action names
 src/proto/link.ts       PeerLink: correlation, streams, acks, heartbeats
 src/collect/            system.ts, facts.ts (the Linux probe's collectors),
-                        systemd.ts, docker.ts, proxmox.ts, processes.ts, logs.ts
+                        systemd.ts, docker.ts, proxmox.ts, pihole.ts,
+                        processes.ts, logs.ts
 src/collect/probe.ts    the per-platform seam under the `system` module
 src/collect/platform/   linux.ts (real), darwin.ts and win32.ts (declared stubs)
 src/agent/agent.ts      the node: dial, telemetry loop, control dispatch

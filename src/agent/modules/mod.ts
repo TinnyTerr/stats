@@ -7,6 +7,8 @@ import type {
 	Container,
 	HostFacts,
 	ListeningPort,
+	PiholeDetail,
+	PiholeSummary,
 	ProcessInfo,
 	ProjectStatus,
 	ProxmoxGuest,
@@ -50,6 +52,8 @@ export interface TelemetryParts {
 	projects?: ProjectStatus[];
 	proxmox?: ProxmoxSummary;
 	guests?: ProxmoxGuest[];
+	pihole?: PiholeSummary;
+	piholeDetail?: PiholeDetail;
 	/** installed modules' reports, keyed by module id — merged, not replaced */
 	extras?: Record<string, ModuleReport>;
 }

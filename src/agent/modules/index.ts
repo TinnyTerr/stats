@@ -17,6 +17,7 @@ import { RemoteError } from "../../proto/link.ts";
 import { dockerModule } from "./docker.ts";
 import { logsModule } from "./logs.ts";
 import type { NodeModule, NodeModuleContext, TelemetryParts } from "./mod.ts";
+import { piholeModule } from "./pihole.ts";
 import { portsModule, processesModule } from "./processes.ts";
 import { projectsModule } from "./projects.ts";
 import { proxmoxModule } from "./proxmox.ts";
@@ -43,6 +44,7 @@ export const BUILTIN_MODULES: NodeModule[] = [
 	dockerModule,
 	systemdModule,
 	proxmoxModule,
+	piholeModule,
 	processesModule,
 	portsModule,
 	logsModule,

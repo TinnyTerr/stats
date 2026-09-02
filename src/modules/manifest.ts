@@ -26,6 +26,7 @@ export const BUILTIN_MODULE_IDS = [
 	"docker",
 	"systemd",
 	"proxmox",
+	"pihole",
 	"processes",
 	"ports",
 	"logs",
@@ -179,6 +180,20 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		actions: ["guest.action"],
 		tab: "guests",
 		provides: ["proxmox", "guests"],
+	},
+	pihole: {
+		id: "pihole",
+		label: "Pi-hole",
+		description: "Queries, blocking and clients from a Pi-hole's own API.",
+		required: false,
+		enabledByDefault: true,
+		// Portable, and portable for the reason the default exists: this module is
+		// made of HTTP calls. The node need not be the Pi-hole, and usually isn't.
+		platforms: [],
+		grants: ["http"],
+		actions: ["pihole.blocking"],
+		tab: "pihole",
+		provides: ["pihole"],
 	},
 	processes: {
 		id: "processes",

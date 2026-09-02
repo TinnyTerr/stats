@@ -22,6 +22,8 @@ import type {
 	NodeCapabilities,
 	NodeIdentity,
 	NodeSummary,
+	PiholeDetail,
+	PiholeSummary,
 	ProcessInfo,
 	ProjectSpec,
 	ProjectStatus,
@@ -100,6 +102,7 @@ export const NodeAction = {
 	UnitAction: "unit.action",
 	ContainerAction: "container.action",
 	GuestAction: "guest.action",
+	PiholeBlocking: "pihole.blocking",
 	ProjectsList: "projects.list",
 	ProjectsReload: "projects.reload",
 	ProjectAction: "project.action",
@@ -195,6 +198,17 @@ export interface ProxmoxActionParams extends Partial<NodeScoped> {
 	verb: ProxmoxVerb;
 }
 
+/**
+ * Blocking on, or off for a while. The timer is the point of doing this from a
+ * dashboard rather than from the Pi-hole itself: blocking that switches itself
+ * back on can't be left off by whoever was debugging at the time.
+ */
+export interface PiholeBlockingParams extends Partial<NodeScoped> {
+	blocking: boolean;
+	/** seconds until blocking returns; omitted or 0 means indefinitely */
+	seconds?: number | null;
+}
+
 export type ProjectVerb = "start" | "stop" | "restart";
 
 export interface ProjectActionParams extends Partial<NodeScoped> {
@@ -223,6 +237,8 @@ export interface SnapshotResult {
 	projects: ProjectStatus[];
 	proxmox: ProxmoxSummary;
 	guests: ProxmoxGuest[];
+	pihole?: PiholeSummary;
+	piholeDetail?: PiholeDetail;
 	extras: Record<string, ModuleReport>;
 	errors: Record<string, string>;
 }

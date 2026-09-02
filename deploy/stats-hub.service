@@ -39,6 +39,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+# AF_NETLINK is not optional: getifaddrs() opens a netlink socket, and the
+# embedded node collects the hub's own addresses with it.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictSUIDSGID=yes
 LockPersonality=yes

@@ -15,6 +15,10 @@ export const bytes = (n: number | null | undefined): string => {
 	return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 };
 
+/** A plain count, grouped — a day of DNS queries is six figures. */
+export const count = (n: number | null | undefined): string =>
+	n == null ? "—" : n.toLocaleString();
+
 export const rate = (n: number | null | undefined): string =>
 	n == null ? "—" : `${bytes(n)}/s`;
 

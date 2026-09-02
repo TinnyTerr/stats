@@ -7,7 +7,9 @@ import {
 import type { NodeSummary } from "../src/types.ts";
 import { externalUiModules } from "./external.tsx";
 import {
+	ago,
 	bytes,
+	count,
 	duration,
 	pct,
 	rate,
@@ -22,6 +24,7 @@ import {
 	type LogTarget,
 	OverviewPanel,
 	type PanelProps,
+	PiholePanel,
 	PortsPanel,
 	ProcessesPanel,
 	ProjectsPanel,
@@ -635,6 +638,77 @@ export const UI_MODULES: UiModule[] = [
 								<div>
 									<dt>Uptime</dt>
 									<dd>{duration(node.uptimeSec)}</dd>
+								</div>
+							</dl>
+						</>
+					);
+				},
+			},
+		],
+	},
+
+	{
+		id: "pihole",
+		tab: {
+			id: "pihole",
+			label: "pi-hole",
+			render: (props) => <PiholePanel {...props} />,
+			// Blocking switched off is the one Pi-hole state worth a dot: it is
+			// almost always someone debugging who then went to lunch.
+			badge: (node) => node.pihole?.blocking === "disabled",
+		},
+		faces: [
+			{
+				id: "dns",
+				label: "DNS",
+				module: "pihole",
+				available: ({ node }) => Boolean(node.pihole?.available),
+				render: ({ node }) => {
+					const pihole = node.pihole;
+					const blocking = pihole?.blocking === "enabled";
+					return (
+						<>
+							<div className="metrics">
+								<Tile label="Queries" value={count(pihole?.queries ?? 0)} />
+								<Tile label="Blocked" value={count(pihole?.blocked ?? 0)} />
+								<Tile
+									label="Clients"
+									value={count(pihole?.activeClients ?? 0)}
+								/>
+							</div>
+							<Meter
+								value={pihole?.blockedRatio ?? null}
+								label={blocking ? "Blocked today" : "Blocking is off"}
+								// Not usageTone: a high block rate is the thing working, not
+								// a resource running out. Only blocking being off is a
+								// warning, and that's a state rather than a number.
+								tone={blocking ? "info" : "warn"}
+								detail={
+									blocking
+										? `${count(pihole?.gravityDomains ?? 0)} domains on the list`
+										: pihole?.blockingTimerSec
+											? `back on in ${duration(pihole.blockingTimerSec)}`
+											: "paused indefinitely"
+								}
+							/>
+							<dl className="facts">
+								<div>
+									<dt>Cached</dt>
+									<dd>{count(pihole?.cached ?? 0)}</dd>
+								</div>
+								<div>
+									<dt>Forwarded</dt>
+									<dd>{count(pihole?.forwarded ?? 0)}</dd>
+								</div>
+								<div>
+									<dt>Version</dt>
+									<dd>{pihole?.version ?? "—"}</dd>
+								</div>
+								<div>
+									<dt>Gravity</dt>
+									<dd>
+										{pihole?.gravityUpdated ? ago(pihole.gravityUpdated) : "—"}
+									</dd>
 								</div>
 							</dl>
 						</>

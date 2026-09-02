@@ -246,6 +246,11 @@ export function startNode(config: AgentConfig): AgentHandle {
 			projects: parts.projects ?? [],
 			proxmox: parts.proxmox ?? emptyProxmoxSummary(),
 			guests: parts.guests ?? [],
+			// Optional, unlike proxmox: a node with no Pi-hole says nothing rather
+			// than reporting an empty one, which is what keeps the face off cards
+			// that have no business showing it.
+			pihole: parts.pihole,
+			piholeDetail: parts.piholeDetail,
 			extras: parts.extras ?? {},
 			errors,
 		};
@@ -433,11 +438,15 @@ export function startNode(config: AgentConfig): AgentHandle {
 		console.warn(
 			`disconnected (${why}); reconnecting in ${Math.round(jittered / 1000)}s`,
 		);
+		// Deliberately *not* unref'd: while the hub is unreachable this timer is
+		// the only thing holding the loop open, and an unref'd one let the node
+		// exit 0 between attempts — which systemd reports as a clean shutdown and
+		// then restarts, so an unresolvable hub looked like a crash loop instead
+		// of a node patiently retrying. stop() clears it.
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = null;
 			connect();
 		}, jittered);
-		reconnectTimer.unref?.();
 		reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
 	}
 

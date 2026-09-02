@@ -16,8 +16,33 @@ import type { HostIdentity } from "../types.ts";
  * every platform it builds for, so this function needs no probe of its own.
  */
 export function collectIdentity(): HostIdentity {
+	return {
+		hostname: os.hostname(),
+		addresses: interfaceAddresses(),
+		platform: currentPlatform() ?? process.platform,
+		arch: process.arch,
+	};
+}
+
+/**
+ * `os.networkInterfaces()` *throws* when the host refuses the call — a systemd
+ * unit whose `RestrictAddressFamilies=` omits `AF_NETLINK` blocks the
+ * `getifaddrs()` behind it, and the hub's own unit did exactly that. A node
+ * that can't see its addresses still knows its name, which is a true report;
+ * crashing the process that was only trying to introduce itself is not.
+ */
+function interfaceAddresses(): string[] {
 	const addresses: string[] = [];
-	for (const entries of Object.values(os.networkInterfaces())) {
+	let interfaces: ReturnType<typeof os.networkInterfaces>;
+	try {
+		interfaces = os.networkInterfaces();
+	} catch (err) {
+		console.warn(
+			`identity: no network addresses (${err instanceof Error ? err.message : String(err)})`,
+		);
+		return addresses;
+	}
+	for (const entries of Object.values(interfaces)) {
 		for (const entry of entries ?? []) {
 			// Loopback tells you nothing about where a node is, and link-local
 			// IPv6 is per-interface noise that would differ on every tick.
@@ -26,11 +51,5 @@ export function collectIdentity(): HostIdentity {
 			addresses.push(entry.address);
 		}
 	}
-
-	return {
-		hostname: os.hostname(),
-		addresses,
-		platform: currentPlatform() ?? process.platform,
-		arch: process.arch,
-	};
+	return addresses;
 }

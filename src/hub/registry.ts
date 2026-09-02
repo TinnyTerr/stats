@@ -443,6 +443,9 @@ export class NodeRegistry {
 			// Only a node that actually reached Proxmox gets a summary; an empty one
 			// would put a guests face on every card in the fleet.
 			proxmox: t?.proxmox?.available ? t.proxmox : null,
+			// Same rule as proxmox: only a node that actually reached one gets a
+			// summary, so the face appears on the Pi-hole's card and nowhere else.
+			pihole: t?.pihole?.available ? t.pihole : null,
 			projects: t
 				? {
 						total: projects.length,

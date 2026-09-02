@@ -312,6 +312,65 @@ export interface ProxmoxSummary {
 	templates: number;
 }
 
+/* ---------- pi-hole ---------- */
+
+/**
+ * One row of a Pi-hole leaderboard — a domain, a client or an upstream.
+ * `name` is what the resolver saw; `label` is the friendlier name Pi-hole
+ * knows it by, which only clients and upstreams usually have.
+ */
+export interface PiholeEntry {
+	name: string;
+	label: string | null;
+	count: number;
+}
+
+/** Enough of a Pi-hole for a card face without opening the tab. */
+export interface PiholeSummary {
+	available: boolean;
+	/** which API answered: v6's REST API, or v5's api.php */
+	via: "v6" | "v5" | null;
+	/** where the node reached it, so the card can say which Pi-hole this is */
+	url: string | null;
+	/** the install's own version — core's, falling back to FTL's */
+	version: string | null;
+	/**
+	 * Blocking, not the daemon: a Pi-hole answering happily with blocking
+	 * switched off is the state this exists to make visible.
+	 */
+	blocking: "enabled" | "disabled" | "unknown";
+	/** seconds until blocking comes back on; null when it was disabled outright */
+	blockingTimerSec: number | null;
+	/** today's counters, which is the window every Pi-hole UI shows */
+	queries: number;
+	blocked: number;
+	/** 0..1, so the two APIs' different units don't leak into the dashboard */
+	blockedRatio: number | null;
+	cached: number;
+	forwarded: number;
+	uniqueDomains: number;
+	/** clients that asked something today */
+	activeClients: number;
+	/** domains on the blocklist */
+	gravityDomains: number;
+	/** epoch ms of the last gravity update, null when the API doesn't say */
+	gravityUpdated: number | null;
+}
+
+/**
+ * The rows behind the tab. Kept out of {@link PiholeSummary} because that goes
+ * to every browser on every tick, and because Pi-hole charges a separate
+ * request for each of these — see the refresh interval in src/collect/pihole.ts.
+ */
+export interface PiholeDetail {
+	topQueries: PiholeEntry[];
+	topBlocked: PiholeEntry[];
+	topClients: PiholeEntry[];
+	upstreams: PiholeEntry[];
+	/** query types (A, AAAA, HTTPS…) as a share of the total, 0..1 */
+	queryTypes: Record<string, number>;
+}
+
 /* ---------- projects ---------- */
 
 export type RestartPolicy = "always" | "on-failure" | "never";
@@ -494,6 +553,10 @@ export interface Telemetry {
 	projects: ProjectStatus[];
 	proxmox: ProxmoxSummary;
 	guests: ProxmoxGuest[];
+	/** from the `pihole` module; absent when the node reaches no Pi-hole */
+	pihole?: PiholeSummary;
+	/** the leaderboards behind the Pi-hole tab; refreshed slower than the tick */
+	piholeDetail?: PiholeDetail;
 	/** what each installed module reported this tick, keyed by module id */
 	extras: Record<string, ModuleReport>;
 	/** non-fatal collection errors, keyed by collector name */
@@ -615,6 +678,8 @@ export interface NodeSummary {
 	systemd: SystemdSummary | null;
 	projects: { total: number; running: number; degraded: number } | null;
 	proxmox: ProxmoxSummary | null;
+	/** null unless this node actually reached a Pi-hole */
+	pihole: PiholeSummary | null;
 	/** installed modules' scalars — the rows stay in telemetry, see ModuleHeadline */
 	extras: Record<string, ModuleHeadline>;
 	collectorErrors: Record<string, string>;

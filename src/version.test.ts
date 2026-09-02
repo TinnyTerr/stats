@@ -150,6 +150,7 @@ describe("agent config", () => {
 			"system",
 			"projects",
 			"proxmox",
+			"pihole",
 			"logs",
 			"terminal",
 		]);

@@ -27,6 +27,8 @@
 #
 # It is re-runnable: installing over an existing copy upgrades the binary and
 # restarts the service, and never overwrites a config or token you already have.
+# Pass --clean when you want the other thing — a fresh install, with this
+# machine's stats config and units thrown away first.
 
 set -eu
 
@@ -46,6 +48,7 @@ NO_CONTROL=0
 PORT=""
 HUB_HOST=""
 NO_SERVICE=0
+CLEAN=0
 UNINSTALL=0
 PURGE=0
 ASSUME_YES=0
@@ -101,6 +104,8 @@ Service:
   --no-service         install the binary and config but no systemd unit
 
 Other:
+  --clean              wipe this machine's existing stats config and units
+                       before installing, instead of upgrading in place
   --uninstall          stop services and remove the binary and units
   --purge              with --uninstall, also delete configs and history
   --yes                don't prompt
@@ -139,6 +144,7 @@ while [ $# -gt 0 ]; do
     --token)      TOKEN="${2:?--token needs a value}"; shift ;;
     --token=*)    TOKEN="${1#--token=}" ;;
     --no-service) NO_SERVICE=1 ;;
+    --clean)      CLEAN=1 ;;
     --uninstall)  UNINSTALL=1 ;;
     --purge)      PURGE=1 ;;
     --yes|-y)     ASSUME_YES=1 ;;
@@ -208,6 +214,88 @@ uninstall() {
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then uninstall; exit 0; fi
+
+# ------------------------------------------------------------------- clean
+#
+# The opposite of the re-run: --clean throws this machine's stats config and
+# units away so what follows is a first install rather than an upgrade. It is
+# scoped to the role being installed — cleaning a node on a machine that also
+# runs the hub leaves the hub's config and its history alone — and it happens
+# after the binary is safely on disk, so a failed download can't leave a
+# machine with no config and no stats.
+clean_existing() {
+  if [ "$IS_ROOT" -ne 1 ]; then
+    warn "--clean needs root — leaving $CONF_DIR and the units alone."
+    return
+  fi
+
+  case "$MODE" in
+    node) units="stats-node stats-agent"
+          files="$CONF_DIR/node.env $CONF_DIR/agent.json $CONF_DIR/projects.json" ;;
+    hub)  units="stats-hub"
+          files="$CONF_DIR/hub.json $CONF_DIR/hub.env" ;;
+    *)    units="stats-node stats-agent stats-hub"
+          files="$CONF_DIR/node.env $CONF_DIR/agent.json $CONF_DIR/projects.json
+                 $CONF_DIR/hub.json $CONF_DIR/hub.env" ;;
+  esac
+
+  # node.env is where the hub URL comes from on a re-run, so refusing now beats
+  # deleting it and dying two steps later with nothing left to read.
+  if [ "$MODE" = "node" ] && [ -z "$HUB_URL" ] && [ -f "$CONF_DIR/node.env" ]; then
+    die "--clean deletes $CONF_DIR/node.env, which is where the hub URL would
+  otherwise have come from. Pass --hub-url ws://hub.lan:3000 (and --token)."
+  fi
+
+  gone_files=""
+  for f in $files; do
+    [ -e "$f" ] && gone_files="${gone_files:+$gone_files }$f"
+  done
+  gone_units=""
+  for u in $units; do
+    [ -f "$UNIT_DIR/$u.service" ] && gone_units="${gone_units:+$gone_units }$u"
+  done
+  purge_state=0
+  if [ "$PURGE" -eq 1 ] && [ "$MODE" != "node" ] && [ -d "$STATE_DIR" ]; then
+    purge_state=1
+  fi
+
+  if [ -z "$gone_files" ] && [ -z "$gone_units" ] && [ "$purge_state" -eq 0 ]; then
+    log "${DIM}nothing to clean — no existing config or units here.$RESET"
+    return
+  fi
+
+  step "clean install — this removes:"
+  for u in $gone_units; do log "    $UNIT_DIR/$u.service"; done
+  for f in $gone_files; do log "    $f"; done
+  [ "$purge_state" -eq 1 ] && log "    $STATE_DIR   ${DIM}(the hub's metric history)$RESET"
+  case " $gone_files " in
+    *" $CONF_DIR/hub.env "*)
+      log "${YELLOW}    a new node token will be generated — every node has to be given it again.$RESET" ;;
+  esac
+  if [ "$PURGE" -eq 0 ] && [ "$MODE" != "node" ] && [ -d "$STATE_DIR" ]; then
+    log "${DIM}    ($STATE_DIR is kept — add --purge to drop the history too.)$RESET"
+  fi
+  confirm "Remove them and install fresh?"
+
+  # Stopping first is not just tidiness: a unit left running while its
+  # EnvironmentFile disappears spends the gap in a restart loop, and the noise
+  # ends up in the journal this script prints if anything else goes wrong.
+  if have systemctl; then
+    for u in $gone_units; do
+      systemctl disable --now "$u" >/dev/null 2>&1 || true
+      rm -f "$UNIT_DIR/$u.service"
+    done
+    [ -n "$gone_units" ] && systemctl daemon-reload || true
+  else
+    for u in $gone_units; do rm -f "$UNIT_DIR/$u.service"; done
+  fi
+
+  for f in $gone_files; do rm -f "$f"; done
+  [ "$purge_state" -eq 1 ] && rm -rf "$STATE_DIR"
+
+  # Anything the token or URL would have been read back from is gone now.
+  log "${DIM}cleaned.$RESET"
+}
 
 # ------------------------------------------------------------ platform pick
 
@@ -392,6 +480,8 @@ esac
 
 # --------------------------------------------------------------- services
 
+if [ "$CLEAN" -eq 1 ]; then clean_existing; fi
+
 if [ -z "$MODE" ]; then
   log ""
   log "Next: ${BOLD}stats hub${RESET} on the machine showing the dashboard, then"
@@ -444,6 +534,32 @@ random_token() {
   else
     die "no openssl or /dev/urandom to generate a token — pass --token."
   fi
+}
+
+# A node that is *running* is not a node that is *connected*: with the hub
+# unreachable it retries forever, which is the right behaviour for the node and
+# no feedback at all here. Read the answer out of the journal it just wrote.
+report_node_link() {
+  have journalctl || return 0
+  i=0
+  while [ "$i" -lt 8 ]; do
+    out=$(journalctl -u stats-node -n 40 --no-pager 2>/dev/null) || return 0
+    case "$out" in
+      *"connected to hub"*)
+        log "${GREEN}connected to $HUB_URL.$RESET"; return 0 ;;
+      *"hub rejected this node"*)
+        warn "the hub refused this node — check --token matches the hub's
+  STATS_NODE_TOKEN (it is in /etc/stats/hub.env on the hub)."
+        return 0 ;;
+    esac
+    i=$((i + 1))
+    sleep 1
+  done
+  warn "the node is running but hasn't reached $HUB_URL yet. It will keep
+  retrying, so this may just be slow — otherwise check that the name resolves
+  from here, that the hub is bound to something other than 127.0.0.1, and that
+  port ${HUB_URL##*:} is open. Follow it with:
+    journalctl -u stats-node -f"
 }
 
 restart_unit() {
@@ -579,6 +695,7 @@ $UNIT_SANDBOX
 WantedBy=multi-user.target
 EOF
     restart_unit stats-node
+    report_node_link
   fi
 
   log ""
@@ -681,7 +798,9 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is not optional: getifaddrs() opens a netlink socket, so without
+# it the embedded node's identity collection fails and takes the hub with it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictSUIDSGID=yes
 LockPersonality=yes
 

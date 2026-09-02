@@ -9,6 +9,16 @@ peer can't read. It is also the version byte in every frame.
 Scaffolding for multiplatform nodes, and a hub that can manage the fleet's
 modules. Update the hub before the nodes.
 
+- **A Pi-hole module.** `PIHOLE_URL` is the whole of the configuration: the
+  node detects whether it is talking to v6's REST API or v5's `api.php` and
+  reports queries, block rate, cached and forwarded counts, clients, gravity
+  size and the top domains, clients and upstreams either way. Blocking can be
+  paused from the dashboard with a timer, so it switches itself back on rather
+  than being left off by whoever was debugging. The module is portable — it is
+  made of HTTP calls, and the node need not be the Pi-hole — and holds nothing
+  but the `http` grant. A Pi-hole that stops answering is a collection error on
+  the node's card, not a module that quietly disappears.
+
 - **Everything is a module; hostname and addresses are the core.**
   `src/agent/identity.ts` is now the whole of what a node collects on its own.
   CPU, memory, disks and host facts come from the `system` module like anything
@@ -100,6 +110,33 @@ modules. Update the hub before the nodes.
   Passing `buckets` averages the window into that many even slots; without it
   the rows stay exact and the cap keeps the most recent ones. The param is
   optional and additive, so the wire shape is unchanged.
+
+- **A node whose hub is unreachable no longer exits.** Its reconnect timer was
+  unref'd, and with no socket, no telemetry tick and nothing supervised it was
+  the only thing holding the loop open — so the process exited *0* between
+  attempts. systemd read that as a clean shutdown and restarted it, which is how
+  a wrong hub URL came out looking like a crash loop and made `install.sh`
+  report that the node "didn't come up". The timer is ref'd; `stop()` still
+  clears it.
+
+- **The hub stopped crashing on `getifaddrs`.** Its unit omitted `AF_NETLINK`
+  from `RestrictAddressFamilies=`, which blocks the netlink socket behind
+  `os.networkInterfaces()` — so the embedded node threw while introducing
+  itself and took the hub down with it, once every restart. The generated unit
+  now grants it (the one in `deploy/` already did), and `collectIdentity()`
+  reports a hostname with no addresses rather than throwing, because a node that
+  can't see its own addresses still knows its name.
+
+- **`install.sh --clean`.** The installer's whole posture is "re-running
+  upgrades in place and never overwrites your config", which leaves `rm -rf
+  /etc/stats` as the only way to ask for a genuinely fresh one. `--clean` is
+  that, scoped to the role being installed — a clean node install next to a hub
+  leaves `hub.json`, `hub.env` and the history alone — and it lists what it will
+  remove and asks first. It stops the units before deleting their
+  `EnvironmentFile`, which is also what keeps the journal free of the restart
+  loop the manual version caused. After a node install the script now reads the
+  journal back and says whether the node actually reached the hub, rather than
+  reporting success for a process that is merely running.
 
 ## 0.4.0 — protocol 4
 

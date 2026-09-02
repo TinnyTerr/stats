@@ -12,6 +12,7 @@ import type {
 	Container,
 	LogLine,
 	NodeSummary,
+	PiholeEntry,
 	ProjectStatus,
 	ProxmoxGuest,
 	SystemdUnit,
@@ -19,8 +20,10 @@ import type {
 	Telemetry,
 } from "../src/types.ts";
 import {
+	ago,
 	bytes,
 	clock,
+	count,
 	cpuTime,
 	dateTime,
 	distro,
@@ -1519,6 +1522,200 @@ export function GuestsPanel({ node, telemetry, hub, go }: PanelProps) {
 					</DataTable>
 				</section>
 			) : null}
+		</div>
+	);
+}
+
+/* ---------- pi-hole ---------- */
+
+/** How long the dashboard offers to hold blocking off for. */
+const PAUSES: { label: string; seconds: number | null }[] = [
+	{ label: "30s", seconds: 30 },
+	{ label: "5m", seconds: 300 },
+	{ label: "indefinitely", seconds: null },
+];
+
+/** One leaderboard. They all have the same shape, so they share one renderer. */
+function PiholeTop({
+	title,
+	unit,
+	entries,
+}: {
+	title: string;
+	unit: string;
+	entries: PiholeEntry[];
+}) {
+	const most = entries.reduce((max, entry) => Math.max(max, entry.count), 0);
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>{title}</h4>
+				<span className="dim">{unit}</span>
+			</header>
+			{entries.length ? (
+				<DataTable columns={[title, "", unit]}>
+					{entries.map((entry) => (
+						<tr key={`${entry.label ?? ""}${entry.name}`}>
+							<td className="truncate" title={entry.name}>
+								{entry.label ?? entry.name}
+							</td>
+							<td>
+								{/* The bar is the row's share of the busiest row, which is
+								    the comparison anyone reading a top-ten actually makes. */}
+								<Meter
+									value={most ? entry.count / most : null}
+									label={entry.label ? entry.name : ""}
+									format={() => ""}
+									tone="info"
+								/>
+							</td>
+							<td className="mono">{count(entry.count)}</td>
+						</tr>
+					))}
+				</DataTable>
+			) : (
+				<Empty>Nothing yet.</Empty>
+			)}
+		</section>
+	);
+}
+
+export function PiholePanel({ node, telemetry, hub }: PanelProps) {
+	const pihole = telemetry?.pihole ?? node.pihole;
+	const detail = telemetry?.piholeDetail;
+	const canControl = node.capabilities?.control ?? false;
+	const error = telemetry?.errors?.pihole ?? node.collectorErrors?.pihole;
+
+	if (!pihole?.available) {
+		return (
+			<>
+				{error && <ErrorNote>{error}</ErrorNote>}
+				<Empty>
+					{moduleOn(node.capabilities?.modules, "pihole")
+						? "This node hasn't reached its Pi-hole yet."
+						: "The pihole module isn't loaded on this node."}
+				</Empty>
+			</>
+		);
+	}
+
+	const blocking = pihole.blocking === "enabled";
+	const set = (enabled: boolean, seconds: number | null) =>
+		hub.request(NodeAction.PiholeBlocking, {
+			nodeId: node.id,
+			blocking: enabled,
+			seconds,
+		});
+
+	const types = Object.entries(detail?.queryTypes ?? {})
+		.filter(([, share]) => share > 0)
+		.sort((a, b) => b[1] - a[1]);
+
+	return (
+		<div className="stack">
+			{error && <ErrorNote>{error}</ErrorNote>}
+
+			<section className="panel">
+				<header className="panel-head">
+					<h4>
+						<Dot tone={blocking ? "ok" : "warn"} />
+						{pihole.blocking === "unknown"
+							? "Blocking state unknown"
+							: blocking
+								? "Blocking"
+								: "Not blocking"}
+						{pihole.blockingTimerSec ? (
+							<Pill tone="warn">
+								back on in {duration(pihole.blockingTimerSec)}
+							</Pill>
+						) : null}
+					</h4>
+					<span className="row-actions">
+						{blocking ? (
+							PAUSES.map((pause) => (
+								<ActionButton
+									key={pause.label}
+									danger
+									disabled={!canControl}
+									title={`stop blocking ${pause.label}`}
+									onAction={() => set(false, pause.seconds)}
+								>
+									pause {pause.label}
+								</ActionButton>
+							))
+						) : (
+							<ActionButton
+								disabled={!canControl}
+								title="resume blocking"
+								onAction={() => set(true, null)}
+							>
+								resume blocking
+							</ActionButton>
+						)}
+					</span>
+				</header>
+
+				{/* Stat is a dt/dd pair, so it wants a list around it — the same
+				    grid the overview's facts use. */}
+				<dl className="facts-grid">
+					<Stat label="Queries today" value={count(pihole.queries)} />
+					<Stat label="Blocked" value={count(pihole.blocked)} />
+					<Stat label="Cached" value={count(pihole.cached)} />
+					<Stat label="Forwarded" value={count(pihole.forwarded)} />
+					<Stat label="Clients" value={count(pihole.activeClients)} />
+					<Stat label="Domains asked for" value={count(pihole.uniqueDomains)} />
+					<Stat label="On the blocklist" value={count(pihole.gravityDomains)} />
+					<Stat
+						label="Gravity updated"
+						value={pihole.gravityUpdated ? ago(pihole.gravityUpdated) : "—"}
+						title={dateTime(pihole.gravityUpdated)}
+					/>
+				</dl>
+
+				<Meter
+					value={pihole.blockedRatio}
+					label="Blocked"
+					tone={blocking ? "info" : "warn"}
+					detail={`${count(pihole.blocked)} of ${count(pihole.queries)} queries · ${
+						pihole.url ?? ""
+					}${pihole.version ? ` · ${pihole.version}` : ""} · api ${pihole.via}`}
+				/>
+			</section>
+
+			{types.length ? (
+				<section className="panel">
+					<header className="panel-head">
+						<h4>Query types</h4>
+						<span className="dim">share of today's queries</span>
+					</header>
+					<dl className="facts-grid">
+						{types.slice(0, 6).map(([name, share]) => (
+							<Stat key={name} label={name} value={pct(share)} />
+						))}
+					</dl>
+				</section>
+			) : null}
+
+			<PiholeTop
+				title="Top domains"
+				unit="queries"
+				entries={detail?.topQueries ?? []}
+			/>
+			<PiholeTop
+				title="Top blocked"
+				unit="blocked"
+				entries={detail?.topBlocked ?? []}
+			/>
+			<PiholeTop
+				title="Top clients"
+				unit="queries"
+				entries={detail?.topClients ?? []}
+			/>
+			<PiholeTop
+				title="Upstreams"
+				unit="queries"
+				entries={detail?.upstreams ?? []}
+			/>
 		</div>
 	);
 }
