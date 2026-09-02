@@ -185,10 +185,18 @@ export function startHub(config: HubConfig) {
 				const window = Number.isFinite(minutes)
 					? Math.min(Math.max(minutes, 1), 24 * 60)
 					: 60;
-				return store.history(
-					String(p.nodeId ?? ""),
-					Date.now() - window * 60_000,
-				);
+				// The cap is what a browser can plot, not what the table holds: a
+				// caller asking for buckets is asking for the whole window at a
+				// resolution it can draw.
+				const buckets = Number(p.buckets ?? 0);
+				const until = Date.now();
+				return store.history(String(p.nodeId ?? ""), until - window * 60_000, {
+					untilMs: until,
+					buckets:
+						Number.isFinite(buckets) && buckets > 0
+							? Math.min(Math.max(Math.round(buckets), 2), 1000)
+							: undefined,
+				});
 			}
 
 			case HubAction.Events: {
@@ -384,13 +392,24 @@ export function startHub(config: HubConfig) {
 			"/api/nodes/:id/history": (req: Request) => {
 				if (!requireToken(req, config.token)) return unauthorized();
 				const { id } = (req as Request & { params: { id: string } }).params;
-				const minutes = Number(
-					new URL(req.url).searchParams.get("minutes") ?? 60,
-				);
+				const query = new URL(req.url).searchParams;
+				const minutes = Number(query.get("minutes") ?? 60);
 				const window = Number.isFinite(minutes)
 					? Math.min(minutes, 24 * 60)
 					: 60;
-				return json(store.history(id, Date.now() - window * 60_000));
+				// Same deal as the socket action: a long window is only honest when
+				// it is bucketed, since the row cap otherwise takes a slice of it.
+				const buckets = Number(query.get("buckets") ?? 0);
+				const until = Date.now();
+				return json(
+					store.history(id, until - window * 60_000, {
+						untilMs: until,
+						buckets:
+							Number.isFinite(buckets) && buckets > 0
+								? Math.min(Math.max(Math.round(buckets), 2), 1000)
+								: undefined,
+					}),
+				);
 			},
 
 			"/api/events": (req: Request) => {

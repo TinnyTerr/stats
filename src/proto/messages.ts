@@ -238,6 +238,13 @@ export interface ProjectsListResult {
 export interface HistoryParams {
 	nodeId: string;
 	minutes?: number;
+	/**
+	 * Ask for the window averaged into this many even slots instead of raw
+	 * samples. A day of three-second ticks is thirty thousand rows and no chart
+	 * draws that, so anything asking for a long window asks for buckets; omitting
+	 * it keeps the exact samples, most recent first-capped.
+	 */
+	buckets?: number;
 }
 
 export interface EventsParams {

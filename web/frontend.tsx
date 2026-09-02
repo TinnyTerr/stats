@@ -15,6 +15,7 @@ import {
 	versionState,
 	versionTone,
 } from "./format.ts";
+import type { MetricPoint } from "./history.ts";
 import {
 	connectHub,
 	type HubConnection,
@@ -41,15 +42,6 @@ import "./index.css";
  * telemetry, alerts and every control request — the panels below just render
  * whatever the latest frame said.
  */
-
-/** The columns of the hub's history table a card actually draws. */
-interface HistoryRow {
-	cpu: number;
-	memUsed: number;
-	memTotal: number;
-	rxRate: number;
-	txRate: number;
-}
 
 interface Alert {
 	id: number;
@@ -247,8 +239,27 @@ function NodeDetail({
 
 	const props = { node, telemetry, hub, go, target: logTarget };
 
+	// The drawer pops over the fleet, so it has to take focus with it —
+	// otherwise the tab key walks the cards behind the blur.
+	const pane = useRef<HTMLElement>(null);
+	useEffect(() => {
+		pane.current?.focus();
+	}, []);
+
 	return (
-		<aside className="detail">
+		<aside
+			className="detail"
+			ref={pane}
+			role="dialog"
+			aria-modal="true"
+			aria-label={`${node.name} detail`}
+			tabIndex={-1}
+			onKeyDown={(event) => {
+				if (event.key !== "Escape") return;
+				event.stopPropagation();
+				onClose();
+			}}
+		>
 			<header className="detail-head">
 				<div>
 					<h2>
@@ -459,7 +470,7 @@ function App() {
 		for (const node of nodes) {
 			if (history.has(node.id)) continue;
 			connection
-				.request<HistoryRow[]>(HubAction.History, {
+				.request<MetricPoint[]>(HubAction.History, {
 					nodeId: node.id,
 					minutes: HISTORY_MINUTES,
 				})
@@ -497,6 +508,9 @@ function App() {
 		() => nodes.find((n) => n.id === selectedId) ?? null,
 		[nodes, selectedId],
 	);
+	// The drawer only belongs to the fleet view; switching to modules puts it
+	// away rather than leaving a node's panel floating over a different page.
+	const drawer = view === "fleet" ? selected : null;
 	const offline = nodes.filter((n) => n.status === "offline").length;
 	// Only online nodes count: an offline one's version is whatever it last
 	// reported, and "3 behind" that you can't act on is noise during a rollout.
@@ -510,7 +524,7 @@ function App() {
 		: null;
 
 	return (
-		<div className={`app ${selected ? "with-detail" : ""}`}>
+		<div className="app">
 			<header className="topbar">
 				<h1>stats</h1>
 				{hubInfo && <span className="version">v{hubInfo.version}</span>}
@@ -610,7 +624,7 @@ function App() {
 				</main>
 			)}
 
-			<main className="grid" hidden={view !== "fleet"}>
+			<main className="grid" hidden={view !== "fleet"} inert={Boolean(drawer)}>
 				{nodes.map((node) => (
 					<NodeCard
 						key={node.id}
@@ -656,13 +670,25 @@ function App() {
 				)}
 			</main>
 
-			{view === "fleet" && selected && hub.current && (
-				<NodeDetail
-					node={selected}
-					telemetry={telemetry.get(selected.id) ?? null}
-					hub={hub.current}
-					onClose={() => setSelectedId(null)}
-				/>
+			{drawer && hub.current && (
+				<>
+					{/* The blur is the point: the fleet stays visible behind the drawer
+					    as context, and stops competing with it for attention. Clicking
+					    it is the other way out, so it is a real button. */}
+					<button
+						type="button"
+						className="scrim"
+						aria-label="Close detail"
+						onClick={() => setSelectedId(null)}
+					/>
+					<NodeDetail
+						key={drawer.id}
+						node={drawer}
+						telemetry={telemetry.get(drawer.id) ?? null}
+						hub={hub.current}
+						onClose={() => setSelectedId(null)}
+					/>
+				</>
 			)}
 		</div>
 	);

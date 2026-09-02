@@ -185,6 +185,44 @@ describe("MetricStore", () => {
 		store.close();
 	});
 
+	test("a capped window keeps its most recent samples, not its first", () => {
+		const store = new MetricStore(":memory:");
+		const now = Date.now();
+		for (let i = 0; i < 10; i++)
+			store.record("srv", fakeStats(now - (10 - i) * 1000, i / 10));
+
+		// The cap has to bite the head of the window: a chart that drops its tail
+		// is a chart that stops at whatever moment the limit was reached.
+		const rows = store.history("srv", 0, { limit: 3 });
+		expect(rows).toHaveLength(3);
+		expect(rows.map((row) => row.cpu)).toEqual([0.7, 0.8, 0.9]);
+
+		store.close();
+	});
+
+	test("buckets average a window into even slots", () => {
+		const store = new MetricStore(":memory:");
+		const now = Date.now();
+		// Ten samples spread over the last ten minutes, ramping 0 → 0.9.
+		for (let i = 0; i < 10; i++)
+			store.record("srv", fakeStats(now - (10 - i) * 60_000, i / 10));
+
+		const rows = store.history("srv", now - 10 * 60_000, {
+			buckets: 5,
+			untilMs: now,
+		});
+		// Five slots of two minutes each, so every slot holds two samples and
+		// reports their mean — and the series still spans the whole window.
+		expect(rows).toHaveLength(5);
+		expect(rows[0]!.cpu).toBeCloseTo(0.05, 5);
+		expect(rows[4]!.cpu).toBeCloseTo(0.85, 5);
+		expect(rows[4]!.ts).toBeGreaterThan(rows[0]!.ts);
+		// Constants ride along unchanged.
+		expect(rows[0]!.diskTotal).toBe(500);
+
+		store.close();
+	});
+
 	test("remembers nodes so they survive a hub restart", () => {
 		const store = new MetricStore(":memory:");
 		store.seen({

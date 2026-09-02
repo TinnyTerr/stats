@@ -26,6 +26,9 @@ needs no inbound rule and no fixed address — only the hub does.
 
 - **Live metrics** — CPU (per core), memory, swap, disks, network rates,
   temperatures, load, uptime; a rolling history that survives a hub restart.
+- **Charted, not just listed** — a node's overview draws CPU, memory, load,
+  network and storage over the last hour, six hours or day from the hub's own
+  series, with a table view of the same numbers beside it.
 - **Host identity, spelled out** — distribution and version from os-release and
   lsb-release, kernel, architecture, virtualisation, init system, systemd
   version, machine id, Docker version.
@@ -505,7 +508,7 @@ curl and scripts (all under the hub's `token` when one is set):
 | `GET /api/health` | liveness, no auth |
 | `GET /api/nodes` | summary of every known node |
 | `GET /api/nodes/:id` | summary plus the last full telemetry frame |
-| `GET /api/nodes/:id/history?minutes=60` | time series for charts |
+| `GET /api/nodes/:id/history?minutes=60&buckets=240` | time series for charts; `buckets` averages the window into that many even slots, which is the only honest way to ask for a long one |
 | `GET /api/events?minutes=1440` | connections, crashes, failed units |
 | `GET /schema/projects.schema.json` | the projects schema |
 | `WS /node` | where nodes connect |

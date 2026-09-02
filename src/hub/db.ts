@@ -253,18 +253,85 @@ export class MetricStore {
 		this.db.run("DELETE FROM events WHERE node_id = ?", [nodeId]);
 	}
 
-	history(nodeId: string, sinceMs: number, limit = 2000): MetricRow[] {
-		return this.db
-			.query(
-				`SELECT ts, cpu, mem_used AS memUsed, mem_total AS memTotal, load1,
-                rx_rate AS rxRate, tx_rate AS txRate,
-                disk_used AS diskUsed, disk_total AS diskTotal
-           FROM metrics
-          WHERE node_id = ? AND ts >= ?
-          ORDER BY ts ASC
-          LIMIT ?`,
-			)
-			.all(nodeId, sinceMs, limit) as MetricRow[];
+	/**
+	 * The rolling series for one node, oldest first.
+	 *
+	 * `buckets` is the only way to ask for a long window honestly. At a three
+	 * second tick a day is nearly thirty thousand rows, so a bare `LIMIT` can
+	 * only ever return a slice of it — and a slice of the *start* of the window,
+	 * which draws a chart labelled "24 hours" out of its first ninety minutes.
+	 * Asking for N buckets averages each sample into a fixed-width slot instead,
+	 * so the shape spans the whole window at whatever resolution the caller can
+	 * actually draw. Without it the rows are exact and the cap takes the most
+	 * recent ones, because a truncated series should lose its tail, not its head.
+	 */
+	history(
+		nodeId: string,
+		sinceMs: number,
+		options: {
+			/** cap on exact rows returned; ignored when bucketing */
+			limit?: number;
+			/** average the window into this many even slots */
+			buckets?: number;
+			/**
+			 * The far edge of the window. Defaults to now, and exists so the slot
+			 * width is a property of the window the caller asked for rather than of
+			 * the moment the query happened to run.
+			 */
+			untilMs?: number;
+		} = {},
+	): MetricRow[] {
+		const { limit = 2000, buckets, untilMs = Date.now() } = options;
+
+		if (buckets && buckets > 0) {
+			// Slots are measured from the start of the window, not from the epoch:
+			// aligning them to absolute time would hand back an arbitrary number of
+			// buckets depending on where `sinceMs` happened to fall. The last index
+			// is clamped so a sample landing exactly on the far edge joins the final
+			// slot instead of opening one of its own.
+			//
+			// The totals are constants that ride along, so averaging them is a no-op
+			// except across a disk being resized mid-window.
+			const width = Math.max(1, Math.ceil((untilMs - sinceMs) / buckets));
+			return this.db
+				.query(
+					`SELECT ? + MIN((ts - ?) / ?, ?) * ? AS ts,
+                  AVG(cpu) AS cpu, AVG(mem_used) AS memUsed,
+                  AVG(mem_total) AS memTotal, AVG(load1) AS load1,
+                  AVG(rx_rate) AS rxRate, AVG(tx_rate) AS txRate,
+                  AVG(disk_used) AS diskUsed, AVG(disk_total) AS diskTotal
+             FROM metrics
+            WHERE node_id = ? AND ts >= ?
+            GROUP BY MIN((ts - ?) / ?, ?)
+            ORDER BY ts ASC`,
+				)
+				.all(
+					sinceMs,
+					sinceMs,
+					width,
+					buckets - 1,
+					width,
+					nodeId,
+					sinceMs,
+					sinceMs,
+					width,
+					buckets - 1,
+				) as MetricRow[];
+		}
+
+		return (
+			this.db
+				.query(
+					`SELECT ts, cpu, mem_used AS memUsed, mem_total AS memTotal, load1,
+                  rx_rate AS rxRate, tx_rate AS txRate,
+                  disk_used AS diskUsed, disk_total AS diskTotal
+             FROM metrics
+            WHERE node_id = ? AND ts >= ?
+            ORDER BY ts DESC
+            LIMIT ?`,
+				)
+				.all(nodeId, sinceMs, limit) as MetricRow[]
+		).reverse();
 	}
 
 	events(sinceMs: number, limit = 200, nodeId?: string): EventRow[] {

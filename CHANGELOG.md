@@ -73,6 +73,34 @@ modules. Update the hub before the nodes.
   away. Installing a module on a root node is running someone else's code as
   root; the README says so where it matters.
 
+- **The node drawer pops out over the fleet instead of taking a column beside
+  it.** Opening a node no longer reflows the grid into half its width, the
+  drawer gets the room its tables always needed, and the fleet stays visible
+  behind a blur as context rather than as competition. Escape closes it, so does
+  the backdrop, focus moves into it and the grid behind it goes inert.
+
+- **The modules page was drawn underneath the node grid.** `.grid` sets
+  `display: grid`, which beats the UA's `[hidden] { display: none }` on
+  specificity, so switching views left a full grid of invisible cards on top of
+  the page taking every click. Fixed in the stylesheet, where the bug was.
+
+- **The overview tab is a dashboard now, not a facts sheet.** A counts strip
+  that links into the tab that lists each thing; a *Right now* panel with CPU,
+  memory, swap and the busiest mount as meters, the load average read as a
+  fraction of the machine's cores, and a **per-core CPU strip** — the probe has
+  always reported `cpu.perCore` and nothing drew it, and it is the only thing on
+  the page that separates "busy" from "one thread pinned"; a **History** panel
+  charting CPU, memory, load, network and storage from the hub's own rolling
+  series; and the node's addresses, loaded modules, latency and connection time
+  alongside the host facts.
+
+- **`history` can be asked for buckets, and a long window now means one.**
+  `MetricStore.history()` capped at the *oldest* 2000 rows, so at a three-second
+  tick a chart labelled "24 hours" was drawn from its first ninety minutes.
+  Passing `buckets` averages the window into that many even slots; without it
+  the rows stay exact and the cap keeps the most recent ones. The param is
+  optional and additive, so the wire shape is unchanged.
+
 ## 0.4.0 — protocol 4
 
 - **Updating, three ways.** Re-running `install.sh` still works and is still

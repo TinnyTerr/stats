@@ -33,15 +33,19 @@ import {
 	systemStateTone,
 	type Tone,
 	unitTone,
+	usageTone,
 	virtualization,
 } from "./format.ts";
+import { DEFAULT_RANGE, HISTORY_RANGES, type MetricPoint } from "./history.ts";
 import { type HubConnection, streamJson } from "./link.ts";
 import {
 	ActionButton,
+	Chart,
 	DataTable,
 	Dot,
 	Empty,
 	ErrorNote,
+	Meter,
 	Pill,
 	Stat,
 } from "./ui.tsx";
@@ -187,11 +191,437 @@ function UpdatePanel({ node, hub }: { node: NodeSummary; hub: HubConnection }) {
 
 /* ---------- overview ---------- */
 
-export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
+/**
+ * The counted things this node has, and the way into the tab that lists them.
+ *
+ * Every entry is gated on the module that produces it, so a host without docker
+ * has no container count rather than a zero — the same rule the tabs follow.
+ */
+function Counts({ node, telemetry, go }: PanelProps) {
+	const modules = node.capabilities?.modules;
+	const systemd = telemetry?.systemd ?? node.systemd;
+
+	const entries: {
+		id: string;
+		tab: string;
+		label: string;
+		value: string;
+		bad?: boolean;
+	}[] = [];
+
+	if (moduleOn(modules, "docker") && node.containers)
+		entries.push({
+			id: "containers",
+			tab: "containers",
+			label: "containers up",
+			value: `${node.containers.running}/${node.containers.total}`,
+			bad: node.containers.unhealthy > 0,
+		});
+
+	if (moduleOn(modules, "systemd") && systemd?.available)
+		entries.push({
+			id: "units",
+			tab: "services",
+			label: systemd.failed.length ? "units failed" : "units active",
+			value: systemd.failed.length
+				? String(systemd.failed.length)
+				: `${systemd.active}/${systemd.total}`,
+			bad: systemd.failed.length > 0,
+		});
+
+	if (moduleOn(modules, "projects") && node.projects?.total)
+		entries.push({
+			id: "projects",
+			tab: "projects",
+			label: "projects running",
+			value: `${node.projects.running}/${node.projects.total}`,
+			bad: node.projects.degraded > 0,
+		});
+
+	if (moduleOn(modules, "proxmox") && node.proxmox?.available)
+		entries.push({
+			id: "guests",
+			tab: "guests",
+			label: "guests running",
+			value: `${node.proxmox.running}/${node.proxmox.total}`,
+		});
+
+	if (moduleOn(modules, "processes") && telemetry?.processes.length)
+		entries.push({
+			id: "processes",
+			tab: "processes",
+			label: "processes",
+			value: String(telemetry.processes.length),
+		});
+
+	if (moduleOn(modules, "ports") && telemetry?.ports.length)
+		entries.push({
+			id: "ports",
+			tab: "ports",
+			label: "listening ports",
+			value: String(telemetry.ports.length),
+		});
+
+	if (!entries.length) return null;
+
+	return (
+		<div className="counts">
+			{entries.map((entry) => (
+				<button
+					key={entry.id}
+					type="button"
+					className={`count ${entry.bad ? "bad" : ""}`}
+					onClick={() => go(entry.tab)}
+					title={`open the ${entry.tab} tab`}
+				>
+					<strong>{entry.value}</strong>
+					<span>{entry.label}</span>
+				</button>
+			))}
+		</div>
+	);
+}
+
+/**
+ * What the machine is doing at this instant, from the frame that just landed.
+ *
+ * The per-core strip is the part worth having: the probe has always reported
+ * `cpu.perCore` and nothing drew it, and it is the only thing on the page that
+ * separates "busy" from "one thread pinned and eleven cores idle" — which the
+ * aggregate number cannot say and the history chart cannot either.
+ */
+function LivePanel({ telemetry }: PanelProps) {
+	const stats = telemetry?.stats;
+	if (!stats) return null;
+
+	const memUsage = stats.mem.total ? stats.mem.used / stats.mem.total : null;
+	const swapUsage = stats.mem.swapTotal
+		? stats.mem.swapUsed / stats.mem.swapTotal
+		: null;
+	const disks = [...stats.disks].sort((a, b) => b.usage - a.usage);
+	const worst = disks[0] ?? null;
+	const cores = stats.cpu.perCore;
+	// Load is per-core pressure once you divide it: 4.0 is a busy quad-core and
+	// an idle 32-core, and the ratio is the only version that reads the same on
+	// both machines.
+	const perCore = stats.cpu.cores ? stats.loadavg[0] / stats.cpu.cores : null;
+
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>Right now</h4>
+				<span className="dim">{clock(stats.timestamp)}</span>
+			</header>
+
+			<div className="meters">
+				<Meter
+					value={stats.cpu.usage}
+					label="CPU"
+					detail={`${stats.cpu.cores} core${stats.cpu.cores === 1 ? "" : "s"}${
+						perCore != null
+							? ` · load ${(perCore * 100).toFixed(0)}% of them`
+							: ""
+					}`}
+				/>
+				<Meter
+					value={memUsage}
+					label="Memory"
+					detail={`${bytes(stats.mem.used)} of ${bytes(stats.mem.total)} · ${bytes(stats.mem.available)} available`}
+				/>
+				{stats.mem.swapTotal > 0 && (
+					<Meter
+						value={swapUsage}
+						label="Swap"
+						detail={`${bytes(stats.mem.swapUsed)} of ${bytes(stats.mem.swapTotal)}`}
+					/>
+				)}
+				{worst && (
+					<Meter
+						value={worst.usage}
+						label={worst.mount}
+						detail={`${bytes(worst.available)} free${disks.length > 1 ? ` · busiest of ${disks.length} mounts` : ""}`}
+					/>
+				)}
+			</div>
+
+			{cores.length > 1 && (
+				<>
+					<p className="meter-detail" style={{ marginTop: 12 }}>
+						Per-core CPU — {cores.length} logical cores, busiest{" "}
+						{pct(Math.max(...cores))}
+					</p>
+					<div className="cores">
+						{cores.map((usage, index) => (
+							<div
+								// A core's position in /proc/stat is the only name it has, and
+								// it is stable for the life of the machine.
+								// biome-ignore lint/suspicious/noArrayIndexKey: explained above
+								key={index}
+								className={`core ${usageTone(usage)}`}
+								title={`core ${index}: ${pct(usage)}`}
+							>
+								<i style={{ height: `${Math.max(2, usage * 100)}%` }} />
+							</div>
+						))}
+					</div>
+				</>
+			)}
+
+			<dl className="facts-grid" style={{ marginTop: 14 }}>
+				<Stat
+					label="Load average"
+					value={stats.loadavg.map((n) => n.toFixed(2)).join("  ")}
+					title="1, 5 and 15 minute averages"
+				/>
+				<Stat
+					label="Network"
+					value={`↓${rate(stats.net.reduce((sum, n) => sum + (n.rxRate ?? 0), 0))} ↑${rate(
+						stats.net.reduce((sum, n) => sum + (n.txRate ?? 0), 0),
+					)}`}
+				/>
+				<Stat label="Cached" value={bytes(stats.mem.cached)} />
+				<Stat label="Buffers" value={bytes(stats.mem.buffers)} />
+				<Stat label="Free" value={bytes(stats.mem.free)} />
+				<Stat label="Uptime" value={duration(stats.uptimeSec)} />
+			</dl>
+
+			{stats.temps.length > 0 && (
+				<div className="chips">
+					{stats.temps.map((temp) => (
+						<Pill
+							key={temp.name}
+							tone={
+								temp.celsius > 80 ? "crit" : temp.celsius > 65 ? "warn" : "idle"
+							}
+						>
+							{temp.name} {Math.round(temp.celsius)}°C
+						</Pill>
+					))}
+				</div>
+			)}
+		</section>
+	);
+}
+
+/**
+ * The hub's rolling series, drawn.
+ *
+ * Five measures, five charts: CPU and memory and storage are fractions, load is
+ * a queue length and network is bytes a second, and putting two of those on one
+ * plot means picking an alignment between two scales that the data never had.
+ * One range control sits above all of them so every chart describes the same
+ * slice — and every chart has a table twin, because a value a reader can only
+ * reach by hovering is a value some readers cannot reach at all.
+ */
+function HistoryPanel({ node, hub }: PanelProps) {
+	const [rangeId, setRangeId] = useState(DEFAULT_RANGE.id);
+	const [rows, setRows] = useState<MetricPoint[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [table, setTable] = useState(false);
+	const [tick, setTick] = useState(0);
+
+	const range =
+		HISTORY_RANGES.find((candidate) => candidate.id === rangeId) ??
+		DEFAULT_RANGE;
+
+	// Slower than the telemetry tick on purpose: a day of history re-read every
+	// three seconds is a query per node per tick for a picture that moves by one
+	// pixel. The live panel above is what updates at frame rate.
+	useEffect(() => {
+		const timer = setInterval(() => setTick((n) => n + 1), 30_000);
+		return () => clearInterval(timer);
+	}, []);
+
+	// `tick` is the refetch trigger: it is in the dependency list precisely
+	// because nothing in the body reads it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: explained above
+	useEffect(() => {
+		let live = true;
+		setLoading(true);
+		hub
+			.request<MetricPoint[]>(HubAction.History, {
+				nodeId: node.id,
+				minutes: range.minutes,
+				buckets: range.buckets,
+			})
+			.then((result) => {
+				if (live) setRows(result);
+			})
+			.catch(() => {
+				if (live) setRows([]);
+			})
+			.finally(() => {
+				if (live) setLoading(false);
+			});
+		return () => {
+			live = false;
+		};
+	}, [hub, node.id, range.minutes, range.buckets, tick]);
+
+	const x = useMemo(() => rows.map((row) => row.ts), [rows]);
+	const fraction = (used: number, total: number) =>
+		total ? used / total : null;
+
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>History</h4>
+				<span className="dim">
+					{rows.length} sample{rows.length === 1 ? "" : "s"}
+				</span>
+			</header>
+
+			<div className="range">
+				<div className="seg">
+					{HISTORY_RANGES.map((candidate) => (
+						<button
+							key={candidate.id}
+							type="button"
+							className={candidate.id === range.id ? "active" : ""}
+							aria-pressed={candidate.id === range.id}
+							onClick={() => setRangeId(candidate.id)}
+						>
+							{candidate.label}
+						</button>
+					))}
+				</div>
+				<button
+					type="button"
+					className="action"
+					aria-pressed={table}
+					onClick={() => setTable((on) => !on)}
+				>
+					{table ? "charts" : "table"}
+				</button>
+			</div>
+
+			{!rows.length && !loading ? (
+				<Empty>
+					The hub has no samples for this node yet. History starts the first
+					time a node reports, and is kept for as long as the hub's retention
+					window.
+				</Empty>
+			) : table ? (
+				<DataTable
+					columns={[
+						"Time",
+						{ label: "CPU", align: "right" },
+						{ label: "Memory", align: "right" },
+						{ label: "Load", align: "right" },
+						{ label: "Down", align: "right" },
+						{ label: "Up", align: "right" },
+						{ label: "Storage", align: "right" },
+					]}
+				>
+					{[...rows].reverse().map((row) => (
+						<tr key={row.ts}>
+							<td className="dim">{dateTime(row.ts)}</td>
+							<td className="right">{pct(row.cpu)}</td>
+							<td className="right">
+								{pct(fraction(row.memUsed, row.memTotal))}
+							</td>
+							<td className="right">{row.load1.toFixed(2)}</td>
+							<td className="right">{rate(row.rxRate)}</td>
+							<td className="right">{rate(row.txRate)}</td>
+							<td className="right">
+								{pct(fraction(row.diskUsed, row.diskTotal))}
+							</td>
+						</tr>
+					))}
+				</DataTable>
+			) : (
+				<div className={`charts ${loading ? "loading" : ""}`}>
+					<Chart
+						label="CPU"
+						x={x}
+						max={1}
+						format={pct}
+						series={[
+							{
+								id: "cpu",
+								label: "CPU",
+								values: rows.map((row) => row.cpu),
+								color: "var(--series-1)",
+							},
+						]}
+					/>
+					<Chart
+						label="Memory used"
+						x={x}
+						max={1}
+						format={pct}
+						series={[
+							{
+								id: "mem",
+								label: "Memory",
+								values: rows.map((row) => fraction(row.memUsed, row.memTotal)),
+								color: "var(--series-1)",
+							},
+						]}
+					/>
+					<Chart
+						label="Load average (1 min)"
+						x={x}
+						format={(value) => value.toFixed(2)}
+						series={[
+							{
+								id: "load",
+								label: "Load",
+								values: rows.map((row) => row.load1),
+								color: "var(--series-1)",
+							},
+						]}
+					/>
+					<Chart
+						label="Network"
+						x={x}
+						format={rate}
+						series={[
+							{
+								id: "rx",
+								label: "down",
+								values: rows.map((row) => row.rxRate),
+								color: "var(--series-1)",
+							},
+							{
+								id: "tx",
+								label: "up",
+								values: rows.map((row) => row.txRate),
+								color: "var(--series-2)",
+							},
+						]}
+					/>
+					<Chart
+						label="Storage used (all mounts)"
+						x={x}
+						max={1}
+						format={pct}
+						series={[
+							{
+								id: "disk",
+								label: "Storage",
+								values: rows.map((row) =>
+									fraction(row.diskUsed, row.diskTotal),
+								),
+								color: "var(--series-1)",
+							},
+						]}
+					/>
+				</div>
+			)}
+		</section>
+	);
+}
+
+export function OverviewPanel(props: PanelProps) {
+	const { node, telemetry, hub, go } = props;
 	const facts = telemetry?.facts ?? node.facts;
 	const style = distro(facts);
 	const systemd = telemetry?.systemd ?? node.systemd;
 	const stats = telemetry?.stats;
+	const modules = Object.entries(node.capabilities?.modules ?? {})
+		.filter(([, on]) => on)
+		.map(([id]) => id);
 
 	const [events, setEvents] = useState<
 		{ ts: number; kind: string; message: string }[]
@@ -211,6 +641,12 @@ export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
 
 	return (
 		<div className="stack">
+			<Counts {...props} />
+
+			<LivePanel {...props} />
+
+			<HistoryPanel {...props} />
+
 			<section className="panel">
 				<header className="panel-head">
 					<h4>Host</h4>
@@ -230,7 +666,10 @@ export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
 						value={facts?.hostname ?? node.hostname ?? "—"}
 					/>
 					<Stat label="Kernel" value={facts?.kernel ?? "—"} />
-					<Stat label="Architecture" value={facts?.arch ?? "—"} />
+					<Stat
+						label="Architecture"
+						value={facts?.arch ?? node.platform ?? "—"}
+					/>
 					<Stat label="Platform" value={virtualization(facts)} />
 					<Stat
 						label="Init"
@@ -285,7 +724,41 @@ export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
 						value={node.version ? `stats ${node.version}` : "—"}
 					/>
 					<Stat label="Address" value={node.remoteAddress ?? "—"} />
+					<Stat
+						label="Latency"
+						value={node.latencyMs != null ? `${node.latencyMs} ms` : "—"}
+						title="round trip of the hub's last ping"
+					/>
+					<Stat
+						label="Connected"
+						value={node.connectedAt ? dateTime(node.connectedAt) : "—"}
+					/>
 				</dl>
+
+				{/* The node's own addresses — the core identity every node reports,
+				    module or no module, and the thing you actually need to reach it. */}
+				{node.addresses.length > 0 && (
+					<div
+						className="chips"
+						title="every non-loopback address this node has"
+					>
+						{node.addresses.map((address) => (
+							<span key={address} className="chip static mono">
+								{address}
+							</span>
+						))}
+					</div>
+				)}
+
+				{modules.length > 0 && (
+					<div className="chips" title="the modules this node loaded">
+						{modules.map((id) => (
+							<span key={id} className="chip static">
+								{id}
+							</span>
+						))}
+					</div>
+				)}
 			</section>
 
 			<UpdatePanel node={node} hub={hub} />
@@ -376,25 +849,6 @@ export function OverviewPanel({ node, telemetry, hub, go }: PanelProps) {
 							</tr>
 						))}
 					</DataTable>
-
-					{stats.temps.length > 0 && (
-						<div className="chips">
-							{stats.temps.map((temp) => (
-								<Pill
-									key={temp.name}
-									tone={
-										temp.celsius > 80
-											? "crit"
-											: temp.celsius > 65
-												? "warn"
-												: "idle"
-									}
-								>
-									{temp.name} {Math.round(temp.celsius)}°C
-								</Pill>
-							))}
-						</div>
-					)}
 				</section>
 			)}
 

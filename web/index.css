@@ -15,6 +15,28 @@
 	--idle: #6b7684;
 	--accent: #58a6ff;
 	--mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+	/* Chart series. Two slots is the whole set — every chart here plots one
+     measure, and the only two-series chart is network, where down and up share
+     a unit. Both are validated against --panel-2, the surface a chart lands on:
+     adjacent CVD ΔE 26.8, normal-vision ΔE 31.8, each over 3:1 on the panel. */
+	--series-1: #3987e5;
+	--series-2: #d95926;
+}
+
+/*
+ * A hidden element is hidden.
+ *
+ * The UA's own `[hidden] { display: none }` is specificity (0, 1, 0), so any
+ * class that sets `display` beats it — and `.grid` sets `display: grid`. That
+ * is how the modules page ended up drawn underneath a full grid of node cards
+ * that were invisible to the eye and still taking every click. The attribute is
+ * repeated to buy a point of specificity without reaching for `!important`,
+ * which would reverse the cascade for anything that legitimately wants to
+ * override it later.
+ */
+[hidden][hidden] {
+	display: none;
 }
 
 * {
@@ -32,34 +54,20 @@ body {
 		sans-serif;
 }
 
+/*
+ * Three rows and one column: the bar, whatever banner is up, and the view.
+ * The node drawer is deliberately not in here — it is an overlay now, so
+ * opening one doesn't reflow the grid underneath it.
+ */
 .app {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
-	grid-template-rows: auto minmax(0, 1fr);
-	/* the areas must exist in both states — without them `grid-area: top/grid`
-     name lines that don't exist and the children spill into implicit tracks */
+	grid-template-rows: auto auto minmax(0, 1fr);
 	grid-template-areas:
 		"top"
-		"grid";
+		"banner"
+		"main";
 	height: 100vh;
-}
-
-.app.with-detail {
-	grid-template-columns: minmax(0, 1fr) minmax(460px, 46%);
-	grid-template-areas:
-		"top top"
-		"grid detail";
-}
-
-@media (max-width: 900px) {
-	.app.with-detail {
-		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: auto minmax(0, 1fr) minmax(0, 1.4fr);
-		grid-template-areas:
-			"top"
-			"grid"
-			"detail";
-	}
 }
 
 /* ---------- top bar ---------- */
@@ -109,8 +117,7 @@ body {
 }
 
 .banner {
-	grid-area: grid;
-	align-self: start;
+	grid-area: banner;
 	margin: 16px 20px 0;
 	padding: 10px 14px;
 	border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
@@ -161,7 +168,7 @@ body {
 /* ---------- grid of nodes ---------- */
 
 .grid {
-	grid-area: grid;
+	grid-area: main;
 	overflow: auto;
 	padding: 18px 20px 28px;
 	display: grid;
@@ -615,13 +622,81 @@ body {
 
 /* ---------- detail ---------- */
 
+/*
+ * The node drawer pops out over the fleet rather than taking a column beside
+ * it. Two reasons it is worth the overlay machinery: the grid keeps its own
+ * layout when one opens — cards no longer reflow into a narrower column the
+ * moment you click one — and the drawer gets the width it actually needs on a
+ * laptop, where a 46% column made every table inside it scroll sideways.
+ */
+.scrim {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	border: none;
+	padding: 0;
+	background: rgb(4 6 10 / 55%);
+	/* the point of the pop-out: what's behind stays visible, stays context, and
+     stops competing for attention */
+	backdrop-filter: blur(7px) saturate(80%);
+	-webkit-backdrop-filter: blur(7px) saturate(80%);
+	animation: scrim-in 0.16s ease-out;
+	cursor: pointer;
+}
+
+/* Safari and Firefox-with-the-flag-off render backdrop-filter as nothing at
+   all, which would leave a barely-tinted sheet over a busy grid. */
+@supports not (
+		(backdrop-filter: blur(1px)) or
+		(-webkit-backdrop-filter: blur(1px))
+	) {
+	.scrim {
+		background: rgb(4 6 10 / 78%);
+	}
+}
+
 .detail {
-	grid-area: detail;
+	position: fixed;
+	z-index: 60;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: min(920px, 94vw);
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
 	background: var(--panel);
 	border-left: 1px solid var(--border);
+	box-shadow: -24px 0 60px rgb(0 0 0 / 45%);
+	animation: detail-in 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+@keyframes scrim-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes detail-in {
+	from {
+		transform: translateX(24px);
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.scrim,
+	.detail {
+		animation: none;
+	}
+}
+
+/* On a phone the drawer is the whole screen rather than a sheet at the edge. */
+@media (max-width: 700px) {
+	.detail {
+		width: 100vw;
+		border-left: none;
+	}
 }
 
 .detail-head {
@@ -1099,7 +1174,7 @@ th.right {
 
 /* A full-width page in the slot the node grid usually occupies. */
 .page {
-	grid-area: grid;
+	grid-area: main;
 	overflow: auto;
 	padding: 18px 20px 28px;
 }
@@ -1147,4 +1222,312 @@ th.right {
 
 .module-node td.right .action + .action {
 	margin-left: 4px;
+}
+
+/* ---------- charts ---------- */
+
+/*
+ * The history section. One filter row scopes every chart below it, so the
+ * numbers in them always describe the same slice of time — a per-chart range
+ * picker is how a dashboard ends up with two charts disagreeing.
+ */
+.range {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+}
+
+.range .seg {
+	display: flex;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.range .seg button {
+	font: inherit;
+	font-size: 12px;
+	padding: 4px 10px;
+	color: var(--dim);
+	background: var(--panel);
+	border: none;
+	border-right: 1px solid var(--border);
+	cursor: pointer;
+}
+
+.range .seg button:last-child {
+	border-right: none;
+}
+
+.range .seg button.active {
+	color: var(--text);
+	background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+}
+
+.charts {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 14px 18px;
+}
+
+/* Reloading holds the previous render rather than flashing a skeleton: the
+   frame stays, the numbers catch up. */
+.charts.loading {
+	opacity: 0.55;
+	transition: opacity 0.2s;
+}
+
+.chart {
+	min-width: 0;
+}
+
+.chart-head {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-bottom: 2px;
+}
+
+.chart-label {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--dim);
+}
+
+.chart-legend {
+	display: flex;
+	gap: 10px;
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--dim);
+}
+
+.chart-legend span {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+/* a line key, not a filled box: at this size a swatch is data-weight ink */
+.chart-legend i,
+.chart-tip-row i {
+	width: 12px;
+	height: 2px;
+	border-radius: 1px;
+	flex: none;
+}
+
+.chart-plot {
+	position: relative;
+}
+
+.chart-plot svg {
+	display: block;
+	overflow: visible;
+}
+
+.chart-plot svg:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 4px;
+}
+
+/* hairline, solid, one step off the surface — a grid that competes with the
+   data is a grid drawn wrong */
+.chart-grid {
+	stroke: var(--border);
+	stroke-width: 1;
+}
+
+/*
+ * Tick anchoring lives here rather than on a `textAnchor` attribute: CSS beats
+ * a presentation attribute, so a rule on this class silently wins over one, and
+ * the first x label ends up outside the plot instead of under its own sample.
+ */
+.chart-tick {
+	fill: var(--dim);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+}
+
+.chart-tick.y {
+	text-anchor: end;
+}
+
+.chart-tick.x {
+	text-anchor: middle;
+}
+
+.chart-tick.x.first {
+	text-anchor: start;
+}
+
+.chart-tick.x.last {
+	text-anchor: end;
+}
+
+.chart-line {
+	fill: none;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+/* the surface ring keeps an end dot legible where it lands on its own line */
+.chart-end {
+	stroke: var(--panel-2);
+	stroke-width: 2;
+}
+
+.chart-cross {
+	stroke: var(--dim);
+	stroke-width: 1;
+	opacity: 0.5;
+}
+
+.chart-tip {
+	position: absolute;
+	top: 0;
+	z-index: 5;
+	pointer-events: none;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 5px 8px;
+	font-size: 11px;
+	white-space: nowrap;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	box-shadow: 0 8px 20px rgb(0 0 0 / 40%);
+}
+
+/* value first, name second: the reader already knows which series they aimed at */
+.chart-tip-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.chart-tip-row strong {
+	font-variant-numeric: tabular-nums;
+}
+
+.chart-tip-row em {
+	font-style: normal;
+	color: var(--dim);
+}
+
+.chart-empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--dim);
+	font-size: 12px;
+	border: 1px dashed var(--border);
+	border-radius: 8px;
+}
+
+/* ---------- overview extras ---------- */
+
+/*
+ * Per-core CPU. The probe has always reported this and nothing drew it — it is
+ * the one place a machine tells you the difference between "busy" and "one
+ * thread pinned", which the aggregate number cannot.
+ */
+.cores {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(26px, 1fr));
+	gap: 4px;
+	align-items: end;
+	height: 46px;
+	margin-top: 4px;
+}
+
+.core {
+	position: relative;
+	height: 100%;
+	border-radius: 3px 3px 0 0;
+	background: color-mix(in srgb, var(--border) 55%, transparent);
+	overflow: hidden;
+}
+
+.core i {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: block;
+	border-radius: 3px 3px 0 0;
+	background: var(--series-1);
+}
+
+.core.warn i {
+	background: var(--warn);
+}
+
+.core.crit i {
+	background: var(--crit);
+}
+
+/* The counts strip: what this node has, and a way into the tab that lists it. */
+.counts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.count {
+	font: inherit;
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 6px 11px;
+	color: var(--text);
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+.count:hover:not(:disabled) {
+	border-color: var(--accent);
+}
+
+.count:disabled {
+	cursor: default;
+	color: var(--dim);
+}
+
+.count strong {
+	font-size: 16px;
+	font-variant-numeric: tabular-nums;
+}
+
+.count span {
+	font-size: 11px;
+	color: var(--dim);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.count.bad strong {
+	color: var(--crit);
+}
+
+/* CPU / memory / load side by side above the per-core strip. */
+.meters {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	gap: 12px 18px;
+}
+
+.addresses {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
 }
