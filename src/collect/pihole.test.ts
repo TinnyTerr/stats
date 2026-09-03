@@ -3,6 +3,8 @@ import {
 	collectPiholeVia,
 	detectApi,
 	type PiholeTransport,
+	piholeCli,
+	piholeConfigured,
 	resetPiholeCache,
 	setBlocking,
 	usePiholeTransport,
@@ -25,7 +27,7 @@ interface Call {
 
 /** A fake Pi-hole: routes matched by substring, in the order they were given. */
 function serve(routes: [string, unknown, number?][]): {
-	transport: PiholeTransport;
+	transport: Partial<PiholeTransport>;
 	calls: Call[];
 } {
 	const calls: Call[] = [];
@@ -51,6 +53,8 @@ afterEach(() => {
 	resetPiholeCache();
 	delete process.env.PIHOLE_PASSWORD;
 	delete process.env.PIHOLE_TOKEN;
+	delete process.env.PIHOLE_CLI;
+	delete process.env.PIHOLE_URL;
 });
 
 /* ---------- v6 ---------- */
@@ -285,6 +289,120 @@ describe("a v5 Pi-hole", () => {
 	});
 });
 
+/* ---------- the local CLI ---------- */
+
+/**
+ * The same fake Pi-hole, reached the way a root node on the box reaches it:
+ * `pihole api stats/summary` is `GET /api/stats/summary`, so the recorded v6
+ * shapes are the answers here too and the two paths are held to one result.
+ */
+function cli(routes: [string, unknown, number?][]): {
+	transport: Partial<PiholeTransport>;
+	argv: string[][];
+} {
+	const argv: string[][] = [];
+	return {
+		argv,
+		transport: {
+			async exec(args) {
+				argv.push(args);
+				if (args[1] !== "api")
+					return { code: 0, stdout: "  Pi-hole", stderr: "" };
+				const url = `/api/${args[2]}`;
+				const route = routes.find(([match]) => url.includes(match));
+				if (!route) return { code: 0, stdout: "Status: 404\n{}", stderr: "" };
+				const [, body, status] = route;
+				const head =
+					status && status !== 200
+						? `Status: \u001b[31m${status}\u001b[0m\n`
+						: "";
+				return {
+					code: 0,
+					stdout: `${head}${JSON.stringify(body, null, 2)}\n`,
+					stderr: "",
+				};
+			},
+		},
+	};
+}
+
+describe("a Pi-hole this node is running on", () => {
+	test("the CLI answers the v6 API, and says it has no URL", async () => {
+		const { transport, argv } = cli(V6_ROUTES);
+		usePiholeTransport(transport);
+
+		const { pihole, piholeDetail } = await collectPiholeVia({ api: "cli" });
+
+		expect(pihole.via).toBe("cli");
+		// There is nowhere to point at: the CLI found the API by asking FTL.
+		expect(pihole.url).toBeNull();
+		expect(pihole.queries).toBe(10_000);
+		expect(pihole.version).toBe("v6.0.4");
+		expect(piholeDetail.topBlocked[0]?.count).toBe(900);
+		expect(piholeDetail.queryTypes.A).toBeCloseTo(0.6);
+
+		// The path loses its leading slash and nothing else.
+		expect(argv[0]).toEqual(["pihole", "api", "stats/summary"]);
+		expect(
+			argv.some((a) => a[2] === "stats/top_domains?blocked=true&count=10"),
+		).toBe(true);
+		// No password was wanted, and none was there to give.
+		expect(process.env.PIHOLE_PASSWORD).toBeUndefined();
+	});
+
+	test("a refusal is a status line and an exit code of zero, and still fails", async () => {
+		usePiholeTransport({
+			async exec() {
+				return {
+					code: 0,
+					stdout:
+						'Status: \u001b[31m401\u001b[0m\n{"error":{"key":"unauthorized"}}\n',
+					stderr: "",
+				};
+			},
+		});
+		expect(collectPiholeVia({ api: "cli" })).rejects.toThrow(/returned 401/);
+	});
+
+	test("a command that isn't there is reported as what it said", async () => {
+		usePiholeTransport({
+			async exec() {
+				return { code: 127, stdout: "", stderr: "pihole: command not found" };
+			},
+		});
+		expect(collectPiholeVia({ api: "cli" })).rejects.toThrow(
+			/command not found/,
+		);
+	});
+
+	test("pausing blocking uses the CLI's own verb and reads the state back", async () => {
+		const { transport, argv } = cli([
+			["/api/dns/blocking", { blocking: "disabled", timer: 300 }],
+		]);
+		usePiholeTransport(transport);
+
+		const result = await setBlocking(
+			{ blocking: false, seconds: 300 },
+			{ api: "cli" },
+		);
+
+		expect(argv[0]).toEqual(["pihole", "disable", "300s"]);
+		expect(argv[1]).toEqual(["pihole", "api", "dns/blocking"]);
+		expect(result).toEqual({ ok: true, output: "blocking disabled for 300s" });
+	});
+
+	test("a CLI that exits happily on a Pi-hole that didn't change is not ok", async () => {
+		const { transport } = cli([
+			["/api/dns/blocking", { blocking: "enabled", timer: null }],
+		]);
+		usePiholeTransport(transport);
+
+		const result = await setBlocking({ blocking: false }, { api: "cli" });
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("blocking is enabled");
+	});
+});
+
 /* ---------- shared ---------- */
 
 describe("reaching a Pi-hole at all", () => {
@@ -317,6 +435,16 @@ describe("reaching a Pi-hole at all", () => {
 			},
 		});
 		expect(await detectApi(BASE)).toBeNull();
+	});
+
+	test("PIHOLE_CLI=0 is how the Pi-hole watches a different Pi-hole", () => {
+		// The uid decides the rest of it, and a test suite doesn't get to say
+		// which one it is running under — this is the half that is always ours.
+		process.env.PIHOLE_CLI = "0";
+		expect(piholeCli()).toBe(false);
+		expect(piholeConfigured()).toBe(false);
+		process.env.PIHOLE_URL = "http://pi.hole";
+		expect(piholeConfigured()).toBe(true);
 	});
 
 	test("a timer only makes sense on the way down, and has a ceiling", async () => {

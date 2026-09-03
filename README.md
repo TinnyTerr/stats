@@ -42,7 +42,9 @@ needs no inbound rule and no fixed address — only the hub does.
   from anywhere else, an API token.
 - **Pi-hole** — queries, block rate, clients, top domains and upstreams from a
   Pi-hole's own API, v5 or v6, with blocking pausable from the dashboard and a
-  timer so it comes back on by itself.
+  timer so it comes back on by itself. On the Pi-hole itself a root node uses
+  `pihole api` and needs no credentials; from anywhere else, a URL and a
+  password.
 - **Projects** — a file on each node declares what that host runs; the node
   supervises those processes and reports them as first-class things. See below.
 - **Logs** — live tails from journald, Docker, files, or a supervised process,
@@ -569,9 +571,10 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `PROXMOX_URL` | node | none (unset means "use pvesh on this host") |
 | `PROXMOX_TOKEN` | node | none |
 | `PROXMOX_INSECURE` | node | `0` |
-| `PIHOLE_URL` | node | none (unset means "no Pi-hole here") |
+| `PIHOLE_URL` | node | none (unset means "use `pihole` on this host, if root") |
 | `PIHOLE_PASSWORD` | node | none (v6 app password) |
 | `PIHOLE_TOKEN` | node | none (v5 API token) |
+| `PIHOLE_CLI` | node | `1` (a root node uses the local `pihole` command) |
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
 | `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
 | `STATS_HOST` | both | `git.tinnyterr.com` (where updates come from) |

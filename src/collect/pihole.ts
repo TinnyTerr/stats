@@ -1,3 +1,4 @@
+import { isRoot } from "../modules/host.ts";
 import type { CommandResult } from "../proto/messages.ts";
 import type { PiholeDetail, PiholeEntry, PiholeSummary } from "../types.ts";
 
@@ -7,12 +8,17 @@ import type { PiholeDetail, PiholeEntry, PiholeSummary } from "../types.ts";
  * v6 replaced `admin/api.php` with a session-authenticated REST API and both
  * are still in the field, so the version is detected once per node and
  * everything below is written against the shaped result rather than against
- * either API. There is no local shortcut the way Proxmox has `pvesh`: a node
- * running on the Pi-hole itself still talks to FTL over HTTP, which is why this
- * module is portable and asks for nothing but `http`.
+ * either API.
  *
- * Nothing here is on by accident — PIHOLE_URL is what turns the module on, and
- * a host without it drops the module rather than reporting an empty Pi-hole.
+ * v6 also brought the local shortcut Proxmox has in `pvesh`: `pihole api
+ * <endpoint>` is the same REST API, reached over the loopback and authenticated
+ * out of a file only root can read. A root node on the Pi-hole itself therefore
+ * needs no URL and no password — see {@link piholeCli} — and everywhere else
+ * this is still made of HTTP calls, which is why the module stays portable.
+ *
+ * Nothing here is on by accident — the CLI or PIHOLE_URL is what turns the
+ * module on, and a host with neither drops the module rather than reporting an
+ * empty Pi-hole.
  */
 
 /** Where the Pi-hole is. A bare host is assumed to be plain HTTP, as it is. */
@@ -33,6 +39,26 @@ export function piholeToken(): string | null {
 	return process.env.PIHOLE_TOKEN?.trim() || null;
 }
 
+/**
+ * Whether this node can drive the Pi-hole it is running on.
+ *
+ * `pihole api <endpoint>` authenticates out of /etc/pihole/cli_pw, which FTL
+ * writes for root and the pihole group, so the shortcut is exactly as available
+ * as that file is readable: root on a machine with the command installed asks
+ * for nothing and gets everything, and anyone else is back to HTTP. Asking
+ * about the uid rather than trying it is what keeps a non-root node off a code
+ * path whose failure mode is the CLI prompting for a password it will never be
+ * given.
+ *
+ * It wins over PIHOLE_URL when both are there, the way `pvesh` does: the host
+ * is the better authority on itself. PIHOLE_CLI=0 is for the Pi-hole that is
+ * meant to be watching a *different* Pi-hole.
+ */
+export function piholeCli(): boolean {
+	if (/^(0|false|no|off)$/i.test(process.env.PIHOLE_CLI ?? "")) return false;
+	return isRoot() && Bun.which("pihole") !== null;
+}
+
 export class PiholeUnavailable extends Error {}
 
 /**
@@ -43,33 +69,77 @@ export class PiholeUnavailable extends Error {}
 const TIMEOUT_MS = 5_000;
 
 /**
+ * The CLI's own budget, which is a looser thing: one `pihole api` is a dig for
+ * the API's port, a login, the request and a logout, each its own curl. It is
+ * still bounded, because the process is killed at the end of it — a Pi-hole
+ * that has stopped answering must cost this node a collection error rather than
+ * a tick that never finishes.
+ */
+export const CLI_TIMEOUT_MS = 10_000;
+
+/**
  * The leaderboards cost one request each and change on the scale of minutes,
  * not of a telemetry tick. Only the summary and the blocking state are asked
  * for every frame; everything else is served from here in between.
  */
 const DETAIL_INTERVAL_MS = 30_000;
 
-/** The one thing this collector reaches for; the module hands in a gated one. */
+export interface ExecLike {
+	code: number;
+	stdout: string;
+	stderr: string;
+}
+
+/**
+ * The two things this collector reaches for. The module hands in the gated
+ * versions from its {@link ModuleHost}; passing null restores the direct ones,
+ * which is what the tests use.
+ */
 export interface PiholeTransport {
 	fetch(url: string, init?: RequestInit): Promise<Response>;
+	exec(argv: string[]): Promise<ExecLike>;
 }
 
 const directTransport: PiholeTransport = {
 	fetch: (url, init) => fetch(url, init),
+	async exec(argv) {
+		const proc = Bun.spawn(argv, {
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: CLI_TIMEOUT_MS,
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return { code, stdout, stderr };
+	},
 };
 
 let transport = directTransport;
 
-export function usePiholeTransport(next: PiholeTransport | null) {
-	transport = next ?? directTransport;
+/**
+ * A caller replaces as much of the transport as it has an opinion about: a test
+ * with a fake Pi-hole over HTTP has nothing to say about `exec`, and gets the
+ * direct one it will never reach.
+ */
+export function usePiholeTransport(next: Partial<PiholeTransport> | null) {
+	transport = next ? { ...directTransport, ...next } : directTransport;
 }
 
+/** The two HTTP APIs a Pi-hole might be answering with. */
 export type PiholeApi = "v6" | "v5";
 
-/** Where and how to reach one Pi-hole, once both have been worked out. */
-export interface PiholeEndpoint {
-	base: string;
-	api: PiholeApi;
+/**
+ * Where and how to reach one Pi-hole, once both have been worked out. `cli` is
+ * v6's API too — it just has nowhere to point, because it is this machine.
+ */
+export type PiholeEndpoint = { api: "cli" } | { api: PiholeApi; base: string };
+
+/** What the caches key on: two endpoints are the same Pi-hole, or they aren't. */
+function endpointKey(endpoint: PiholeEndpoint): string {
+	return endpoint.api === "cli" ? "cli" : endpoint.base;
 }
 
 function reason(err: unknown): string {
@@ -124,11 +194,29 @@ export async function detectApi(base: string): Promise<PiholeApi | null> {
 
 let endpointCache: PiholeEndpoint | null = null;
 
-/** How this node will talk to its Pi-hole, or null when it has none to talk to. */
+/**
+ * How this node will talk to its Pi-hole, or null when it has none to talk to.
+ * The detection is done once and then held, but only for as long as the answer
+ * to it hasn't changed: a PIHOLE_URL edited under a running node is a different
+ * Pi-hole rather than a stale cache.
+ */
 export async function piholeEndpoint(): Promise<PiholeEndpoint | null> {
+	const cli = piholeCli();
+	if (endpointCache) {
+		const stale =
+			endpointCache.api === "cli"
+				? !cli
+				: cli || endpointCache.base !== piholeUrl();
+		if (!stale) return endpointCache;
+		resetPiholeCache();
+	}
+	if (cli) {
+		endpointCache = { api: "cli" };
+		return endpointCache;
+	}
+
 	const base = piholeUrl();
 	if (!base) return null;
-	if (endpointCache?.base === base) return endpointCache;
 
 	const api = await detectApi(base);
 	if (!api) {
@@ -140,9 +228,9 @@ export async function piholeEndpoint(): Promise<PiholeEndpoint | null> {
 	return endpointCache;
 }
 
-/** Whether the node was told about a Pi-hole at all. The load-time gate. */
+/** Whether the node has a Pi-hole to report on at all. The load-time gate. */
 export function piholeConfigured(): boolean {
-	return piholeUrl() !== null;
+	return piholeCli() || piholeUrl() !== null;
 }
 
 /** Tests and a changed PIHOLE_URL both want the detection done again. */
@@ -151,6 +239,61 @@ export function resetPiholeCache() {
 	session = null;
 	loggingIn = null;
 	detailCache = null;
+}
+
+/* ---------- the local CLI: one process, one GET ---------- */
+
+/** `pihole api` colours its status line when it thinks it has a terminal. */
+function plain(text: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI is control characters.
+	return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+/**
+ * The CLI prints its own lines around the body when something went wrong — a
+ * status line ahead of it, a logout complaint after it — and still exits 0. The
+ * body is the one JSON object in there, so it is taken as the span between the
+ * outermost braces rather than trusted to be the whole of stdout.
+ */
+function jsonSpan(text: string): string | null {
+	const start = text.indexOf("{");
+	const end = text.lastIndexOf("}");
+	return start >= 0 && end > start ? text.slice(start, end + 1) : null;
+}
+
+/**
+ * One v6 GET, run as `pihole api <endpoint>`. The CLI does the session — it
+ * logs in with the password it can read, asks, and logs out again — so there is
+ * nothing here about credentials, which is the whole point of the path.
+ */
+async function cliGet<T>(path: string): Promise<T> {
+	const endpoint = path.replace(/^\//, "");
+	const out = await transport.exec(["pihole", "api", endpoint]);
+	const text = plain(out.stdout).trim();
+	if (out.code !== 0) {
+		throw new PiholeUnavailable(
+			plain(out.stderr).trim() ||
+				text ||
+				`pihole api ${endpoint} exited ${out.code}`,
+		);
+	}
+	// Anything but a 200 is announced on its own line and then answered with an
+	// error body; the exit code stays 0 either way.
+	const status = /^Status:\s*(\d{3})/m.exec(text);
+	if (status) {
+		throw new PiholeUnavailable(`pihole api ${endpoint} returned ${status[1]}`);
+	}
+	const body = jsonSpan(text);
+	if (!body) {
+		throw new PiholeUnavailable(
+			`pihole api ${endpoint} did not return JSON: ${text.slice(0, 200) || "(nothing)"}`,
+		);
+	}
+	try {
+		return JSON.parse(body) as T;
+	} catch {
+		throw new PiholeUnavailable(`pihole api ${endpoint} did not return JSON`);
+	}
 }
 
 /* ---------- v6: a session, then JSON ---------- */
@@ -237,6 +380,19 @@ async function v6Get<T>(base: string, path: string): Promise<T> {
 		);
 	}
 	return (await res.json()) as T;
+}
+
+/**
+ * One v6 path, answered. Everything below is written against this rather than
+ * against a transport, which is what lets the CLI be a *transport* for v6 and
+ * not a third API to shape separately.
+ */
+type V6Get = <T>(path: string) => Promise<T>;
+
+function v6Getter(endpoint: PiholeEndpoint): V6Get {
+	if (endpoint.api === "cli") return <T>(path: string) => cliGet<T>(path);
+	const base = endpoint.base;
+	return <T>(path: string) => v6Get<T>(base, path);
 }
 
 /* ---------- v5: one query string, one answer ---------- */
@@ -376,26 +532,29 @@ function upstreamName(ip: string, port: number | undefined): string {
 	return port && port !== 53 ? `${ip}#${port}` : ip;
 }
 
-async function collectV6(base: string): Promise<{
+async function collectV6(endpoint: PiholeEndpoint): Promise<{
 	pihole: PiholeSummary;
 	piholeDetail: PiholeDetail;
 }> {
+	const get = v6Getter(endpoint);
 	const [summary, blocking] = await Promise.all([
-		v6Get<V6Summary>(base, "/stats/summary"),
-		v6Get<V6Blocking>(base, "/dns/blocking"),
+		get<V6Summary>("/stats/summary"),
+		get<V6Blocking>("/dns/blocking"),
 	]);
 
 	const queries = summary.queries ?? {};
 	const total = count(queries.total);
 	const blocked = count(queries.blocked);
 
-	const slow = await v6Detail(base);
+	const slow = await v6Detail(endpointKey(endpoint), get);
 
 	return {
 		pihole: {
 			available: true,
-			via: "v6",
-			url: base,
+			via: endpoint.api === "cli" ? "cli" : "v6",
+			// There is no URL to show for the CLI: it found the API itself, by
+			// asking FTL where it was.
+			url: endpoint.api === "cli" ? null : endpoint.base,
 			version: slow.version,
 			blocking: v6BlockingState(blocking.blocking),
 			blockingTimerSec:
@@ -421,7 +580,7 @@ async function collectV6(base: string): Promise<{
 }
 
 let detailCache: {
-	base: string;
+	key: string;
 	at: number;
 	version: string | null;
 	detail: PiholeDetail;
@@ -429,20 +588,21 @@ let detailCache: {
 
 /** The leaderboards and the version, at {@link DETAIL_INTERVAL_MS} at most. */
 async function v6Detail(
-	base: string,
+	key: string,
+	get: V6Get,
 ): Promise<{ version: string | null; detail: PiholeDetail }> {
 	if (
-		detailCache?.base === base &&
+		detailCache?.key === key &&
 		Date.now() - detailCache.at < DETAIL_INTERVAL_MS
 	)
 		return { version: detailCache.version, detail: detailCache.detail };
 
 	const [top, ads, clients, upstreams, version] = await Promise.all([
-		v6Get<V6Top>(base, "/stats/top_domains?count=10"),
-		v6Get<V6Top>(base, "/stats/top_domains?blocked=true&count=10"),
-		v6Get<V6Top>(base, "/stats/top_clients?count=10"),
-		v6Get<V6Upstreams>(base, "/stats/upstreams"),
-		v6Get<V6Version>(base, "/info/version"),
+		get<V6Top>("/stats/top_domains?count=10"),
+		get<V6Top>("/stats/top_domains?blocked=true&count=10"),
+		get<V6Top>("/stats/top_clients?count=10"),
+		get<V6Upstreams>("/stats/upstreams"),
+		get<V6Version>("/info/version"),
 	]);
 
 	const domains = (raw: V6Top): PiholeEntry[] =>
@@ -476,7 +636,7 @@ async function v6Detail(
 
 	const local = version.version ?? {};
 	detailCache = {
-		base,
+		key,
 		at: Date.now(),
 		version: local.core?.local?.version ?? local.ftl?.local?.version ?? null,
 		detail,
@@ -548,7 +708,7 @@ async function collectV5(base: string): Promise<{
 }> {
 	const fresh =
 		!detailCache ||
-		detailCache.base !== base ||
+		detailCache.key !== base ||
 		Date.now() - detailCache.at >= DETAIL_INTERVAL_MS;
 
 	const body = await v5Get<V5Body>(base, [
@@ -569,7 +729,7 @@ async function collectV5(base: string): Promise<{
 
 	if (fresh) {
 		detailCache = {
-			base,
+			key: base,
 			at: Date.now(),
 			version: body.core_current ?? body.FTL_current ?? null,
 			detail: {
@@ -634,9 +794,9 @@ export async function collectPiholeVia(endpoint: PiholeEndpoint): Promise<{
 	pihole: PiholeSummary;
 	piholeDetail: PiholeDetail;
 }> {
-	return endpoint.api === "v6"
-		? await collectV6(endpoint.base)
-		: await collectV5(endpoint.base);
+	return endpoint.api === "v5"
+		? await collectV5(endpoint.base)
+		: await collectV6(endpoint);
 }
 
 /* ---------- control ---------- */
@@ -671,6 +831,31 @@ export async function setBlocking(
 	const said = `blocking ${blocking ? "enabled" : "disabled"}${
 		seconds ? ` for ${seconds}s` : ""
 	}`;
+
+	// `pihole api` is a GET and nothing else, so the CLI's own verbs are how
+	// blocking is changed from here. They exit 0 whatever FTL made of it, which
+	// is why the state is read back rather than assumed.
+	if (endpoint.api === "cli") {
+		const out = await transport.exec([
+			"pihole",
+			blocking ? "enable" : "disable",
+			...(seconds ? [`${seconds}s`] : []),
+		]);
+		if (out.code !== 0) {
+			return {
+				ok: false,
+				output:
+					plain(out.stderr).trim() ||
+					plain(out.stdout).trim() ||
+					`pihole ${blocking ? "enable" : "disable"} exited ${out.code}`,
+			};
+		}
+		const after = await cliGet<V6Blocking>("/dns/blocking").catch(() => null);
+		const ended = v6BlockingState(after?.blocking);
+		return ended === (blocking ? "enabled" : "disabled")
+			? { ok: true, output: said }
+			: { ok: false, output: `the CLI ran, but blocking is ${ended}` };
+	}
 
 	if (endpoint.api === "v6") {
 		const res = await v6Fetch(endpoint.base, "/dns/blocking", {

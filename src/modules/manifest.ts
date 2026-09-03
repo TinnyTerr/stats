@@ -190,7 +190,9 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		// Portable, and portable for the reason the default exists: this module is
 		// made of HTTP calls. The node need not be the Pi-hole, and usually isn't.
 		platforms: [],
-		grants: ["http"],
+		// `exec` is `pihole api` on the Pi-hole itself, which is only reachable by
+		// root and needs no credentials; `http` is every other node's way in.
+		grants: ["http", "exec"],
 		actions: ["pihole.blocking"],
 		tab: "pihole",
 		provides: ["pihole"],

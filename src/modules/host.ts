@@ -180,8 +180,15 @@ export interface ModuleHost {
 		url: string,
 		init?: RequestInit,
 	): Promise<Response>;
-	/** privileged: run a command to completion */
-	exec(argv: string[], opts?: { cwd?: string }): Promise<ExecResult>;
+	/**
+	 * privileged: run a command to completion. `timeoutMs` is what a collector
+	 * on a telemetry tick wants — a command that never returns costs the frame,
+	 * so the killed process is a failure it can report rather than a hang.
+	 */
+	exec(
+		argv: string[],
+		opts?: { cwd?: string; timeoutMs?: number },
+	): Promise<ExecResult>;
 	/** privileged: spawn a process, optionally on a pty */
 	spawn(argv: string[], opts?: Record<string, unknown>): unknown;
 }
@@ -274,6 +281,7 @@ export function createModuleHost(
 				cwd: opts?.cwd,
 				stdout: "pipe",
 				stderr: "pipe",
+				timeout: opts?.timeoutMs,
 			});
 			const [stdout, stderr, code] = await Promise.all([
 				new Response(proc.stdout).text(),

@@ -1,4 +1,5 @@
 import {
+	CLI_TIMEOUT_MS,
 	collectPihole,
 	PiholeUnavailable,
 	piholeConfigured,
@@ -12,19 +13,23 @@ import type { NodeModule, NodeModuleContext } from "./mod.ts";
 import { requireControl } from "./mod.ts";
 
 /**
- * A Pi-hole, watched over its own HTTP API.
+ * A Pi-hole, watched over its own API — the local `pihole` command on a root
+ * node that is the Pi-hole, HTTP everywhere else.
  *
- * PIHOLE_URL is the whole of the availability question: a node told about a
- * Pi-hole loads the module, and one that isn't doesn't. Whether that Pi-hole is
- * actually answering is a collection failure rather than an availability one —
- * it lands in `telemetry.errors` and shows on the node's card, which is where
- * "the DNS server is down" belongs. Dropping the module for it would hide the
- * one machine you most wanted to hear about.
+ * Having one of those to talk to is the whole of the availability question: a
+ * node told about a Pi-hole loads the module, and one that isn't doesn't.
+ * Whether that Pi-hole is actually answering is a collection failure rather
+ * than an availability one — it lands in `telemetry.errors` and shows on the
+ * node's card, which is where "the DNS server is down" belongs. Dropping the
+ * module for it would hide the one machine you most wanted to hear about.
  */
 
-/** Points the collector's only reach at the host's gated fetch. */
+/** Points the collector's two reaches at the host's gated ones. */
 function wire(ctx: NodeModuleContext) {
-	usePiholeTransport({ fetch: (url, init) => ctx.host.fetch(url, init) });
+	usePiholeTransport({
+		fetch: (url, init) => ctx.host.fetch(url, init),
+		exec: (argv) => ctx.host.exec(argv, { timeoutMs: CLI_TIMEOUT_MS }),
+	});
 }
 
 export const piholeModule: NodeModule = {

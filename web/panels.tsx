@@ -1676,9 +1676,16 @@ export function PiholePanel({ node, telemetry, hub }: PanelProps) {
 					value={pihole.blockedRatio}
 					label="Blocked"
 					tone={blocking ? "info" : "warn"}
-					detail={`${count(pihole.blocked)} of ${count(pihole.queries)} queries · ${
-						pihole.url ?? ""
-					}${pihole.version ? ` · ${pihole.version}` : ""} · api ${pihole.via}`}
+					detail={[
+						`${count(pihole.blocked)} of ${count(pihole.queries)} queries`,
+						// A node that is the Pi-hole has no URL to show, because it
+						// never went looking for one.
+						pihole.url,
+						pihole.version,
+						pihole.via === "cli" ? "local pihole" : `api ${pihole.via}`,
+					]
+						.filter(Boolean)
+						.join(" · ")}
 				/>
 			</section>
 

@@ -9,15 +9,23 @@ peer can't read. It is also the version byte in every frame.
 Scaffolding for multiplatform nodes, and a hub that can manage the fleet's
 modules. Update the hub before the nodes.
 
-- **A Pi-hole module.** `PIHOLE_URL` is the whole of the configuration: the
-  node detects whether it is talking to v6's REST API or v5's `api.php` and
-  reports queries, block rate, cached and forwarded counts, clients, gravity
-  size and the top domains, clients and upstreams either way. Blocking can be
-  paused from the dashboard with a timer, so it switches itself back on rather
-  than being left off by whoever was debugging. The module is portable — it is
-  made of HTTP calls, and the node need not be the Pi-hole — and holds nothing
-  but the `http` grant. A Pi-hole that stops answering is a collection error on
-  the node's card, not a module that quietly disappears.
+- **A Pi-hole module.** On the Pi-hole itself a root node needs no
+  configuration at all: v6 ships `pihole api <endpoint>`, which is the same REST
+  API reached over the loopback and authenticated out of `/etc/pihole/cli_pw` —
+  a file only root can read. So the module loads wherever that command and that
+  uid meet, and asks for no URL and no password. Anywhere else `PIHOLE_URL` is
+  the whole of the configuration, and the node detects whether it is talking to
+  v6's REST API or v5's `api.php`. Either way it reports queries, block rate,
+  cached and forwarded counts, clients, gravity size and the top domains,
+  clients and upstreams. Blocking can be paused from the dashboard with a timer,
+  so it switches itself back on rather than being left off by whoever was
+  debugging. The module is portable — the HTTP path is made of HTTP calls, and
+  the node need not be the Pi-hole — and holds `http` and `exec`, the second
+  being the local command and nothing else (builtin modules are trusted by
+  default, so this only matters to a hand-written `trustedModules`). A Pi-hole
+  that stops answering is a collection error on the node's card, not a module
+  that quietly disappears. `PIHOLE_CLI=0` is for the node that is a Pi-hole but
+  is meant to be watching a different one.
 
 - **Everything is a module; hostname and addresses are the core.**
   `src/agent/identity.ts` is now the whole of what a node collects on its own.

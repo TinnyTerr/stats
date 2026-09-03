@@ -328,8 +328,11 @@ export interface PiholeEntry {
 /** Enough of a Pi-hole for a card face without opening the tab. */
 export interface PiholeSummary {
 	available: boolean;
-	/** which API answered: v6's REST API, or v5's api.php */
-	via: "v6" | "v5" | null;
+	/**
+	 * what answered: v6's REST API, v5's api.php, or `pihole api` on a node that
+	 * is the Pi-hole — which is v6's API too, reached without the network.
+	 */
+	via: "v6" | "v5" | "cli" | null;
 	/** where the node reached it, so the card can say which Pi-hole this is */
 	url: string | null;
 	/** the install's own version — core's, falling back to FTL's */
