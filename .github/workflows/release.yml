@@ -1,4 +1,4 @@
-# Builds the standalone binaries and publishes them as a Gitea release
+# Builds the standalone binaries and publishes them as a GitHub release
 # whenever a v* tag is pushed.
 #
 #   git tag -a v0.2.0 -m 'v0.2.0' && git push origin v0.2.0
@@ -11,6 +11,9 @@ on:
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   release:
@@ -58,16 +61,15 @@ jobs:
             echo '## Install'
             echo
             echo '```sh'
-            echo "curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --agent"
+            echo "curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | sudo sh -s -- --agent"
             echo '```'
             echo
             echo "Checksums for every asset are in \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS\`)."
           } >> notes.md
 
       - name: Publish release
-        uses: https://gitea.com/actions/gitea-release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           body_path: notes.md
           files: |-
             dist/stats-linux-*
