@@ -14,9 +14,13 @@ import type {
  * the schema's own `default` keywords in the tests so the two can't drift.
  */
 
-/** Where the loader looks when no path is given, in order. */
+/**
+ * Where the loader looks when no path is given, in order. `process` is reached
+ * for defensively because the dashboard's projects builder imports this file
+ * for `parseProjectsDocument`, and a browser has no such global.
+ */
 export const DEFAULT_SOURCES = [
-	process.env.STATS_PROJECTS,
+	globalThis.process?.env?.STATS_PROJECTS,
 	"/etc/stats/projects.json",
 	"/etc/stats/projects.d",
 	"./projects.json",
