@@ -1,4 +1,3 @@
-import { dirname, isAbsolute, resolve } from "node:path";
 import type {
 	HealthCheck,
 	ProcessSpec,
@@ -13,6 +12,41 @@ import type {
  * document; this is the enforcement, and `DEFAULTS` below is asserted against
  * the schema's own `default` keywords in the tests so the two can't drift.
  */
+
+/**
+ * POSIX-only path helpers, hand-rolled so this file has no top-level import of
+ * `node:path` — the dashboard's projects builder (web/toolspage.tsx) imports
+ * this file for browser-side validation, and Bun's browser bundler turns a
+ * `node:path` import into a top-level `require()` call that throws before the
+ * bundle can even mount. "Linux is the whole story for this project" (see
+ * scripts/build.ts) makes POSIX-only fair game.
+ */
+function isAbsolute(path: string): boolean {
+	return path.startsWith("/");
+}
+
+function dirname(path: string): string {
+	const idx = path.lastIndexOf("/");
+	if (idx < 0) return ".";
+	return idx === 0 ? "/" : path.slice(0, idx);
+}
+
+function resolve(...segments: string[]): string {
+	let path = "";
+	for (const segment of segments) {
+		if (!segment) continue;
+		path = isAbsolute(segment) ? segment : path ? `${path}/${segment}` : segment;
+	}
+	if (!isAbsolute(path)) path = `${globalThis.process?.cwd?.() ?? "/"}/${path}`;
+
+	const stack: string[] = [];
+	for (const part of path.split("/")) {
+		if (part === "" || part === ".") continue;
+		if (part === "..") stack.pop();
+		else stack.push(part);
+	}
+	return `/${stack.join("/")}`;
+}
 
 /**
  * Where the loader looks when no path is given, in order. `process` is reached
