@@ -54,6 +54,36 @@ body {
 		sans-serif;
 }
 
+/* ---------- focus and hover ---------- */
+
+/*
+ * Keyboard focus. Everything clickable here is a button, or a div playing one
+ * (the node card), and the UA's default ring — white, doubled — is the one
+ * light-mode leftover on this page. One ring in the accent, following each
+ * element's own radius, and only for keyboard focus: a mouse click on a card
+ * should not leave a halo behind. The chart's own rule is more specific and
+ * keeps its hairline.
+ */
+:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+	outline-offset: 2px;
+}
+
+/*
+ * The quiet controls — drawer tabs, the view switcher, the close cross, the
+ * face dots — only ever changed on click. A hover that brightens them says
+ * "this does something" before you commit to finding out.
+ */
+.tabs button:hover,
+.views button:hover,
+.close:hover {
+	color: var(--text);
+}
+
+.face-dot:hover {
+	background: var(--dim);
+}
+
 /*
  * Three rows and one column: the bar, whatever banner is up, and the view.
  * The node drawer is deliberately not in here — it is an overlay now, so
