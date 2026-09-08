@@ -618,7 +618,7 @@ collector reads `/proc`, `/sys`, `ss`, `systemctl` or the Docker socket.
 One version for the whole repo — hub and node ship together, so
 `package.json`'s `version` is the only source of truth (`src/version.ts`
 re-exports it). Alongside it sits `protocol`, which is both the version byte in
-every frame and the number both roles report. See `CHANGELOG.md`.
+every frame and the number both roles report.
 
 ```bash
 bun index.ts version          # stats 0.2.0 (protocol 2)

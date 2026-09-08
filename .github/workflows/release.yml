@@ -46,19 +46,9 @@ jobs:
       # target (~35 MB each), so this step needs network access.
       - run: bun run build --all
 
-      - name: Extract release notes from CHANGELOG
+      - name: Write release notes
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '
-            $0 ~ "^## " v "([^0-9.]|$)" { found = 1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            echo "No CHANGELOG section for $version." > notes.md
-          fi
           {
-            echo
             echo '## Install'
             echo
             echo '```sh'
@@ -72,7 +62,7 @@ jobs:
             echo '```'
             echo
             echo "Checksums for every asset are in \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS\`)."
-          } >> notes.md
+          } > notes.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
