@@ -42,27 +42,32 @@ interface Installer {
 	run(ctx: NodeModuleContext, pemPath: string, pem: string): Promise<void>;
 }
 
+// Both RHEL/Fedora and Arch ship a `update-ca-trust` command, but disagree on
+// where its anchors live — p11-kit vs. Arch's own ca-certificates-utils.
+const TRUST_ANCHOR_DIRS = [
+	"/etc/pki/ca-trust/source/anchors",
+	"/etc/ca-certificates/trust-source/anchors",
+];
+
 const LINUX: Installer = {
 	method: "update-ca-certificates",
 	async run(ctx, _pemPath, pem) {
 		// Bun.file(dir).exists() reads false for a directory — stat it instead.
-		const usesTrustAnchor = await stat("/etc/pki/ca-trust/source/anchors")
-			.then((s) => s.isDirectory())
-			.catch(() => false);
-		if (usesTrustAnchor) {
-			await Bun.write(
-				"/etc/pki/ca-trust/source/anchors/stats-fleet-ca.pem",
-				pem,
-			);
+		for (const dir of TRUST_ANCHOR_DIRS) {
+			const isDir = await stat(dir)
+				.then((s) => s.isDirectory())
+				.catch(() => false);
+			if (!isDir) continue;
+			await Bun.write(join(dir, "stats-fleet-ca.pem"), pem);
 			await ctx.host.exec(["update-ca-trust", "extract"]);
-		} else {
-			await mkdir("/usr/local/share/ca-certificates", { recursive: true });
-			await Bun.write(
-				"/usr/local/share/ca-certificates/stats-fleet-ca.crt",
-				pem,
-			);
-			await ctx.host.exec(["update-ca-certificates"]);
+			return;
 		}
+		await mkdir("/usr/local/share/ca-certificates", { recursive: true });
+		await Bun.write(
+			"/usr/local/share/ca-certificates/stats-fleet-ca.crt",
+			pem,
+		);
+		await ctx.host.exec(["update-ca-certificates"]);
 	},
 };
 
