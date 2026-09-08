@@ -10,7 +10,7 @@
 #     curl -fsSL .../install.sh | sudo sh -s -- --hub
 #
 #   Node, on each server you want to watch:
-#     curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | \
+#     curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.sh | \
 #       sudo sh -s -- --node --hub ws://hub.lan:3000 --token <token>
 #
 #   From a local build (bun run build):
@@ -33,7 +33,7 @@
 set -eu
 
 REPO="${STATS_REPO:-tinnyterr/stats}"
-HOST="${STATS_HOST:-git.tinnyterr.com}"
+HOST="${STATS_HOST:-github.com}"
 BASE_URL="${STATS_URL:-}"        # directory holding the release assets
 VERSION="${STATS_VERSION:-}"     # release tag, e.g. v0.1.0
 FROM=""                          # local dist directory or binary

@@ -21,7 +21,7 @@ import { compareVersions, VERSION } from "./version.ts";
  */
 
 export interface UpdateSource {
-	/** the forge's host, e.g. git.tinnyterr.com or github.com */
+	/** the forge's host, e.g. github.com */
 	host: string;
 	/** owner/repo */
 	repo: string;
@@ -30,7 +30,7 @@ export interface UpdateSource {
 /** Matches install.sh's STATS_HOST / STATS_REPO, so both agree on "latest". */
 export function defaultSource(): UpdateSource {
 	return {
-		host: process.env.STATS_HOST ?? "git.tinnyterr.com",
+		host: process.env.STATS_HOST ?? "github.com",
 		repo: process.env.STATS_REPO ?? "tinnyterr/stats",
 	};
 }

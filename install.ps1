@@ -51,7 +51,7 @@
 
 .EXAMPLE
     # Node, dialling an existing hub — run from an elevated PowerShell:
-    iwr -useb https://github.com/tinnyterr/stats/raw/branch/main/install.ps1 | iex
+    iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.ps1 | iex
     # or, with parameters:
     .\install.ps1 -Node -HubUrl ws://hub.lan:3000 -Token <token>
 
@@ -79,7 +79,7 @@ param(
 	[string]$From,
 	[string]$Version,
 	[string]$Repo = "tinnyterr/stats",
-	[string]$InstallHost = "git.tinnyterr.com",
+	[string]$InstallHost = "github.com",
 	[string]$InstallDir = "$env:ProgramData\stats",
 	[switch]$NoTerminal,
 	[switch]$NoControl,

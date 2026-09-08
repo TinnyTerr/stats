@@ -98,7 +98,7 @@ Environment:
   STATS_MODULES       modules to load, e.g. "docker,systemd" or "-terminal"
   STATS_MODULE_DIR    where installed modules live (default /var/lib/stats/modules
                       as root, ~/.local/share/stats/modules otherwise)
-  STATS_HOST          forge to check for updates (default git.tinnyterr.com)
+  STATS_HOST          forge to check for updates (default github.com)
   STATS_REPO          owner/repo for updates (default tinnyterr/stats)
   STATS_ASSET         force a build, e.g. stats-linux-x64-baseline
   STATS_TERMINAL      set to 0 to refuse terminal sessions

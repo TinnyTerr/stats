@@ -62,7 +62,7 @@ Start with the hub, on the machine that shows the dashboard. It generates the
 token the nodes will need and prints the exact command to run on them:
 
 ```bash
-curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.sh | \
   sudo sh -s -- --hub --host 0.0.0.0
 ```
 
@@ -577,7 +577,7 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `PIHOLE_CLI` | node | `1` (a root node uses the local `pihole` command) |
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
 | `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
-| `STATS_HOST` | both | `git.tinnyterr.com` (where updates come from) |
+| `STATS_HOST` | both | `github.com` (where updates come from) |
 | `STATS_REPO` | both | `tinnyterr/stats` |
 | `STATS_ASSET` | both | detected from arch, libc and AVX2 |
 | `NOTION_TOKEN` | hub | none (only if `hub.json` refers to it) |
@@ -647,7 +647,7 @@ ssh-ing into things":
 
 ```bash
 # 1. the installer, re-run — always works, upgrades the binary and restarts
-curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --node
+curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.sh | sudo sh -s -- --node
 
 # 2. the binary updating itself
 stats update                 # to the latest release
