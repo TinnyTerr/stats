@@ -364,6 +364,21 @@ describe("a Pi-hole this node is running on", () => {
 		expect(collectPiholeVia({ api: "cli" })).rejects.toThrow(/returned 401/);
 	});
 
+	test("FTL's own refusal is a failure however the CLI framed it", async () => {
+		// No status line, exit 0 — all that is left to go on is the body, and
+		// shaping this one would report a Pi-hole answering nothing but zeroes.
+		usePiholeTransport({
+			async exec() {
+				return {
+					code: 0,
+					stdout: '{"error":{"key":"unauthorized","message":"Unauthorized"}}',
+					stderr: "",
+				};
+			},
+		});
+		expect(collectPiholeVia({ api: "cli" })).rejects.toThrow(/Unauthorized/);
+	});
+
 	test("a command that isn't there is reported as what it said", async () => {
 		usePiholeTransport({
 			async exec() {

@@ -14,6 +14,7 @@ import {
 import { currentPlatform, type Platform } from "../../modules/platform.ts";
 import type { InboundRequest } from "../../proto/link.ts";
 import { RemoteError } from "../../proto/link.ts";
+import { caModule } from "./ca.ts";
 import { dockerModule } from "./docker.ts";
 import { logsModule } from "./logs.ts";
 import type { NodeModule, NodeModuleContext, TelemetryParts } from "./mod.ts";
@@ -49,6 +50,7 @@ export const BUILTIN_MODULES: NodeModule[] = [
 	portsModule,
 	logsModule,
 	terminalModule,
+	caModule,
 ];
 
 /** A module action with its own context already bound to it. */

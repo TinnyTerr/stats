@@ -31,6 +31,7 @@ export const BUILTIN_MODULE_IDS = [
 	"ports",
 	"logs",
 	"terminal",
+	"ca",
 ] as const;
 
 export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
@@ -247,6 +248,21 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		actions: ["terminal.open", "terminal.resize", "terminal.close"],
 		tab: "terminal",
 		provides: [],
+	},
+	ca: {
+		id: "ca",
+		label: "Local CA",
+		description:
+			"Trusts the fleet's local CA in the host's system certificate store.",
+		required: false,
+		enabledByDefault: true,
+		// Every platform has a trust store; which command reaches it is a
+		// per-platform installer, not a reason to leave one out.
+		platforms: ["linux", "darwin", "win32"],
+		grants: ["read", "exec"],
+		actions: ["ca.status"],
+		tab: null,
+		provides: ["ca"],
 	},
 };
 

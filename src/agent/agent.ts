@@ -96,6 +96,13 @@ export function startNode(config: AgentConfig): AgentHandle {
 	let hubModules: ModuleSet | null = null;
 
 	/**
+	 * The hub's local CA, from the last Welcome. Read live by the `ca` module
+	 * rather than captured at load time, because it can arrive after the module
+	 * already loaded once with nothing to trust yet.
+	 */
+	let trustedCa: { pem: string; fingerprint: string } | null = null;
+
+	/**
 	 * What to load: the node's own configuration, then the hub's intent folded
 	 * over it. The fold is where the two directions stop being symmetric — see
 	 * src/hub/modules.ts — and it is deliberately done here rather than trusted
@@ -134,7 +141,13 @@ export function startNode(config: AgentConfig): AgentHandle {
 		const request = requestedModules();
 		loadedRequest = request;
 		const result = await loadModules(
-			{ config, supervisor, terminals, control: config.control },
+			{
+				config,
+				supervisor,
+				terminals,
+				control: config.control,
+				trustedCa: () => trustedCa,
+			},
 			request,
 			hostPolicy(config.trustedModules),
 			[...BUILTIN_MODULES, ...external.modules],
@@ -251,6 +264,7 @@ export function startNode(config: AgentConfig): AgentHandle {
 			// that have no business showing it.
 			pihole: parts.pihole,
 			piholeDetail: parts.piholeDetail,
+			ca: parts.ca,
 			extras: parts.extras ?? {},
 			errors,
 		};
@@ -509,7 +523,18 @@ export function startNode(config: AgentConfig): AgentHandle {
 			// The hub's set arrives here on every connection, so a node picks up
 			// intent recorded while it was offline without anyone touching it.
 			hubModules = welcome.modules ?? null;
-			if (wouldChangeModules()) {
+
+			// A CA that just appeared (or changed) is the one thing `ca`'s own
+			// availability check can't notice on its own: it only runs at load time,
+			// which for a fresh connection was before this Welcome arrived. Both
+			// sides are normalised to `null` — `trustedCa?.fingerprint` reads as
+			// `undefined` once optional-chained, and comparing that against a
+			// hub with no CA at all (also `null`) must not read as a change.
+			const caChanged =
+				(welcome.ca?.fingerprint ?? null) !== (trustedCa?.fingerprint ?? null);
+			trustedCa = welcome.ca ?? null;
+
+			if (wouldChangeModules() || (caChanged && !loaded?.set.ca)) {
 				console.log("hub asked for a different module set — reloading");
 				void reloadModules().then(() => {
 					// Reconnect rather than announce in place: Hello is the only frame

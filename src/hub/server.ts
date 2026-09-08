@@ -25,6 +25,7 @@ import {
 } from "../proto/messages.ts";
 import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
+import { ensureHubCa } from "./ca.ts";
 import { MetricStore } from "./db.ts";
 import { startNotionSync } from "./notion.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
@@ -299,7 +300,10 @@ export function startHub(config: HubConfig) {
 		);
 	}
 
-	function onNodeHello(ws: ServerWebSocket<SocketData>, payload: Uint8Array) {
+	async function onNodeHello(
+		ws: ServerWebSocket<SocketData>,
+		payload: Uint8Array,
+	) {
 		const link = ws.data.link;
 		let hello: HelloPayload;
 		try {
@@ -323,6 +327,16 @@ export function startHub(config: HubConfig) {
 				// while it was offline. See src/hub/modules.ts.
 				modules: registry.plannedModules(record.id),
 				time: Date.now(),
+				// Subtractive like every other fleet switch: hub.json can turn `ca`
+				// off everywhere, and a hub with no openssl to generate one just
+				// sends nothing rather than failing the handshake over it.
+				ca:
+					config.modules.ca === false
+						? undefined
+						: await ensureHubCa(config.dbPath).catch((err) => {
+								console.warn(`local CA unavailable: ${err.message}`);
+								return undefined;
+							}),
 			};
 			link.send(MessageType.Welcome, welcome);
 			console.log(

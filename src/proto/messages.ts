@@ -11,6 +11,7 @@
 import type { NodeModuleView } from "../hub/modules.ts";
 import type { ModuleSet } from "../modules/manifest.ts";
 import type {
+	CaStatus,
 	Container,
 	ExternalManifest,
 	HostFacts,
@@ -68,6 +69,13 @@ export interface WelcomePayload {
 	modules: ModuleSet;
 	/** epoch ms on the hub, so a node can flag a badly skewed clock */
 	time: number;
+	/**
+	 * The fleet's local CA, public half only — absent when the hub has none or
+	 * the `ca` module is switched off. Not a request in the way `modules` is:
+	 * the `ca` module still decides for itself whether to trust it, same as
+	 * every other module decides whether to load at all. See src/hub/ca.ts.
+	 */
+	ca?: { pem: string; fingerprint: string };
 }
 
 export interface ErrorPayload {
@@ -239,6 +247,7 @@ export interface SnapshotResult {
 	guests: ProxmoxGuest[];
 	pihole?: PiholeSummary;
 	piholeDetail?: PiholeDetail;
+	ca?: CaStatus;
 	extras: Record<string, ModuleReport>;
 	errors: Record<string, string>;
 }

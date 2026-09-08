@@ -374,6 +374,22 @@ export interface PiholeDetail {
 	queryTypes: Record<string, number>;
 }
 
+/* ---------- local CA ---------- */
+
+/** Enough of the `ca` module's own state for the node's card. */
+export interface CaStatus {
+	/** the hub has a CA and this host's platform has an installer for it */
+	available: boolean;
+	/** the fingerprint currently trusted on this host, null if none is */
+	installedFingerprint: string | null;
+	/** the fingerprint the hub last sent; differs from installed while pending */
+	fleetFingerprint: string | null;
+	/** which trust store command was used, for the "why didn't this work" case */
+	method: string | null;
+	/** set when the install command failed; the fingerprints above still apply */
+	error: string | null;
+}
+
 /* ---------- projects ---------- */
 
 export type RestartPolicy = "always" | "on-failure" | "never";
@@ -560,6 +576,8 @@ export interface Telemetry {
 	pihole?: PiholeSummary;
 	/** the leaderboards behind the Pi-hole tab; refreshed slower than the tick */
 	piholeDetail?: PiholeDetail;
+	/** from the `ca` module; absent when the hub has no local CA to trust */
+	ca?: CaStatus;
 	/** what each installed module reported this tick, keyed by module id */
 	extras: Record<string, ModuleReport>;
 	/** non-fatal collection errors, keyed by collector name */

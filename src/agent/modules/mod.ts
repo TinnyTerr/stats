@@ -4,6 +4,7 @@ import type { ModuleManifest } from "../../modules/manifest.ts";
 import type { InboundRequest } from "../../proto/link.ts";
 import { RemoteError } from "../../proto/link.ts";
 import type {
+	CaStatus,
 	Container,
 	HostFacts,
 	ListeningPort,
@@ -38,6 +39,14 @@ export interface NodeModuleContext {
 	terminals: TerminalManager;
 	/** the node's own switch for anything that changes state */
 	control: boolean;
+	/**
+	 * The hub's local CA, read live rather than captured at load time — it
+	 * arrives in Welcome, after modules have already loaded once. Null until a
+	 * hub has sent one, which is a fact about the fleet and not a failure.
+	 * Absent entirely in a context nothing wired it into, which reads the same
+	 * as "no CA yet".
+	 */
+	trustedCa?(): { pem: string; fingerprint: string } | null;
 }
 
 /** The parts of a telemetry frame a module may fill in. */
@@ -54,6 +63,7 @@ export interface TelemetryParts {
 	guests?: ProxmoxGuest[];
 	pihole?: PiholeSummary;
 	piholeDetail?: PiholeDetail;
+	ca?: CaStatus;
 	/** installed modules' reports, keyed by module id — merged, not replaced */
 	extras?: Record<string, ModuleReport>;
 }

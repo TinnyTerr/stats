@@ -40,10 +40,11 @@ jobs:
 
       - run: bun run typecheck
 
-      # Cross-compiles the six Linux targets into dist/, alongside gzipped
-      # copies, SHA256SUMS and manifest.json. First run downloads a Bun runtime
-      # per target (~35 MB each), so this step needs network access.
-      - run: bun run build
+      # Cross-compiles every target — the six Linux ones plus the Windows and
+      # macOS builds from EXTRA_TARGETS — into dist/, alongside gzipped copies,
+      # SHA256SUMS and manifest.json. First run downloads a Bun runtime per
+      # target (~35 MB each), so this step needs network access.
+      - run: bun run build --all
 
       - name: Extract release notes from CHANGELOG
         run: |
@@ -61,7 +62,13 @@ jobs:
             echo '## Install'
             echo
             echo '```sh'
-            echo "curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | sudo sh -s -- --agent"
+            echo "curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | sudo sh -s -- --node"
+            echo '```'
+            echo
+            echo 'Windows node (elevated PowerShell):'
+            echo
+            echo '```powershell'
+            echo "iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/main/install.ps1 | iex"
             echo '```'
             echo
             echo "Checksums for every asset are in \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS\`)."
@@ -73,5 +80,7 @@ jobs:
           body_path: notes.md
           files: |-
             dist/stats-linux-*
+            dist/stats-windows-*
+            dist/stats-darwin-*
             dist/SHA256SUMS
             dist/manifest.json

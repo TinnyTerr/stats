@@ -153,6 +153,7 @@ describe("agent config", () => {
 			"pihole",
 			"logs",
 			"terminal",
+			"ca",
 		]);
 	});
 });

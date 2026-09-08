@@ -289,11 +289,25 @@ async function cliGet<T>(path: string): Promise<T> {
 			`pihole api ${endpoint} did not return JSON: ${text.slice(0, 200) || "(nothing)"}`,
 		);
 	}
+	let parsed: unknown;
 	try {
-		return JSON.parse(body) as T;
+		parsed = JSON.parse(body);
 	} catch {
 		throw new PiholeUnavailable(`pihole api ${endpoint} did not return JSON`);
 	}
+	// The status line above is the CLI's way of saying so, but it is the CLI's
+	// formatting and not a contract. FTL's own refusal is, and none of the
+	// endpoints asked for here answer with one, so an `error` is a failure
+	// whatever the lines around it said — otherwise it would shape into a
+	// Pi-hole reporting zeroes, which is the one wrong answer worse than none.
+	const failed = (parsed as { error?: { key?: string; message?: string } })
+		?.error;
+	if (failed) {
+		throw new PiholeUnavailable(
+			`pihole api ${endpoint}: ${failed.message ?? failed.key ?? "refused"}`,
+		);
+	}
+	return parsed as T;
 }
 
 /* ---------- v6: a session, then JSON ---------- */

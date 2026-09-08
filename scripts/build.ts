@@ -85,6 +85,12 @@ const EXTRA_TARGETS: Target[] = [
 		asset: "stats-darwin-x64",
 		note: "macOS Intel (hub only)",
 	},
+	{
+		target: "bun-windows-x64",
+		asset: "stats-windows-x64.exe",
+		note: "Windows x86-64 (node only — no system probe yet; terminal, " +
+			"projects and ca work)",
+	},
 ];
 
 const ALL_TARGETS = [...LINUX_TARGETS, ...EXTRA_TARGETS];
