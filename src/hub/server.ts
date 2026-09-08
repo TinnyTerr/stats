@@ -9,6 +9,8 @@ import { moduleForAction, moduleOn } from "../modules/manifest.ts";
 import { MessageType } from "../proto/frame.ts";
 import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
 import {
+	type CaIssueParams,
+	type CaIssueResult,
 	type EventsParams,
 	type HelloPayload,
 	type HistoryParams,
@@ -25,7 +27,7 @@ import {
 } from "../proto/messages.ts";
 import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
-import { ensureHubCa } from "./ca.ts";
+import { ensureHubCa, issueCert } from "./ca.ts";
 import { MetricStore } from "./db.ts";
 import { startNotionSync } from "./notion.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
@@ -223,6 +225,24 @@ export function startHub(config: HubConfig) {
 					nodes: records.map((record) => registry.moduleView(record)),
 					fleet: config.modules,
 				} satisfies ModulesFleetResult;
+			}
+
+			case HubAction.CaIssue: {
+				if (config.modules.ca === false) {
+					throw new RemoteError(
+						"ca_disabled",
+						"the ca module is switched off for this fleet in hub.json",
+					);
+				}
+				const p = params as unknown as CaIssueParams;
+				if (!p.commonName?.trim()) {
+					throw new RemoteError("bad_request", "commonName is required");
+				}
+				return (await issueCert(config.dbPath, {
+					commonName: p.commonName.trim(),
+					sans: p.sans?.map((s) => s.trim()).filter(Boolean),
+					days: p.days,
+				})) satisfies CaIssueResult;
 			}
 
 			case HubAction.ModulesSet: {

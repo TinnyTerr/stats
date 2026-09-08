@@ -1231,6 +1231,19 @@ th.right {
 	max-width: 1100px;
 }
 
+.code-editor {
+	width: 100%;
+	box-sizing: border-box;
+	resize: vertical;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text);
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 10px 12px;
+}
+
 .module-node header {
 	display: flex;
 	align-items: center;

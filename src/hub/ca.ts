@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -74,4 +74,90 @@ export async function ensureHubCa(dbPath: string): Promise<HubCa> {
 	};
 	cached = { dir, ca };
 	return ca;
+}
+
+export interface IssuedCert {
+	/** signed by the fleet CA */
+	cert: string;
+	/** matching private key — this is the one and only time it exists; the hub keeps no copy */
+	key: string;
+	/** the fleet CA's own cert, so the leaf can be presented as a chain */
+	caCert: string;
+}
+
+const IPV4 = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/**
+ * A one-off leaf cert signed by the fleet CA, for services that want the same
+ * trust nodes already have (see src/agent/modules/ca.ts) rather than a cert of
+ * their own. Generated and signed in a scratch directory that's gone before
+ * this returns — the hub never persists a leaf key, only the CA's.
+ */
+export async function issueCert(
+	dbPath: string,
+	opts: { commonName: string; sans?: string[]; days?: number },
+): Promise<IssuedCert> {
+	const dir = caDir(dbPath);
+	const ca = await ensureHubCa(dbPath);
+	const keyPath = join(dir, "ca-key.pem");
+	const certPath = join(dir, "ca-cert.pem");
+
+	const days = Math.min(Math.max(Math.round(opts.days ?? 825), 1), 3650);
+	const names = [opts.commonName, ...(opts.sans ?? [])].filter(Boolean);
+	const altNames = names
+		.map((name) => (IPV4.test(name) ? `IP:${name}` : `DNS:${name}`))
+		.join(",");
+
+	const scratch = await mkdtemp(join(tmpdir(), "stats-ca-issue-"));
+	try {
+		const leafKey = join(scratch, "leaf-key.pem");
+		const csr = join(scratch, "leaf.csr");
+		const leafCert = join(scratch, "leaf-cert.pem");
+		const extfile = join(scratch, "leaf.ext");
+		await Bun.write(
+			extfile,
+			`basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=${altNames}\n`,
+		);
+
+		await run([
+			"openssl",
+			"req",
+			"-newkey",
+			"rsa:2048",
+			"-nodes",
+			"-keyout",
+			leafKey,
+			"-out",
+			csr,
+			"-subj",
+			`/O=stats fleet/CN=${opts.commonName}`,
+		]);
+		await run([
+			"openssl",
+			"x509",
+			"-req",
+			"-in",
+			csr,
+			"-CA",
+			certPath,
+			"-CAkey",
+			keyPath,
+			"-CAcreateserial",
+			"-days",
+			String(days),
+			"-sha256",
+			"-extfile",
+			extfile,
+			"-out",
+			leafCert,
+		]);
+
+		return {
+			cert: await Bun.file(leafCert).text(),
+			key: await Bun.file(leafKey).text(),
+			caCert: ca.pem,
+		};
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
 }

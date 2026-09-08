@@ -43,3 +43,6 @@ stats.db-wal
 
 # generated declaration files — the .ts sources are the contract
 *.d.ts
+
+*.pem
+*.key

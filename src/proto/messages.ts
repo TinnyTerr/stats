@@ -130,7 +130,21 @@ export const HubAction = {
 	Modules: "modules.fleet",
 	/** record the hub's intent for one node's modules */
 	ModulesSet: "modules.set",
+	/** a one-off leaf cert signed by the fleet CA */
+	CaIssue: "ca.issue",
 } as const;
+
+export interface CaIssueParams {
+	commonName: string;
+	sans?: string[];
+	days?: number;
+}
+
+export interface CaIssueResult {
+	cert: string;
+	key: string;
+	caCert: string;
+}
 
 export interface NodeScoped {
 	/** which node the hub should relay this to */
