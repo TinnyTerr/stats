@@ -116,6 +116,11 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 - **`schema/projects.schema.json` is the documentation for the projects file;
   `src/agent/projects.ts` is the enforcement.** A test compares the schema's
   `default` keywords against the loader's `DEFAULTS`, so change both together.
+  The dashboard's projects builder (`web/toolspage.tsx`) imports
+  `parseProjectsDocument` from that same loader so the form rejects exactly
+  what a node would — which means `src/agent/projects.ts` has to stay
+  browser-safe: nothing at module top level may touch `process`, `Bun` or the
+  filesystem unguarded.
 
 ## Things that bit us, worth not rediscovering
 
