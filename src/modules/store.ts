@@ -56,6 +56,9 @@ export interface BrokenModule {
 export function moduleStoreDir(): string {
 	const override = process.env.STATS_MODULE_DIR;
 	if (override) return resolve(override);
+	// systemd's StateDirectory= creates and chowns this for us, and — under
+	// ProtectHome — is the only writable state directory a non-root unit has.
+	if (process.env.STATE_DIRECTORY) return join(process.env.STATE_DIRECTORY, "modules");
 	const uid = process.getuid?.();
 	if (uid === 0) return "/var/lib/stats/modules";
 	return join(homedir(), ".local", "share", "stats", "modules");

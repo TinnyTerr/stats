@@ -22,6 +22,10 @@ import type { NodeModule, NodeModuleContext } from "./mod.ts";
  */
 
 function caStateDir(): string {
+	// systemd's StateDirectory= creates and chowns this for us, and — under
+	// ProtectHome — is the only writable state directory a non-root unit has;
+	// homedir() is a fallback for running outside systemd entirely.
+	if (process.env.STATE_DIRECTORY) return process.env.STATE_DIRECTORY;
 	if (process.getuid?.() === 0) return "/var/lib/stats";
 	return join(homedir(), ".local", "share", "stats");
 }

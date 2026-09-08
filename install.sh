@@ -657,7 +657,8 @@ EOF
     UNIT_USER="User=$SERVICE_USER
 Group=$SERVICE_USER${GROUPS_LINE:+
 SupplementaryGroups=$GROUPS_LINE}"
-    UNIT_SANDBOX="NoNewPrivileges=yes
+    UNIT_SANDBOX="StateDirectory=stats
+NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=yes
