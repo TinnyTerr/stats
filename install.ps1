@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    stats installer for Windows — https://git.tinnyterr.com/tinnyterr/stats
+    stats installer for Windows — https://github.com/tinnyterr/stats
 
 .DESCRIPTION
     Installs the single-file `stats.exe` (it embeds the Bun runtime, the API
@@ -51,7 +51,7 @@
 
 .EXAMPLE
     # Node, dialling an existing hub — run from an elevated PowerShell:
-    iwr -useb https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.ps1 | iex
+    iwr -useb https://github.com/tinnyterr/stats/raw/branch/main/install.ps1 | iex
     # or, with parameters:
     .\install.ps1 -Node -HubUrl ws://hub.lan:3000 -Token <token>
 

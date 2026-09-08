@@ -1,5 +1,5 @@
 #!/bin/sh
-# stats installer — https://git.tinnyterr.com/tinnyterr/stats
+# stats installer — https://github.com/tinnyterr/stats
 #
 # Installs the single-file `stats` binary (it embeds the Bun runtime, the API
 # and the dashboard, so nothing else is required on the machine) and, on
@@ -10,7 +10,7 @@
 #     curl -fsSL .../install.sh | sudo sh -s -- --hub
 #
 #   Node, on each server you want to watch:
-#     curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | \
+#     curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | \
 #       sudo sh -s -- --node --hub ws://hub.lan:3000 --token <token>
 #
 #   From a local build (bun run build):

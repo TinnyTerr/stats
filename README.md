@@ -62,7 +62,7 @@ Start with the hub, on the machine that shows the dashboard. It generates the
 token the nodes will need and prints the exact command to run on them:
 
 ```bash
-curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | \
+curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | \
   sudo sh -s -- --hub --host 0.0.0.0
 ```
 
@@ -647,7 +647,7 @@ ssh-ing into things":
 
 ```bash
 # 1. the installer, re-run — always works, upgrades the binary and restarts
-curl -fsSL https://git.tinnyterr.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --node
+curl -fsSL https://github.com/tinnyterr/stats/raw/branch/main/install.sh | sudo sh -s -- --node
 
 # 2. the binary updating itself
 stats update                 # to the latest release
