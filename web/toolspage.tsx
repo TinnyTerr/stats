@@ -292,6 +292,136 @@ export function buildDocument(projects: ProjectForm[]) {
 	return { doc, errors };
 }
 
+/* ---------- document values → field text (import) ---------- */
+
+const rawStr = (v: unknown): string => (typeof v === "string" ? v : "");
+const rawNum = (v: unknown): string => (typeof v === "number" ? String(v) : "");
+const rawListStr = (v: unknown): string =>
+	Array.isArray(v)
+		? v
+				.filter((x) => typeof x === "string" || typeof x === "number")
+				.map(String)
+				.join(", ")
+		: "";
+const rawEnvStr = (v: unknown): string => {
+	if (typeof v !== "object" || v === null || Array.isArray(v)) return "";
+	return Object.entries(v as Record<string, unknown>)
+		.map(([k, val]) => `${k}=${val}`)
+		.join("\n");
+};
+
+function fromRawHealth(raw: unknown): HealthForm {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+		return blankHealth();
+	const h = raw as Record<string, unknown>;
+	const type =
+		h.type === "http" || h.type === "tcp" || h.type === "command"
+			? h.type
+			: "";
+	return {
+		type,
+		url: rawStr(h.url),
+		expectStatus: rawListStr(h.expectStatus),
+		port: rawNum(h.port),
+		host: rawStr(h.host),
+		command: Array.isArray(h.command) ? rawListStr(h.command) : "",
+		intervalSec: rawNum(h.intervalSec),
+		timeoutMs: rawNum(h.timeoutMs),
+		failures: rawNum(h.failures),
+		startPeriodSec: rawNum(h.startPeriodSec),
+	};
+}
+
+function fromRawProcess(raw: unknown): ProcessForm {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+		return blankProcess();
+	const p = raw as Record<string, unknown>;
+	const command = Array.isArray(p.command)
+		? p.command.filter((c) => typeof c === "string").join(" ")
+		: typeof p.command === "string"
+			? p.command
+			: "";
+	const restart =
+		p.restart === "always" || p.restart === "never" || p.restart === "on-failure"
+			? p.restart
+			: DEFAULTS.restart;
+	return blankProcess({
+		id: rawStr(p.id),
+		name: rawStr(p.name),
+		command,
+		shell: typeof p.shell === "boolean" ? p.shell : DEFAULTS.shell,
+		cwd: rawStr(p.cwd),
+		env: rawEnvStr(p.env),
+		envFiles: rawListStr(p.envFiles),
+		autostart:
+			typeof p.autostart === "boolean" ? p.autostart : DEFAULTS.autostart,
+		restart,
+		restartDelayMs: rawNum(p.restartDelayMs),
+		maxRestarts: rawNum(p.maxRestarts),
+		restartWindowSec: rawNum(p.restartWindowSec),
+		user: rawStr(p.user),
+		group: rawStr(p.group),
+		stopSignal: rawStr(p.stopSignal),
+		stopTimeoutSec: rawNum(p.stopTimeoutSec),
+		logLines: rawNum(p.logLines),
+		health: fromRawHealth(p.healthcheck),
+	});
+}
+
+function fromRawProject(raw: unknown): ProjectForm {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+		return blankProject();
+	const p = raw as Record<string, unknown>;
+	const watch =
+		typeof p.watch === "object" && p.watch !== null && !Array.isArray(p.watch)
+			? (p.watch as Record<string, unknown>)
+			: {};
+	return blankProject({
+		id: rawStr(p.id),
+		name: rawStr(p.name),
+		description: rawStr(p.description),
+		cwd: rawStr(p.cwd),
+		url: rawStr(p.url),
+		tags: rawListStr(p.tags),
+		env: rawEnvStr(p.env),
+		envFiles: rawListStr(p.envFiles),
+		enabled: typeof p.enabled === "boolean" ? p.enabled : DEFAULTS.enabled,
+		processes: Array.isArray(p.processes)
+			? p.processes.map(fromRawProcess)
+			: [],
+		watch: {
+			systemd: rawListStr(watch.systemd),
+			containers: rawListStr(watch.containers),
+			ports: rawListStr(watch.ports),
+			paths: rawListStr(watch.paths),
+		},
+	});
+}
+
+/** Exported for the test. Parses a pasted projects.json into forms, blank staying blank rather than filled with the validator's defaults. */
+export function importDocument(
+	text: string,
+): { projects: ProjectForm[] } | { error: string } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (err) {
+		return { error: `invalid JSON — ${err instanceof Error ? err.message : err}` };
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		Array.isArray(parsed) ||
+		!Array.isArray((parsed as Record<string, unknown>).projects)
+	) {
+		return { error: "expected an object with a 'projects' array" };
+	}
+	const projects = (parsed as { projects: unknown[] }).projects.map(
+		fromRawProject,
+	);
+	return { projects };
+}
+
 /* ---------- field widgets ---------- */
 
 function Field({
@@ -966,6 +1096,22 @@ export function ProjectsBuilder() {
 	const { doc, errors } = useMemo(() => buildDocument(projects), [projects]);
 	const text = useMemo(() => `${JSON.stringify(doc, null, 2)}\n`, [doc]);
 
+	const [importText, setImportText] = useState("");
+	const [importError, setImportError] = useState<string | null>(null);
+	const [importOpen, setImportOpen] = useState(false);
+
+	const doImport = () => {
+		const result = importDocument(importText);
+		if ("error" in result) {
+			setImportError(result.error);
+			return;
+		}
+		setProjects(result.projects.length ? result.projects : exampleProjects());
+		setImportError(null);
+		setImportText("");
+		setImportOpen(false);
+	};
+
 	const copy = async () => {
 		await navigator.clipboard.writeText(text);
 	};
@@ -993,6 +1139,33 @@ export function ProjectsBuilder() {
 						.
 					</span>
 				</header>
+				<details
+					className="fieldset"
+					open={importOpen}
+					onToggle={(event) => setImportOpen(event.currentTarget.open)}
+				>
+					<summary>Paste a projects.json to fill this out</summary>
+					<div className="fields">
+						<Field
+							label="projects.json"
+							hint="Replaces every project below with what's pasted here."
+							wide
+						>
+							<Lines
+								value={importText}
+								placeholder='{"projects": [...]}'
+								rows={8}
+								onChange={setImportText}
+							/>
+						</Field>
+					</div>
+					{importError && <div className="issues errors">{importError}</div>}
+					<div className="toolbar">
+						<button type="button" onClick={doImport} disabled={!importText.trim()}>
+							Load
+						</button>
+					</div>
+				</details>
 			</section>
 
 			{projects.map((project, i) => (
