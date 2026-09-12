@@ -290,7 +290,7 @@ Get-Content '$EnvFile' | ForEach-Object {
 		-Argument "-NoProfile -ExecutionPolicy Bypass -File `"$wrapper`""
 	$trigger = New-ScheduledTaskTrigger -AtStartup
 	$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-	$settings = New-ScheduledTaskSettingsSet -Restart -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+	$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
 		-StartWhenAvailable -DontStopOnIdleEnd
 
 	Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
