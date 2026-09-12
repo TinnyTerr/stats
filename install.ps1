@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    stats installer for Windows — https://github.com/tinnyterr/stats
+    stats installer for Windows - https://github.com/tinnyterr/stats
 
 .DESCRIPTION
     Installs the single-file `stats.exe` (it embeds the Bun runtime, the API
@@ -10,7 +10,7 @@
 
     A Windows node is real but sparse: there is no `system` probe yet (see
     src/collect/platform/win32.ts), and `systemd`, `docker`, `processes` and
-    `ports` don't apply — those modules declare the platforms they run on and
+    `ports` don't apply - those modules declare the platforms they run on and
     the loader leaves them out. What does run: `projects`, `logs`, `terminal`
     (ConPTY), and `ca`, which trusts the fleet's CA via `certutil`.
 
@@ -50,7 +50,7 @@
     With -Uninstall, also delete the config directory.
 
 .EXAMPLE
-    # Node, dialling an existing hub — run from an elevated PowerShell:
+    # Node, dialling an existing hub - run from an elevated PowerShell:
     iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.ps1 | iex
     # or, with parameters:
     .\install.ps1 -Node -HubUrl ws://hub.lan:3000 -Token <token>
@@ -65,7 +65,7 @@
     It is re-runnable: installing over an existing copy upgrades the binary
     and restarts the task, and never overwrites a config or token you already
     have. It runs as SYSTEM by default, the Windows equivalent of the Linux
-    installer's root node — unrestricted modules, and the hub may switch
+    installer's root node - unrestricted modules, and the hub may switch
     modules on and ask it to update unless you pass -NoRemoteUpdate or
     -NoHubModules.
 #>
@@ -108,7 +108,7 @@ function Test-Admin {
 }
 
 if (-not (Test-Admin)) {
-	Die "run this from an elevated PowerShell (Run as Administrator) — the Scheduled Task and C:\ProgramData\stats both need it."
+	Die "run this from an elevated PowerShell (Run as Administrator) - the Scheduled Task and C:\ProgramData\stats both need it."
 }
 
 function Confirm-Action($msg) {
@@ -134,7 +134,7 @@ if ($Uninstall) {
 		Step "purging $InstallDir"
 		Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
 	} elseif (Test-Path $InstallDir) {
-		Write-Host "kept $InstallDir — pass -Purge to delete it." -ForegroundColor DarkGray
+		Write-Host "kept $InstallDir - pass -Purge to delete it." -ForegroundColor DarkGray
 	}
 	Write-Host "stats removed." -ForegroundColor Green
 	exit 0
@@ -152,12 +152,12 @@ function Get-Sha256($path) {
 # release publishes one. A missing sums file is a warning, not a hard stop.
 function Test-Checksum($path, $assetName, $sumsPath) {
 	if (-not (Test-Path $sumsPath)) {
-		Warn "no SHA256SUMS alongside $assetName — skipping checksum."
+		Warn "no SHA256SUMS alongside $assetName - skipping checksum."
 		return
 	}
 	$line = Select-String -Path $sumsPath -Pattern "  $assetName$" | Select-Object -First 1
 	if (-not $line) {
-		Warn "$assetName is not listed in SHA256SUMS — skipping checksum."
+		Warn "$assetName is not listed in SHA256SUMS - skipping checksum."
 		return
 	}
 	$want = ($line.Line -split '\s+')[0]
@@ -241,7 +241,7 @@ if (Test-Path $EnvFile) {
 	}
 } else {
 	if (-not $HubUrl) { Die "a node needs its hub: -HubUrl ws://hub.lan:3000 (or set STATS_HUB)." }
-	if (-not $Token) { Warn "no -Token given — the hub will only accept this node if it has no nodeToken set." }
+	if (-not $Token) { Warn "no -Token given - the hub will only accept this node if it has no nodeToken set." }
 	Step "writing $EnvFile"
 	@(
 		"STATS_HUB=$HubUrl"
