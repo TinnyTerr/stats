@@ -76,6 +76,70 @@ export async function ensureHubCa(dbPath: string): Promise<HubCa> {
 	return ca;
 }
 
+/** The base64 body of a PEM block, unwrapped — which is also exactly the DER an Apple config profile wants. */
+function pemToDerBase64(pem: string): string {
+	return pem
+		.split("\n")
+		.filter((line) => line && !line.startsWith("-----"))
+		.join("");
+}
+
+/**
+ * An unsigned iOS/macOS configuration profile carrying the fleet CA as a
+ * trusted root. Installing the raw `.pem` on iOS only drops it in as an
+ * untrusted certificate — Settings > General > About > Certificate Trust
+ * Settings still needs a human to flip it on by hand, and that toggle isn't
+ * reachable any other way. A `.mobileconfig` root payload does both steps in
+ * one prompt. Unsigned means iOS shows it as "Not Verified", not that it's
+ * any less trusted once installed — signing would need a cert of its own.
+ */
+export function caMobileConfig(pem: string): string {
+	const der = pemToDerBase64(pem);
+	const wrapped = der.match(/.{1,64}/g)?.join("\n") ?? der;
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadCertificateFileName</key>
+			<string>stats-ca.pem</string>
+			<key>PayloadContent</key>
+			<data>
+${wrapped}
+			</data>
+			<key>PayloadDescription</key>
+			<string>Trusts the stats fleet's local CA, so nodes' self-signed certs stop showing warnings.</string>
+			<key>PayloadDisplayName</key>
+			<string>stats fleet CA</string>
+			<key>PayloadIdentifier</key>
+			<string>fleet.stats.ca.cert</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.root</string>
+			<key>PayloadUUID</key>
+			<string>${crypto.randomUUID()}</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>stats fleet CA</string>
+	<key>PayloadIdentifier</key>
+	<string>fleet.stats.ca</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>${crypto.randomUUID()}</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>
+`;
+}
+
 export interface IssuedCert {
 	/** signed by the fleet CA */
 	cert: string;

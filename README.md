@@ -474,6 +474,46 @@ mirror works because every request goes the other way, out to `api.notion.com`.
 Exposing the hub publicly (Tailscale Funnel, a reverse proxy) is the only way
 round that, and is worth wanting only if you need Notion to drive the fleet.
 
+## Certificates
+
+The hub is its own tiny CA. The first time a node loads the `ca` module (on
+by default), the hub generates a 4096-bit root — once, next to `hub.json`'s
+database — and hands the node the public half, which it installs into the
+host's trust store (`update-ca-certificates` on Linux, `security
+add-trusted-cert` on macOS, `certutil` on Windows). From then on every node
+in the fleet trusts anything signed by that CA.
+
+That makes it worth signing real leaf certs off of, for internal services
+that would otherwise want a self-signed one browsers complain about. Three
+ways to ask for one, all going through the same `issueCert()`
+(`src/hub/ca.ts`):
+
+- **The dashboard's Tools tab** — fill in a common name (and optional SANs),
+  click Generate. The cert, key and CA chain are shown once and copied from
+  there; the hub keeps no copy of the key.
+- **The CLI**, from the hub's own machine (it needs `hub.json`'s `dbPath` to
+  find the CA):
+  ```bash
+  stats cert grafana.internal --san grafana,10.0.0.5 --days 825 --out ./certs
+  # writes ./certs/grafana.internal.{cert,key,chain}.pem
+  ```
+- **The wire protocol**, as `ca.issue` — what the Tools tab itself calls:
+  ```json
+  { "action": "ca.issue", "params": { "commonName": "grafana.internal", "sans": ["10.0.0.5"], "days": 825 } }
+  ```
+  answered with `{ cert, key, caCert }`. Off entirely when `hub.json`'s
+  `modules.ca` is `false`.
+
+**A different route to the same cert:** the Tools tab can also register the
+name with a node's Pi-hole in the same click, so `grafana.internal` actually
+resolves on the LAN the moment the cert exists — pass `registerDns: {
+nodeId, ip }` to `ca.issue` and the hub adds a local DNS record (`pihole.dns`)
+on that node after signing. It's entirely optional: a fleet with no Pi-hole
+gets a cert and nothing more, and a Pi-hole that refuses the record doesn't
+take the cert away — `dns: { ok, output }` on the result says what happened.
+`pihole.dns` also stands on its own outside cert issuance, for adding or
+removing any `/etc/hosts`-style record on a node's Pi-hole.
+
 ## The wire protocol
 
 One binary framing carries everything, on both links (node⇄hub and

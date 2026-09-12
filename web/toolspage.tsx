@@ -1,6 +1,7 @@
 import { cloneElement, useId, useMemo, useState } from "react";
 import { DEFAULTS, parseProjectsDocument } from "../src/agent/projects.ts";
 import type { CaIssueResult } from "../src/proto/messages.ts";
+import type { NodeSummary } from "../src/types.ts";
 import type { HubConnection } from "./link.ts";
 import { ActionButton } from "./ui.tsx";
 
@@ -1230,13 +1231,74 @@ export function ProjectsBuilder() {
 	);
 }
 
+/* ---------- CA install ---------- */
+
+/**
+ * iOS won't install a raw .pem as a root the way desktop/Android do — it
+ * needs a .mobileconfig profile (src/hub/ca.ts's caMobileConfig) to even
+ * offer the install prompt, and the trust toggle under Certificate Trust
+ * Settings is a separate manual step either way. Both links are plain,
+ * unauthenticated GETs — see the comment on /ca.pem in src/hub/server.ts —
+ * so this panel just links to them rather than routing through the
+ * browser's own token.
+ */
+function CaDownload() {
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>Install the fleet CA</h4>
+				<span className="dim">
+					Trust this once per device and every node's self-signed cert stops
+					warning. Same CA nodes trust in{" "}
+					<span className="mono">src/agent/modules/ca.ts</span>.
+				</span>
+			</header>
+
+			<div className="toolbar">
+				<a className="action" href="/ca.pem" download="stats-ca.pem">
+					Download CA cert (.pem)
+				</a>
+				<a
+					className="action"
+					href="/ca.mobileconfig"
+					download="stats-ca.mobileconfig"
+				>
+					iOS / macOS config profile
+				</a>
+			</div>
+
+			<p className="dim">
+				iOS: open the config profile link on the device, install it under
+				Settings, then flip it on under Settings &gt; General &gt; About
+				&gt; Certificate Trust Settings — installing the profile isn't
+				enough on its own. Everywhere else (Android, desktop browsers,
+				Linux, Windows) the plain <span className="mono">.pem</span> works
+				once it's added to the system trust store.
+			</p>
+		</section>
+	);
+}
+
 /* ---------- certificate issuer ---------- */
 
-function CertIssuer({ hub }: { hub: HubConnection }) {
+function CertIssuer({
+	hub,
+	nodes,
+}: {
+	hub: HubConnection;
+	nodes: NodeSummary[];
+}) {
 	const [commonName, setCommonName] = useState("");
 	const [sans, setSans] = useState("");
 	const [days, setDays] = useState(825);
 	const [issued, setIssued] = useState<CaIssueResult | null>(null);
+
+	// A different route to the same cert: node has to have actually reached its
+	// Pi-hole, not just have the module loaded, or this would offer a record no
+	// node is in a position to write.
+	const piholeNodes = nodes.filter((n) => n.pihole?.available);
+	const [registerNode, setRegisterNode] = useState("");
+	const [registerIp, setRegisterIp] = useState("");
 
 	const issue = async () => {
 		const result = await hub.request<CaIssueResult>("ca.issue", {
@@ -1246,6 +1308,9 @@ function CertIssuer({ hub }: { hub: HubConnection }) {
 				.map((s) => s.trim())
 				.filter(Boolean),
 			days,
+			...(registerNode && registerIp
+				? { registerDns: { nodeId: registerNode, ip: registerIp } }
+				: {}),
 		});
 		setIssued(result);
 	};
@@ -1291,6 +1356,36 @@ function CertIssuer({ hub }: { hub: HubConnection }) {
 					Generate
 				</ActionButton>
 			</div>
+
+			{piholeNodes.length > 0 && (
+				<div className="toolbar" style={{ marginTop: 8 }}>
+					<span className="dim">also register with Pi-hole:</span>
+					<select
+						value={registerNode}
+						onChange={(event) => {
+							setRegisterNode(event.target.value);
+							const node = piholeNodes.find((n) => n.id === event.target.value);
+							if (node?.addresses[0]) setRegisterIp(node.addresses[0]);
+						}}
+					>
+						<option value="">skip</option>
+						{piholeNodes.map((node) => (
+							<option key={node.id} value={node.id}>
+								{node.name}
+							</option>
+						))}
+					</select>
+					{registerNode && (
+						<input
+							type="text"
+							placeholder="ip to point the record at"
+							value={registerIp}
+							onChange={(event) => setRegisterIp(event.target.value)}
+							style={{ width: 160 }}
+						/>
+					)}
+				</div>
+			)}
 
 			{issued && (
 				<div className="stack" style={{ marginTop: 12 }}>
@@ -1351,13 +1446,24 @@ function CertIssuer({ hub }: { hub: HubConnection }) {
 							value={issued.caCert}
 						/>
 					</div>
+					{issued.dns && (
+						<p className={issued.dns.ok ? "dim" : "banner"}>
+							Pi-hole on {issued.dns.nodeId}: {issued.dns.output}
+						</p>
+					)}
 				</div>
 			)}
 		</section>
 	);
 }
 
-export function ToolsPage({ hub }: { hub: HubConnection }) {
+export function ToolsPage({
+	hub,
+	nodes,
+}: {
+	hub: HubConnection;
+	nodes: NodeSummary[];
+}) {
 	return (
 		<div className="modules-page">
 			<header className="page-head">
@@ -1369,7 +1475,8 @@ export function ToolsPage({ hub }: { hub: HubConnection }) {
 			</header>
 
 			<ProjectsBuilder />
-			<CertIssuer hub={hub} />
+			<CaDownload />
+			<CertIssuer hub={hub} nodes={nodes} />
 		</div>
 	);
 }

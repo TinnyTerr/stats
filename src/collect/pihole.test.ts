@@ -7,6 +7,7 @@ import {
 	piholeConfigured,
 	resetPiholeCache,
 	setBlocking,
+	setLocalDns,
 	usePiholeTransport,
 } from "./pihole.ts";
 
@@ -415,6 +416,119 @@ describe("a Pi-hole this node is running on", () => {
 		const result = await setBlocking({ blocking: false }, { api: "cli" });
 		expect(result.ok).toBe(false);
 		expect(result.output).toContain("blocking is enabled");
+	});
+});
+
+/* ---------- local DNS ---------- */
+
+describe("registering a domain in a Pi-hole's local DNS", () => {
+	test("v6 adds a host entry by PUTting the value into the URL", async () => {
+		const calls: Call[] = [];
+		usePiholeTransport({
+			async fetch(url, init) {
+				calls.push({ url, init });
+				return new Response("{}", { status: 200 });
+			},
+		});
+
+		const result = await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: true },
+			{ base: BASE, api: "v6" },
+		);
+
+		expect(result).toEqual({
+			ok: true,
+			output: "grafana.internal -> 10.0.0.5 added",
+		});
+		expect(calls[0]?.url).toBe(
+			`${BASE}/api/config/dns/hosts/${encodeURIComponent("10.0.0.5 grafana.internal")}`,
+		);
+		expect(calls[0]?.init?.method).toBe("PUT");
+	});
+
+	test("v6 removes a host entry with DELETE", async () => {
+		const calls: Call[] = [];
+		usePiholeTransport({
+			async fetch(url, init) {
+				calls.push({ url, init });
+				return new Response("{}", { status: 200 });
+			},
+		});
+
+		const result = await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: false },
+			{ base: BASE, api: "v6" },
+		);
+
+		expect(result).toEqual({ ok: true, output: "grafana.internal removed" });
+		expect(calls[0]?.init?.method).toBe("DELETE");
+	});
+
+	test("v6 turns a refusal into a failed result, not a throw", async () => {
+		usePiholeTransport({
+			async fetch() {
+				return new Response("nope", { status: 400, statusText: "Bad Request" });
+			},
+		});
+
+		const result = await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: true },
+			{ base: BASE, api: "v6" },
+		);
+		expect(result.ok).toBe(false);
+		expect(result.output).toContain("400");
+	});
+
+	test("the CLI adds and removes with the same -X verbs", async () => {
+		const argv: string[][] = [];
+		usePiholeTransport({
+			async exec(args) {
+				argv.push(args);
+				return { code: 0, stdout: "", stderr: "" };
+			},
+		});
+
+		await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: true },
+			{ api: "cli" },
+		);
+		expect(argv[0]).toEqual([
+			"pihole",
+			"api",
+			"-X",
+			"PUT",
+			`config/dns/hosts/${encodeURIComponent("10.0.0.5 grafana.internal")}`,
+		]);
+
+		await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: false },
+			{ api: "cli" },
+		);
+		expect(argv[1]?.[3]).toBe("DELETE");
+	});
+
+	test("v5 goes through customdns", async () => {
+		const calls: Call[] = [];
+		usePiholeTransport({
+			async fetch(url) {
+				calls.push({ url });
+				return Response.json({ message: "added" });
+			},
+		});
+
+		const result = await setLocalDns(
+			{ domain: "grafana.internal", ip: "10.0.0.5", present: true },
+			{ base: BASE, api: "v5" },
+		);
+		expect(result).toEqual({ ok: true, output: "added" });
+		expect(calls[0]?.url).toContain("customdns");
+		expect(calls[0]?.url).toContain("action=add");
+	});
+
+	test("a blank domain is refused before anything is asked", () => {
+		expect(
+			setLocalDns({ domain: "  ", ip: "10.0.0.5", present: true }, { api: "cli" }),
+		).rejects.toThrow(/domain is required/);
 	});
 });
 

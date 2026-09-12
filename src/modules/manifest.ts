@@ -194,7 +194,7 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		// `exec` is `pihole api` on the Pi-hole itself, which is only reachable by
 		// root and needs no credentials; `http` is every other node's way in.
 		grants: ["http", "exec"],
-		actions: ["pihole.blocking"],
+		actions: ["pihole.blocking", "pihole.dns"],
 		tab: "pihole",
 		provides: ["pihole"],
 	},

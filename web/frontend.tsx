@@ -627,7 +627,7 @@ function App() {
 
 			{view === "tools" && hub.current && (
 				<main className="page">
-					<ToolsPage hub={hub.current} />
+					<ToolsPage hub={hub.current} nodes={nodes} />
 				</main>
 			)}
 

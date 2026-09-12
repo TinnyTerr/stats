@@ -813,6 +813,98 @@ export async function collectPiholeVia(endpoint: PiholeEndpoint): Promise<{
 		: await collectV6(endpoint);
 }
 
+/* ---------- local DNS ---------- */
+
+/**
+ * A CLI request that changes state rather than reading it. Adding or removing
+ * a host entry is a PUT or DELETE against a URL that already names the whole
+ * value, so — unlike {@link cliGet} — there is no body to parse back: FTL
+ * either did it or it didn't, and says so with its exit code and status line.
+ */
+async function cliRequest(path: string, method: string): Promise<void> {
+	const endpoint = path.replace(/^\//, "");
+	const out = await transport.exec(["pihole", "api", "-X", method, endpoint]);
+	const text = plain(out.stdout).trim();
+	if (out.code !== 0) {
+		throw new PiholeUnavailable(
+			plain(out.stderr).trim() ||
+				text ||
+				`pihole api -X ${method} ${endpoint} exited ${out.code}`,
+		);
+	}
+	const status = /^Status:\s*(\d{3})/m.exec(text);
+	if (status && !status[1]!.startsWith("2")) {
+		throw new PiholeUnavailable(
+			`pihole api -X ${method} ${endpoint} returned ${status[1]}`,
+		);
+	}
+}
+
+/** The HTTP twin of {@link cliRequest} — same URL, same verbs, a session instead of a uid. */
+async function v6Request(
+	base: string,
+	path: string,
+	method: string,
+): Promise<void> {
+	const res = await v6Fetch(base, path, { method });
+	if (!res.ok) {
+		const body = await res.text().catch(() => "");
+		throw new PiholeUnavailable(
+			`${method} ${path} returned ${res.status} ${res.statusText}${
+				body ? `: ${body}` : ""
+			}`,
+		);
+	}
+	await res.text().catch(() => "");
+}
+
+/**
+ * A domain FTL will answer for locally, the same shape as an `/etc/hosts`
+ * line. v6 keys its config array on the value itself — `PUT
+ * /api/config/dns/hosts/<ip domain>` adds that exact entry, `DELETE` removes
+ * it — which is also the CLI's own `-X` verbs, so one code path below serves
+ * both. v5 has no such array; `admin/api.php?customdns` is its own small API
+ * for the same thing, add and delete both keyed on domain *and* ip together.
+ */
+export async function setLocalDns(
+	params: { domain: string; ip: string; present: boolean },
+	/** the endpoint to use; resolved from the environment when not given */
+	forced?: PiholeEndpoint,
+): Promise<CommandResult> {
+	const domain = params.domain.trim();
+	const ip = params.ip.trim();
+	const present = params.present;
+	if (!domain) throw new Error("domain is required");
+	if (present && !ip) throw new Error("ip is required to add a record");
+
+	const endpoint = forced ?? (await piholeEndpoint());
+	if (!endpoint) throw new PiholeUnavailable("this node has no Pi-hole to ask");
+
+	const said = present ? `${domain} -> ${ip} added` : `${domain} removed`;
+
+	if (endpoint.api === "v5") {
+		const body = await v5Get<{ message?: string }>(endpoint.base, [
+			"customdns",
+			`action=${present ? "add" : "delete"}`,
+			`domain=${encodeURIComponent(domain)}`,
+			`ip=${encodeURIComponent(ip)}`,
+		]);
+		return { ok: true, output: body.message ?? said };
+	}
+
+	const path = `/config/dns/hosts/${encodeURIComponent(`${ip} ${domain}`)}`;
+	try {
+		if (endpoint.api === "cli") {
+			await cliRequest(path, present ? "PUT" : "DELETE");
+		} else {
+			await v6Request(endpoint.base, path, present ? "PUT" : "DELETE");
+		}
+		return { ok: true, output: said };
+	} catch (err) {
+		return { ok: false, output: err instanceof Error ? err.message : String(err) };
+	}
+}
+
 /* ---------- control ---------- */
 
 /** A day is as long as either API will hold blocking off for. */

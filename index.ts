@@ -14,6 +14,7 @@ import {
 	parseModuleList,
 } from "./src/agent/config.ts";
 import { loadProjects } from "./src/agent/projects.ts";
+import { issueCert } from "./src/hub/ca.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
 import { toModuleManifest } from "./src/modules/external.ts";
@@ -79,6 +80,8 @@ Usage:
   ${invocation} modules remove ID            uninstall one
   ${invocation} update [--check] [--version TAG] [--no-restart]
                        replace this binary with the latest release
+  ${invocation} cert <common-name> [--san a,b] [--days 825] [--out DIR]
+                       sign a leaf cert with the fleet CA, next to hub.json
   ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
 
@@ -352,6 +355,42 @@ async function main(role: string | undefined) {
 		case "update":
 			await updateCommand();
 			break;
+
+		case "cert": {
+			const commonName = process.argv[3];
+			if (!commonName || commonName.startsWith("--")) {
+				console.error(
+					`error: no common name given\n\nUsage:\n  ${invocation} cert <common-name> [--san a,b] [--days 825] [--out DIR] [--config hub.json]\n\n` +
+						`Signs a one-off leaf cert with the fleet's own CA (src/hub/ca.ts) — the\n` +
+						`same CA every node already trusts via the 'ca' module — and writes\n` +
+						`<out>/<common-name>.{cert,key,chain}.pem. Needs hub.json's dbPath, since\n` +
+						`that's where the CA lives; run this on the hub, or with --config pointed\n` +
+						`at a copy of it.`,
+				);
+				process.exit(1);
+			}
+			const config = await loadConfig(flag("config"));
+			const sans = flag("san")
+				?.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
+			const days = flag("days") ? Number(flag("days")) : undefined;
+			const out = flag("out") ?? ".";
+			const issued = await issueCert(config.dbPath, { commonName, sans, days });
+			await Bun.write(`${out}/${commonName}.cert.pem`, issued.cert);
+			await Bun.write(`${out}/${commonName}.key.pem`, issued.key);
+			await Bun.write(
+				`${out}/${commonName}.chain.pem`,
+				`${issued.cert}${issued.caCert}`,
+			);
+			console.log(
+				`wrote ${commonName}.{cert,key,chain}.pem to ${out === "." ? "." : out}`,
+			);
+			console.log(
+				"the key exists only in that file — the hub keeps no copy of a leaf's key",
+			);
+			break;
+		}
 
 		case "check": {
 			const paths = flag("projects")?.split(":");

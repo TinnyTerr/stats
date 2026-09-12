@@ -4,11 +4,15 @@ import {
 	PiholeUnavailable,
 	piholeConfigured,
 	setBlocking,
+	setLocalDns,
 	usePiholeTransport,
 } from "../../collect/pihole.ts";
 import { MODULES } from "../../modules/manifest.ts";
 import { RemoteError } from "../../proto/link.ts";
-import type { PiholeBlockingParams } from "../../proto/messages.ts";
+import type {
+	PiholeBlockingParams,
+	PiholeDnsParams,
+} from "../../proto/messages.ts";
 import type { NodeModule, NodeModuleContext } from "./mod.ts";
 import { requireControl } from "./mod.ts";
 
@@ -52,6 +56,23 @@ export const piholeModule: NodeModule = {
 				return await setBlocking({
 					blocking: p.blocking === true,
 					seconds: typeof p.seconds === "number" ? p.seconds : null,
+				});
+			} catch (err) {
+				if (err instanceof PiholeUnavailable) {
+					throw new RemoteError("pihole_unavailable", err.message);
+				}
+				throw err;
+			}
+		},
+
+		"pihole.dns": async (req, ctx) => {
+			requireControl(ctx);
+			const p = (req.params ?? {}) as unknown as PiholeDnsParams;
+			try {
+				return await setLocalDns({
+					domain: String(p.domain ?? ""),
+					ip: String(p.ip ?? ""),
+					present: p.present !== false,
 				});
 			} catch (err) {
 				if (err instanceof PiholeUnavailable) {

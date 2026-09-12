@@ -27,7 +27,7 @@ import {
 } from "../proto/messages.ts";
 import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
-import { ensureHubCa, issueCert } from "./ca.ts";
+import { caMobileConfig, ensureHubCa, issueCert } from "./ca.ts";
 import { MetricStore } from "./db.ts";
 import { startNotionSync } from "./notion.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
@@ -238,11 +238,41 @@ export function startHub(config: HubConfig) {
 				if (!p.commonName?.trim()) {
 					throw new RemoteError("bad_request", "commonName is required");
 				}
-				return (await issueCert(config.dbPath, {
-					commonName: p.commonName.trim(),
+				const commonName = p.commonName.trim();
+				const issued = await issueCert(config.dbPath, {
+					commonName,
 					sans: p.sans?.map((s) => s.trim()).filter(Boolean),
 					days: p.days,
-				})) satisfies CaIssueResult;
+				});
+
+				if (!p.registerDns) return issued satisfies CaIssueResult;
+
+				// A different route to the same cert, not a requirement of it: this
+				// runs after the cert already exists, and a Pi-hole that refuses the
+				// record doesn't take the cert away.
+				const { nodeId, ip } = p.registerDns;
+				try {
+					const result = (await relay(
+						{
+							action: "pihole.dns",
+							params: { domain: commonName, ip, present: true },
+						} as InboundRequest,
+						nodeId,
+					)) as { ok: boolean; output: string };
+					return {
+						...issued,
+						dns: { nodeId, ...result },
+					} satisfies CaIssueResult;
+				} catch (err) {
+					return {
+						...issued,
+						dns: {
+							nodeId,
+							ok: false,
+							output: err instanceof Error ? err.message : String(err),
+						},
+					} satisfies CaIssueResult;
+				}
 			}
 
 			case HubAction.ModulesSet: {
@@ -405,6 +435,34 @@ export function startHub(config: HubConfig) {
 			/** Served so a projects file can point its $schema at its own hub. */
 			"/schema/projects.schema.json": () =>
 				json(projectsSchema, 200, { "cache-control": "public, max-age=300" }),
+
+			// Unauthenticated on purpose — this is the public half of the CA, the
+			// same thing every node already gets in Welcome, and the whole point
+			// is that a phone that has never opened the dashboard can fetch it.
+			"/ca.pem": async () => {
+				if (config.modules.ca === false) return json({ error: "ca disabled" }, 404);
+				const ca = await ensureHubCa(config.dbPath).catch(() => null);
+				if (!ca) return json({ error: "local CA unavailable" }, 503);
+				return new Response(ca.pem, {
+					headers: {
+						"content-type": "application/x-pem-file",
+						"content-disposition": 'attachment; filename="stats-ca.pem"',
+					},
+				});
+			},
+
+			"/ca.mobileconfig": async () => {
+				if (config.modules.ca === false) return json({ error: "ca disabled" }, 404);
+				const ca = await ensureHubCa(config.dbPath).catch(() => null);
+				if (!ca) return json({ error: "local CA unavailable" }, 503);
+				return new Response(caMobileConfig(ca.pem), {
+					headers: {
+						"content-type": "application/x-apple-aspen-config",
+						"content-disposition":
+							'attachment; filename="stats-ca.mobileconfig"',
+					},
+				});
+			},
 
 			/** A read-only REST mirror of the browser protocol, for curl and scripts. */
 			"/api/nodes": (req: Request) =>

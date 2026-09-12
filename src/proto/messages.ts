@@ -138,12 +138,21 @@ export interface CaIssueParams {
 	commonName: string;
 	sans?: string[];
 	days?: number;
+	/**
+	 * A different route to the same certificate: also point a node's Pi-hole at
+	 * it, as a local DNS record for `commonName`, so the name resolves on the
+	 * LAN the moment the cert exists. Optional — issuing a cert never requires
+	 * a Pi-hole, this is just the option to save a second trip to the tab.
+	 */
+	registerDns?: { nodeId: string; ip: string };
 }
 
 export interface CaIssueResult {
 	cert: string;
 	key: string;
 	caCert: string;
+	/** set only when `registerDns` was asked for */
+	dns?: { nodeId: string; ok: boolean; output: string };
 }
 
 export interface NodeScoped {
@@ -229,6 +238,14 @@ export interface PiholeBlockingParams extends Partial<NodeScoped> {
 	blocking: boolean;
 	/** seconds until blocking returns; omitted or 0 means indefinitely */
 	seconds?: number | null;
+}
+
+/** Add or remove one local DNS record — an `/etc/hosts` line FTL answers for. */
+export interface PiholeDnsParams extends Partial<NodeScoped> {
+	domain: string;
+	ip: string;
+	/** false removes the record instead of adding it */
+	present?: boolean;
 }
 
 export type ProjectVerb = "start" | "stop" | "restart";
