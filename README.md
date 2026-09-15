@@ -62,14 +62,14 @@ Start with the hub, on the machine that shows the dashboard. It generates the
 token the nodes will need and prints the exact command to run on them:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | \
   sudo sh -s -- --hub --host 0.0.0.0
 ```
 
 Then on each server you want to watch:
 
 ```bash
-curl -fsSL .../install.sh | \
+curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | \
   sudo sh -s -- --node --hub-url ws://laptop.lan:3000 --token <token>
 ```
 
