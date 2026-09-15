@@ -26,6 +26,16 @@ import { type LoadedProjects, loadEnvFiles, loadProjects } from "./projects.ts";
 /** Restart backoff is capped here, however badly a process is flapping. */
 const MAX_RESTART_DELAY_MS = 30_000;
 
+/**
+ * Signals the whole process group `spawn(..., { detached: true })` started,
+ * not just the pid we hold — that pid is a shell or a script runner as often
+ * as it is the real thing, and signaling only it leaves the actual work
+ * orphaned and still holding whatever it opened (a socket, a lock file).
+ */
+function killGroup(pid: number, signal: NodeJS.Signals) {
+	process.kill(-pid, signal);
+}
+
 type LogListener = (line: LogLine) => void;
 
 class LogBuffer {
@@ -213,6 +223,10 @@ class ManagedProcess {
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",
+				// setsid, so the whole tree (a shell's children, a script runner's
+				// children) can be signaled as one group — stop() would otherwise
+				// only reach the immediate child and orphan the rest.
+				detached: true,
 				onExit: (_proc, exitCode, signalCode, error) => {
 					this.handleExit(exitCode, signalCode, error);
 				},
@@ -382,7 +396,7 @@ class ManagedProcess {
 		this.log("system", `stopping with ${this.spec.stopSignal}`);
 
 		try {
-			proc.kill(this.spec.stopSignal as NodeJS.Signals);
+			killGroup(proc.pid, this.spec.stopSignal as NodeJS.Signals);
 		} catch {
 			// already gone between the check and the signal
 		}
@@ -394,7 +408,7 @@ class ManagedProcess {
 					`did not exit within ${this.spec.stopTimeoutSec}s — SIGKILL`,
 				);
 				try {
-					proc.kill("SIGKILL");
+					killGroup(proc.pid, "SIGKILL");
 				} catch {
 					// ditto
 				}
