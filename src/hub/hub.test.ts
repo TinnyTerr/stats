@@ -263,6 +263,47 @@ describe("MetricStore", () => {
 
 		store.close();
 	});
+
+	test("connections round-trip newest first, filter by node and carry duration", () => {
+		const store = new MetricStore(":memory:");
+		store.recordConnection("a", "connect", {
+			remoteAddress: "10.0.0.1",
+			protocol: 5,
+			version: "0.7.7",
+		});
+		store.recordConnection("a", "disconnect", {
+			remoteAddress: "10.0.0.1",
+			detail: "socket closed (1000)",
+			durationMs: 4200,
+		});
+		store.recordConnection("b", "connect", { remoteAddress: "10.0.0.2" });
+
+		const all = store.connections(0);
+		expect(all).toHaveLength(3);
+		expect(all[0]!.nodeId).toBe("b");
+		expect(store.connections(0, 200, "a")).toHaveLength(2);
+
+		const disconnect = store
+			.connections(0, 200, "a")
+			.find((row) => row.event === "disconnect");
+		expect(disconnect?.durationMs).toBe(4200);
+
+		store.close();
+	});
+
+	test("service logs round-trip newest first and filter by source", () => {
+		const store = new MetricStore(":memory:");
+		store.recordServiceLog("deploy", "info", "started");
+		store.recordServiceLog("deploy", "error", "failed");
+		store.recordServiceLog("backup", "info", "done");
+
+		const logs = store.serviceLogs(0);
+		expect(logs).toHaveLength(3);
+		expect(logs[0]!.source).toBe("backup");
+		expect(store.serviceLogs(0, 200, "deploy")).toHaveLength(2);
+
+		store.close();
+	});
 });
 
 describe("alerts", () => {
@@ -914,6 +955,48 @@ describe("hub and node over a websocket", () => {
 				nodes: 0,
 			});
 			link.close();
+		} finally {
+			await h.stop();
+		}
+	}, 20_000);
+
+	test("services can push logs over HTTP instead of stdout", async () => {
+		const h = await harness({ token: "let-me-in" });
+		try {
+			const post = await fetch(`http://127.0.0.1:${h.port}/api/logs`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer let-me-in",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ source: "deploy", level: "info", message: "ok" }),
+			});
+			expect(post.status).toBe(200);
+			expect(await post.json()).toEqual({ ok: true });
+
+			const rejected = await fetch(`http://127.0.0.1:${h.port}/api/logs`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer let-me-in",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ source: "" }),
+			});
+			expect(rejected.status).toBe(400);
+
+			const unauthed = await fetch(`http://127.0.0.1:${h.port}/api/logs`, {
+				method: "POST",
+				body: JSON.stringify({ source: "x", message: "y" }),
+			});
+			expect(unauthed.status).toBe(401);
+
+			const got = await fetch(
+				`http://127.0.0.1:${h.port}/api/logs?source=deploy`,
+				{ headers: { authorization: "Bearer let-me-in" } },
+			);
+			const rows = (await got.json()) as { source: string; message: string }[];
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({ source: "deploy", message: "ok" });
 		} finally {
 			await h.stop();
 		}

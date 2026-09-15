@@ -124,6 +124,8 @@ export const HubAction = {
 	Node: "node",
 	History: "history",
 	Events: "events",
+	/** the connection log — every connect/disconnect a node's socket has made */
+	Connections: "connections",
 	Info: "info",
 	Forget: "node.forget",
 	/** the fleet's module state, for the hub's module page */
@@ -304,6 +306,11 @@ export interface HistoryParams {
 }
 
 export interface EventsParams {
+	minutes?: number;
+	nodeId?: string;
+}
+
+export interface ConnectionsParams {
 	minutes?: number;
 	nodeId?: string;
 }

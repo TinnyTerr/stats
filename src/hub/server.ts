@@ -11,6 +11,7 @@ import { type InboundRequest, PeerLink, RemoteError } from "../proto/link.ts";
 import {
 	type CaIssueParams,
 	type CaIssueResult,
+	type ConnectionsParams,
 	type EventsParams,
 	type HelloPayload,
 	type HistoryParams,
@@ -209,6 +210,15 @@ export function startHub(config: HubConfig) {
 					? Math.min(Math.max(minutes, 1), 7 * 24 * 60)
 					: 1440;
 				return store.events(Date.now() - window * 60_000, 200, p.nodeId);
+			}
+
+			case HubAction.Connections: {
+				const p = params as unknown as ConnectionsParams;
+				const minutes = Number(p.minutes ?? 1440);
+				const window = Number.isFinite(minutes)
+					? Math.min(Math.max(minutes, 1), 7 * 24 * 60)
+					: 1440;
+				return store.connections(Date.now() - window * 60_000, 200, p.nodeId);
 			}
 
 			case HubAction.Forget: {
@@ -511,6 +521,71 @@ export function startHub(config: HubConfig) {
 				);
 				const window = Number.isFinite(minutes) ? minutes : 1440;
 				return json(store.events(Date.now() - window * 60_000));
+			},
+
+			"/api/connections": (req: Request) => {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const query = new URL(req.url).searchParams;
+				const minutes = Number(query.get("minutes") ?? 1440);
+				const window = Number.isFinite(minutes) ? minutes : 1440;
+				return json(
+					store.connections(
+						Date.now() - window * 60_000,
+						200,
+						query.get("nodeId") ?? undefined,
+					),
+				);
+			},
+
+			"/api/nodes/:id/connections": (req: Request) => {
+				if (!requireToken(req, config.token)) return unauthorized();
+				const { id } = (req as Request & { params: { id: string } }).params;
+				const minutes = Number(
+					new URL(req.url).searchParams.get("minutes") ?? 1440,
+				);
+				const window = Number.isFinite(minutes) ? minutes : 1440;
+				return json(store.connections(Date.now() - window * 60_000, 200, id));
+			},
+
+			/**
+			 * Scaffold: a place for a service to push a log line over HTTP instead
+			 * of stdout. `console.log` still goes nowhere the dashboard can read
+			 * it, so anything that wants its logs on the hub posts here instead.
+			 * Kept deliberately thin — no levels config, no structured fields
+			 * beyond source/level/message — until something actually needs more.
+			 */
+			"/api/logs": {
+				POST: async (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					let body: { source?: unknown; level?: unknown; message?: unknown };
+					try {
+						body = await req.json();
+					} catch {
+						return json({ error: "body must be JSON" }, 400);
+					}
+					const source = typeof body.source === "string" ? body.source.trim() : "";
+					const message =
+						typeof body.message === "string" ? body.message.trim() : "";
+					if (!source || !message) {
+						return json({ error: "source and message are required" }, 400);
+					}
+					const level = typeof body.level === "string" ? body.level : "info";
+					store.recordServiceLog(source, level, message);
+					return json({ ok: true });
+				},
+				GET: (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const query = new URL(req.url).searchParams;
+					const minutes = Number(query.get("minutes") ?? 1440);
+					const window = Number.isFinite(minutes) ? minutes : 1440;
+					return json(
+						store.serviceLogs(
+							Date.now() - window * 60_000,
+							200,
+							query.get("source") ?? undefined,
+						),
+					);
+				},
 			},
 		},
 

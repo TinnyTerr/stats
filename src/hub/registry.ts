@@ -189,6 +189,12 @@ export class NodeRegistry {
 			remoteAddress ?? undefined,
 		);
 		this.store.recordEvent(id, "online", message);
+		this.store.recordConnection(id, "connect", {
+			remoteAddress,
+			protocol: record.protocol,
+			version: record.version,
+			detail: message,
+		});
 		this.emit({
 			type: "status",
 			nodeId: id,
@@ -228,10 +234,18 @@ export class NodeRegistry {
 		// A late close from a replaced socket must not evict the live one.
 		if (!record || record.link !== link) return;
 
+		const durationMs = record.connectedAt ? Date.now() - record.connectedAt : null;
 		record.link = null;
 		record.connectedAt = null;
 		const message = statusMessage(record.name, "offline", reason);
 		this.store.recordEvent(id, "offline", message);
+		this.store.recordConnection(id, "disconnect", {
+			remoteAddress: record.remoteAddress,
+			protocol: record.protocol,
+			version: record.version,
+			detail: reason,
+			durationMs,
+		});
 		this.emit({
 			type: "status",
 			nodeId: id,

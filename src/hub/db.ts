@@ -29,6 +29,25 @@ export interface EventRow {
 	message: string;
 }
 
+export interface ConnectionRow {
+	ts: number;
+	nodeId: string;
+	event: "connect" | "disconnect";
+	remoteAddress: string | null;
+	protocol: number | null;
+	version: string | null;
+	detail: string | null;
+	/** set on "disconnect" only: how long the socket was up */
+	durationMs: number | null;
+}
+
+export interface ServiceLogRow {
+	ts: number;
+	source: string;
+	level: string;
+	message: string;
+}
+
 export interface KnownNode {
 	id: string;
 	name: string;
@@ -42,6 +61,8 @@ export class MetricStore {
 	private db: Database;
 	private insertMetric;
 	private insertEvent;
+	private insertConnection;
+	private insertServiceLog;
 	private upsertNode;
 
 	constructor(path: string) {
@@ -58,6 +79,14 @@ export class MetricStore {
 		);
 		this.insertEvent = this.db.prepare(
 			`INSERT INTO events (node_id, ts, kind, message) VALUES (?, ?, ?, ?)`,
+		);
+		this.insertConnection = this.db.prepare(
+			`INSERT INTO connections
+         (node_id, ts, event, remote_address, protocol, version, detail, duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		);
+		this.insertServiceLog = this.db.prepare(
+			`INSERT INTO service_logs (ts, source, level, message) VALUES (?, ?, ?, ?)`,
 		);
 		this.upsertNode = this.db.prepare(
 			`INSERT INTO nodes (id, name, first_seen, last_seen, version, hostname)
@@ -114,6 +143,35 @@ export class MetricStore {
       );
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
 
+      -- One row per socket transition, kept apart from the generic events table
+      -- because it carries structured fields (remote address, protocol, how
+      -- long the last session lasted) that a connect/disconnect line has and an
+      -- alert doesn't.
+      CREATE TABLE IF NOT EXISTS connections (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id        TEXT    NOT NULL,
+        ts             INTEGER NOT NULL,
+        event          TEXT    NOT NULL,
+        remote_address TEXT,
+        protocol       INTEGER,
+        version        TEXT,
+        detail         TEXT,
+        duration_ms    INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_connections_node_ts ON connections (node_id, ts);
+
+      -- A place for a service to push a log line over HTTP instead of stdout —
+      -- see the /api/logs route in server.ts. Deliberately schemaless beyond
+      -- source/level/message: this is a sink, not a query engine.
+      CREATE TABLE IF NOT EXISTS service_logs (
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts      INTEGER NOT NULL,
+        source  TEXT    NOT NULL,
+        level   TEXT    NOT NULL,
+        message TEXT    NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_service_logs_ts ON service_logs (ts);
+
       CREATE TABLE IF NOT EXISTS nodes (
         id         TEXT PRIMARY KEY,
         name       TEXT    NOT NULL,
@@ -161,6 +219,33 @@ export class MetricStore {
 
 	recordEvent(nodeId: string, kind: string, message: string) {
 		this.insertEvent.run(nodeId, Date.now(), kind, message);
+	}
+
+	recordConnection(
+		nodeId: string,
+		event: "connect" | "disconnect",
+		detail: {
+			remoteAddress?: string | null;
+			protocol?: number | null;
+			version?: string | null;
+			detail?: string | null;
+			durationMs?: number | null;
+		} = {},
+	) {
+		this.insertConnection.run(
+			nodeId,
+			Date.now(),
+			event,
+			detail.remoteAddress ?? null,
+			detail.protocol ?? null,
+			detail.version ?? null,
+			detail.detail ?? null,
+			detail.durationMs ?? null,
+		);
+	}
+
+	recordServiceLog(source: string, level: string, message: string) {
+		this.insertServiceLog.run(Date.now(), source, level, message);
 	}
 
 	/** Remembers a node so it shows as offline rather than vanishing. */
@@ -251,6 +336,7 @@ export class MetricStore {
 		this.db.run("DELETE FROM nodes WHERE id = ?", [nodeId]);
 		this.db.run("DELETE FROM metrics WHERE node_id = ?", [nodeId]);
 		this.db.run("DELETE FROM events WHERE node_id = ?", [nodeId]);
+		this.db.run("DELETE FROM connections WHERE node_id = ?", [nodeId]);
 	}
 
 	/**
@@ -349,11 +435,44 @@ export class MetricStore {
 			.all(...args) as EventRow[];
 	}
 
+	connections(sinceMs: number, limit = 200, nodeId?: string): ConnectionRow[] {
+		const where = nodeId ? "WHERE ts >= ? AND node_id = ?" : "WHERE ts >= ?";
+		const args: (string | number)[] = nodeId
+			? [sinceMs, nodeId, limit]
+			: [sinceMs, limit];
+		return this.db
+			.query(
+				`SELECT ts, node_id AS nodeId, event, remote_address AS remoteAddress,
+                protocol, version, detail, duration_ms AS durationMs
+           FROM connections ${where}
+          ORDER BY ts DESC, id DESC
+          LIMIT ?`,
+			)
+			.all(...args) as ConnectionRow[];
+	}
+
+	serviceLogs(sinceMs: number, limit = 200, source?: string): ServiceLogRow[] {
+		const where = source ? "WHERE ts >= ? AND source = ?" : "WHERE ts >= ?";
+		const args: (string | number)[] = source
+			? [sinceMs, source, limit]
+			: [sinceMs, limit];
+		return this.db
+			.query(
+				`SELECT ts, source, level, message
+           FROM service_logs ${where}
+          ORDER BY ts DESC, id DESC
+          LIMIT ?`,
+			)
+			.all(...args) as ServiceLogRow[];
+	}
+
 	/** Drops samples older than the retention window. Cheap enough to run often. */
 	prune(retentionHours: number) {
 		const cutoff = Date.now() - retentionHours * 3600_000;
 		this.db.run("DELETE FROM metrics WHERE ts < ?", [cutoff]);
 		this.db.run("DELETE FROM events WHERE ts < ?", [cutoff]);
+		this.db.run("DELETE FROM connections WHERE ts < ?", [cutoff]);
+		this.db.run("DELETE FROM service_logs WHERE ts < ?", [cutoff]);
 	}
 
 	close() {
