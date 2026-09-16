@@ -31,10 +31,19 @@ const MAX_RESTART_DELAY_MS = 30_000;
  * not just the pid we hold — that pid is a shell or a script runner as often
  * as it is the real thing, and signaling only it leaves the actual work
  * orphaned and still holding whatever it opened (a socket, a lock file).
+ *
+ * Windows has neither process groups nor signals: `process.kill(-pid)` throws
+ * there, which used to leave stop() waiting on a child nothing had touched.
+ * Terminating the child directly is what the platform offers.
  */
-function killGroup(pid: number, signal: NodeJS.Signals) {
-	process.kill(-pid, signal);
+function killGroup(proc: Subprocess, signal: NodeJS.Signals) {
+	if (process.platform === "win32") proc.kill();
+	else process.kill(-proc.pid, signal);
 }
+
+/** The shell `shell: true` means on this host. */
+const SHELL_WRAPPER: string[] =
+	process.platform === "win32" ? ["cmd", "/c"] : ["sh", "-c"];
 
 type LogListener = (line: LogLine) => void;
 
@@ -135,7 +144,7 @@ class ManagedProcess {
 	 */
 	private async buildCommand(): Promise<string[]> {
 		const base = this.spec.shell
-			? ["sh", "-c", this.spec.command.join(" ")]
+			? [...SHELL_WRAPPER, this.spec.command.join(" ")]
 			: [...this.spec.command];
 		if (!this.spec.user) return base;
 
@@ -396,7 +405,7 @@ class ManagedProcess {
 		this.log("system", `stopping with ${this.spec.stopSignal}`);
 
 		try {
-			killGroup(proc.pid, this.spec.stopSignal as NodeJS.Signals);
+			killGroup(proc, this.spec.stopSignal as NodeJS.Signals);
 		} catch {
 			// already gone between the check and the signal
 		}
@@ -408,7 +417,7 @@ class ManagedProcess {
 					`did not exit within ${this.spec.stopTimeoutSec}s — SIGKILL`,
 				);
 				try {
-					killGroup(proc.pid, "SIGKILL");
+					killGroup(proc, "SIGKILL");
 				} catch {
 					// ditto
 				}
@@ -509,9 +518,7 @@ class ManagedProcess {
 			error: this.error,
 			cpu: this.cpu,
 			rssBytes: this.rssBytes,
-			command: this.spec.shell
-				? this.spec.command.join(" ")
-				: this.spec.command.join(" "),
+			command: this.spec.command.join(" "),
 			autostart: this.spec.autostart,
 			restartPolicy: this.spec.restart,
 		};
@@ -590,18 +597,9 @@ async function probe(
 	}
 }
 
-const whichCache = new Map<string, boolean>();
-
+/** PATH lookup without a shell, so it answers the same on every platform. */
 async function which(binary: string): Promise<boolean> {
-	const cached = whichCache.get(binary);
-	if (cached !== undefined) return cached;
-	const proc = Bun.spawn(["sh", "-c", `command -v ${binary}`], {
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	const found = (await proc.exited) === 0;
-	whichCache.set(binary, found);
-	return found;
+	return Bun.which(binary) !== null;
 }
 
 export class Supervisor {

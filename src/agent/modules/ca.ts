@@ -1,7 +1,7 @@
 import { mkdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { MODULES } from "../../modules/manifest.ts";
+import { stateDir } from "../../paths.ts";
 import type { CaStatus } from "../../types.ts";
 import type { NodeModule, NodeModuleContext } from "./mod.ts";
 
@@ -21,17 +21,8 @@ import type { NodeModule, NodeModuleContext } from "./mod.ts";
  * as failing every tick.
  */
 
-function caStateDir(): string {
-	// systemd's StateDirectory= creates and chowns this for us, and — under
-	// ProtectHome — is the only writable state directory a non-root unit has;
-	// homedir() is a fallback for running outside systemd entirely.
-	if (process.env.STATE_DIRECTORY) return process.env.STATE_DIRECTORY;
-	if (process.getuid?.() === 0) return "/var/lib/stats";
-	return join(homedir(), ".local", "share", "stats");
-}
-
 async function certPath(): Promise<string> {
-	const dir = caStateDir();
+	const dir = stateDir();
 	await mkdir(dir, { recursive: true });
 	return join(dir, "fleet-ca.pem");
 }

@@ -4,8 +4,8 @@ import {
 	guestAction,
 	isValidPveName,
 	type ProxmoxTransport,
-	shapeResources,
 	setProxmoxTransport,
+	shapeResources,
 } from "./proxmox.ts";
 
 /**

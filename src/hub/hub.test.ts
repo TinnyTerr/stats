@@ -622,7 +622,10 @@ describe("hub and node over a websocket", () => {
 			// a bare "error".
 			const refused = await ui
 				.request(NodeAction.Snapshot, { nodeId: "pushy" })
-				.then(() => null, (err: unknown) => err);
+				.then(
+					() => null,
+					(err: unknown) => err,
+				);
 			expect(refused).toBeInstanceOf(RemoteError);
 			expect((refused as RemoteError).code).toBe("node_offline");
 		} finally {

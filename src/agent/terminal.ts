@@ -34,15 +34,27 @@ export interface OpenOptions extends TerminalOpenParams {
 	onExit: (code: number | null, signal: string | null) => void;
 }
 
-/** Shells to try when the caller doesn't name one, best first. */
-const SHELL_CANDIDATES = ["/bin/bash", "/bin/sh"];
+const WINDOWS = process.platform === "win32";
+
+/**
+ * Shells to try when the caller doesn't name one, best first. On Windows the
+ * candidates are looked up on PATH rather than at fixed paths, because there
+ * aren't any: PowerShell 7 lives wherever its installer put it.
+ */
+const SHELL_CANDIDATES = WINDOWS
+	? ["pwsh", "powershell", process.env.COMSPEC ?? "cmd"]
+	: ["/bin/bash", "/bin/sh"];
 
 const MAX_SESSIONS = 8;
+
+function isAbsolutePath(path: string): boolean {
+	return WINDOWS ? /^(?:[A-Za-z]:[\\/]|\\\\)/.test(path) : path.startsWith("/");
+}
 
 async function pickShell(requested?: string): Promise<string> {
 	if (requested) {
 		// Only ever an absolute path to a real file — never a string the shell parses.
-		if (!requested.startsWith("/"))
+		if (!isAbsolutePath(requested))
 			throw new Error(`shell must be an absolute path`);
 		if (!(await Bun.file(requested).exists()))
 			throw new Error(`no such shell: ${requested}`);
@@ -51,7 +63,8 @@ async function pickShell(requested?: string): Promise<string> {
 	const fromEnv = process.env.SHELL;
 	if (fromEnv && (await Bun.file(fromEnv).exists())) return fromEnv;
 	for (const candidate of SHELL_CANDIDATES) {
-		if (await Bun.file(candidate).exists()) return candidate;
+		const found = isAbsolutePath(candidate) ? candidate : Bun.which(candidate);
+		if (found && (await Bun.file(found).exists())) return found;
 	}
 	throw new Error("no shell found on this host");
 }
@@ -80,9 +93,9 @@ async function pickCwd(requested?: string): Promise<string> {
 			throw new Error(`no such directory: ${requested}`);
 		return requested;
 	}
-	const home = process.env.HOME;
+	const home = process.env.HOME ?? process.env.USERPROFILE;
 	if (home && (await isDirectory(home))) return home;
-	return "/";
+	return WINDOWS ? process.cwd() : "/";
 }
 
 function clamp(
@@ -135,8 +148,9 @@ export class TerminalManager {
 			label = `container ${opts.container}`;
 		} else {
 			shell = await pickShell(opts.shell);
-			// A login shell so the user gets their normal profile and prompt.
-			cmd = [shell, "-l"];
+			// A login shell so the user gets their normal profile and prompt; the
+			// Windows shells take no such flag and read their profile regardless.
+			cmd = WINDOWS ? [shell] : [shell, "-l"];
 			label = opts.projectId ? `project ${opts.projectId}` : "shell";
 		}
 

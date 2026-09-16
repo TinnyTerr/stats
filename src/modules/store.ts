@@ -1,7 +1,7 @@
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { $ } from "bun";
+import { stateDir } from "../paths.ts";
 import { type ExternalManifest, parseExternalManifest } from "./external.ts";
 import { BUILTIN_MODULE_IDS } from "./manifest.ts";
 import { currentPlatform, resolveEntry } from "./platform.ts";
@@ -56,13 +56,7 @@ export interface BrokenModule {
 export function moduleStoreDir(): string {
 	const override = process.env.STATS_MODULE_DIR;
 	if (override) return resolve(override);
-	// systemd's StateDirectory= creates and chowns this for us, and — under
-	// ProtectHome — is the only writable state directory a non-root unit has.
-	if (process.env.STATE_DIRECTORY)
-		return join(process.env.STATE_DIRECTORY, "modules");
-	const uid = process.getuid?.();
-	if (uid === 0) return "/var/lib/stats/modules";
-	return join(homedir(), ".local", "share", "stats", "modules");
+	return join(stateDir(), "modules");
 }
 
 async function isDirectory(path: string): Promise<boolean> {
