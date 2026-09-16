@@ -582,14 +582,26 @@ describe("hub and node over a websocket", () => {
 		}
 	}, 30_000);
 
-	test("browsers are pushed telemetry and status as it happens", async () => {
+	test("browsers are pushed status for the fleet and telemetry for the node they watch", async () => {
 		const h = await harness();
 		const ui = await browser(h.port);
+		const bystander = await browser(h.port);
 
 		const pushes: { event: string; nodeId?: string }[] = [];
 		ui.on(MessageType.Telemetry, (frame) => {
 			pushes.push(JSON.parse(new TextDecoder().decode(frame.payload)));
 		});
+		const unwatched: { event: string; nodeId?: string }[] = [];
+		bystander.on(MessageType.Telemetry, (frame) => {
+			unwatched.push(JSON.parse(new TextDecoder().decode(frame.payload)));
+		});
+
+		// Watching a node the hub hasn't met yet is allowed: it may be about to
+		// connect, and the pane wants its first frame when it does.
+		const watch = await ui.request<{ nodeId: string | null }>(HubAction.Watch, {
+			nodeId: "pushy",
+		});
+		expect(watch.nodeId).toBe("pushy");
 
 		const node = startNode({
 			hubUrl: `ws://127.0.0.1:${h.port}/node`,
@@ -610,8 +622,25 @@ describe("hub and node over a websocket", () => {
 				() => pushes,
 				(list) =>
 					list.some((p) => p.event === "status" && p.nodeId === "pushy") &&
+					list.some((p) => p.event === "node" && p.nodeId === undefined) &&
 					list.some((p) => p.event === "telemetry" && p.nodeId === "pushy"),
 			);
+			// The other browser saw the node arrive and its summaries, but never
+			// the full frame it didn't ask for.
+			expect(unwatched.some((p) => p.event === "status")).toBe(true);
+			expect(unwatched.some((p) => p.event === "node")).toBe(true);
+			expect(unwatched.some((p) => p.event === "telemetry")).toBe(false);
+
+			// Watching returns the latest frame straight away, and unwatching
+			// stops the pushes.
+			const again = await ui.request<{
+				telemetry: { node: { id: string } } | null;
+			}>(HubAction.Watch, { nodeId: "pushy" });
+			expect(again.telemetry?.node.id).toBe("pushy");
+			await ui.request(HubAction.Watch, { nodeId: null });
+			const seen = pushes.filter((p) => p.event === "telemetry").length;
+			await Bun.sleep(1500);
+			expect(pushes.filter((p) => p.event === "telemetry").length).toBe(seen);
 
 			await node.stop();
 			// Losing the socket flips the node offline for every watching browser.
@@ -631,6 +660,7 @@ describe("hub and node over a websocket", () => {
 			expect((refused as RemoteError).code).toBe("node_offline");
 		} finally {
 			ui.close();
+			bystander.close();
 			await node.stop();
 			await h.stop();
 		}

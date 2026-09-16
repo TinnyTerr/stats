@@ -546,7 +546,13 @@ Control actions a hub sends a node: `snapshot`, `modules`, `facts.refresh`, `log
 `terminal.open` / `.resize` / `.close`, `unit.show`, `unit.action`,
 `container.action`, `projects.list`, `projects.reload`, `project.action`. A
 browser sends the same actions with a `nodeId`, plus the hub's own: `nodes`,
-`node`, `history`, `events`, `info`, `node.forget`.
+`node`, `history`, `events`, `connections`, `info`, `node.forget`,
+`modules.fleet`, `modules.set`, `ca.issue` and `node.watch`.
+
+The hub pushes every node's summary, status changes and alerts to every
+browser on every tick. A node's *full* telemetry — every unit, container and
+process — is pushed only to browsers that asked for it with `node.watch`, which
+is what the dashboard sends when a node's detail pane opens.
 
 ## HTTP API
 

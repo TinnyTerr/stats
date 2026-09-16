@@ -68,6 +68,12 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   heartbeats). Node, hub and browser all run a `PeerLink`; the hub is a relay
   between two of them, so a new capability usually means one action name and
   one handler, not a new endpoint.
+- **Browsers get summaries for the fleet and full telemetry for one node.**
+  `NodeSummary` goes to every browser on every tick and is what the grid and
+  the card sparklines are drawn from; the full `Telemetry` frame only goes to
+  browsers that sent `node.watch` for that node, which the dashboard does when
+  a detail pane opens. Anything a card needs on every tick belongs in the
+  summary, not the frame.
 - **A stream that might produce data later must call `req.stream.open()` before
   the handler returns.** Otherwise the link closes the correlation id with the
   response. This is what terminals and log tails depend on.

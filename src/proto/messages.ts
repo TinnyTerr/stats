@@ -134,7 +134,25 @@ export const HubAction = {
 	ModulesSet: "modules.set",
 	/** a one-off leaf cert signed by the fleet CA */
 	CaIssue: "ca.issue",
+	/**
+	 * Which node's full telemetry this browser wants pushed. Summaries for the
+	 * whole fleet arrive regardless; the full frame — every unit, container and
+	 * process — only goes to a browser that has the node open, because that is
+	 * the only place it is drawn.
+	 */
+	Watch: "node.watch",
 } as const;
+
+export interface WatchParams {
+	/** the node to follow, or null to follow none */
+	nodeId: string | null;
+}
+
+export interface WatchResult {
+	nodeId: string | null;
+	/** the node's latest frame, so the pane has something before the next tick */
+	telemetry: Telemetry | null;
+}
 
 export interface CaIssueParams {
 	commonName: string;

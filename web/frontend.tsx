@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { HubAction } from "../src/proto/messages.ts";
+import { HubAction, type WatchResult } from "../src/proto/messages.ts";
 import type { NodeSummary, Telemetry } from "../src/types.ts";
 import {
 	ago,
@@ -363,48 +363,56 @@ function App() {
 			case "nodes":
 				setNodes(push.nodes);
 				break;
-			case "node":
+			case "node": {
+				const summary = push.node;
+				let fresh = true;
 				setNodes((prev) => {
-					const index = prev.findIndex((n) => n.id === push.node.id);
-					if (index === -1) return [...prev, push.node];
+					const index = prev.findIndex((n) => n.id === summary.id);
+					if (index === -1) return [...prev, summary];
+					// The hub re-sends a summary on connect and disconnect with the
+					// same last frame behind it; only a new frame adds a point.
+					fresh = prev[index]?.lastSeen !== summary.lastSeen;
 					const next = [...prev];
-					next[index] = push.node;
+					next[index] = summary;
 					return next;
 				});
-				break;
-			case "telemetry": {
-				const frame = push as { nodeId: string; telemetry: Telemetry };
-				setTelemetry((prev) =>
-					new Map(prev).set(frame.nodeId, frame.telemetry),
-				);
-				// A short in-memory series per face; the hub's SQLite history is for
-				// anything longer, and the cards deliberately don't ask for it.
+				// A short in-memory series per face, fed from the summary every
+				// browser gets; the hub's SQLite history is for anything longer,
+				// and the cards deliberately don't ask for it.
+				if (summary.status !== "online" || summary.cpu == null) break;
 				setHistory((prev) => {
-					// The series is the system module's; a node without it keeps whatever
-					// it had rather than growing a run of zeroes that reads as an idle
-					// machine instead of an absent collector.
-					const stats = frame.telemetry.stats;
-					if (!stats) return prev;
-					const previous = prev.get(frame.nodeId) ?? EMPTY_HISTORY;
-					const hottest = stats.temps.length
-						? Math.max(...stats.temps.map((t) => t.celsius))
+					if (!fresh) return prev;
+					// The series is the system module's; a node without it keeps
+					// whatever it had rather than growing a run of zeroes that reads
+					// as an idle machine instead of an absent collector.
+					const previous = prev.get(summary.id) ?? EMPTY_HISTORY;
+					const hottest = summary.temps.length
+						? Math.max(...summary.temps.map((t) => t.celsius))
 						: 0;
 					const push = (series: number[], value: number) =>
 						[...series, value].slice(-HISTORY_POINTS);
 
-					return new Map(prev).set(frame.nodeId, {
-						cpu: push(previous.cpu, stats.cpu.usage),
-						mem: push(previous.mem, stats.mem.used / (stats.mem.total || 1)),
+					return new Map(prev).set(summary.id, {
+						cpu: push(previous.cpu, summary.cpu ?? 0),
+						mem: push(
+							previous.mem,
+							summary.mem ? summary.mem.used / (summary.mem.total || 1) : 0,
+						),
 						net: push(
 							previous.net,
-							stats.net.reduce(
-								(sum, iface) => sum + (iface.rxRate ?? 0) + (iface.txRate ?? 0),
-								0,
-							),
+							(summary.net?.rxRate ?? 0) + (summary.net?.txRate ?? 0),
 						),
 						temp: push(previous.temp, hottest / 100),
 					});
 				});
+				break;
+			}
+			case "telemetry": {
+				// Only ever the node this browser is watching — see the effect below.
+				const frame = push as { nodeId: string; telemetry: Telemetry };
+				setTelemetry((prev) =>
+					new Map(prev).set(frame.nodeId, frame.telemetry),
+				);
 				break;
 			}
 			case "status":
@@ -511,6 +519,32 @@ function App() {
 	// The drawer only belongs to the fleet view; switching to modules puts it
 	// away rather than leaving a node's panel floating over a different page.
 	const drawer = view === "fleet" ? selected : null;
+
+	// Full telemetry is pushed only for the node the drawer has open. The hub
+	// answers with the node's latest frame so the pane isn't blank until the
+	// next tick, and the watch is re-sent after a reconnect because the hub
+	// forgets it with the socket.
+	const watchId = drawer?.id ?? null;
+	useEffect(() => {
+		const connection = hub.current;
+		if (!connection || !connected) return;
+		let live = true;
+		connection
+			.request<WatchResult>(HubAction.Watch, { nodeId: watchId })
+			.then((result) => {
+				if (!live || !result.nodeId || !result.telemetry) return;
+				setTelemetry((prev) =>
+					new Map(prev).set(
+						result.nodeId as string,
+						result.telemetry as Telemetry,
+					),
+				);
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+		};
+	}, [connected, watchId]);
 	const offline = nodes.filter((n) => n.status === "offline").length;
 	// Only online nodes count: an offline one's version is whatever it last
 	// reported, and "3 behind" that you can't act on is noise during a rollout.

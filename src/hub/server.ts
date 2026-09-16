@@ -24,6 +24,8 @@ import {
 	type ModulesSetResult,
 	NodeAction,
 	type NodeScoped,
+	type WatchParams,
+	type WatchResult,
 	type WelcomePayload,
 } from "../proto/messages.ts";
 import type { HubConfig } from "../types.ts";
@@ -50,6 +52,8 @@ interface SocketData {
 	/** set once the node says Hello */
 	nodeId: string | null;
 	remoteAddress: string | null;
+	/** browsers only: the node whose full telemetry this socket receives */
+	watching: string | null;
 }
 
 /** Actions whose reply is a stream rather than a single result. */
@@ -107,13 +111,18 @@ function historyQuery(rawMinutes: unknown, rawBuckets: unknown) {
 export function startHub(config: HubConfig) {
 	const store = new MetricStore(config.dbPath);
 	const registry = new NodeRegistry(config, store);
-	const browsers = new Set<PeerLink>();
+	const browsers = new Map<PeerLink, SocketData>();
 	// Outbound-only mirror; null unless hub.json configures it.
 	const notion = startNotionSync(config.notion, registry);
 
 	registry.subscribe((event) => {
 		// One push shape for every browser: the frame type says "telemetry", the
 		// payload's `event` field says which kind.
+		//
+		// Summaries, status and alerts go to every browser: they are small and
+		// they are what the fleet grid is drawn from. A full frame goes only to
+		// browsers watching that node — it is tens of kilobytes of units and
+		// containers that nothing but the open detail pane ever reads.
 		const payload =
 			event.type === "node"
 				? { event: "node", node: event.node }
@@ -139,8 +148,10 @@ export function startHub(config: HubConfig) {
 								ts: event.ts,
 							};
 
-		for (const browser of browsers) {
+		for (const [browser, data] of browsers) {
 			if (browser.closed) continue;
+			if (event.type === "telemetry" && data.watching !== event.nodeId)
+				continue;
 			browser.send(MessageType.Telemetry, payload);
 		}
 	});
@@ -194,10 +205,26 @@ export function startHub(config: HubConfig) {
 		return await upstream.ready;
 	}
 
-	async function handleBrowserRequest(req: InboundRequest): Promise<unknown> {
+	async function handleBrowserRequest(
+		req: InboundRequest,
+		socket: SocketData,
+	): Promise<unknown> {
 		const params = (req.params ?? {}) as Record<string, unknown>;
 
 		switch (req.action) {
+			case HubAction.Watch: {
+				const p = params as unknown as WatchParams;
+				// An id the hub hasn't met is fine to watch: the node may connect a
+				// moment from now, and the pane wants its first frame when it does.
+				const nodeId =
+					typeof p.nodeId === "string" && p.nodeId ? p.nodeId : null;
+				socket.watching = nodeId;
+				return {
+					nodeId,
+					telemetry: nodeId ? (registry.get(nodeId)?.telemetry ?? null) : null,
+				} satisfies WatchResult;
+			}
+
 			case HubAction.Info:
 				return {
 					...versionInfo,
@@ -619,6 +646,7 @@ export function startHub(config: HubConfig) {
 						link: null as never,
 						nodeId: null,
 						remoteAddress,
+						watching: null,
 					},
 				});
 				return upgraded
@@ -634,6 +662,7 @@ export function startHub(config: HubConfig) {
 						link: null as never,
 						nodeId: null,
 						remoteAddress,
+						watching: null,
 					},
 				});
 				return upgraded
@@ -688,8 +717,8 @@ export function startHub(config: HubConfig) {
 					return;
 				}
 
-				browsers.add(link);
-				link.onRequest((req) => handleBrowserRequest(req));
+				browsers.set(link, ws.data);
+				link.onRequest((req) => handleBrowserRequest(req, ws.data));
 				// Paint immediately rather than after the first node reports.
 				link.send(MessageType.Telemetry, {
 					event: "nodes",
