@@ -789,6 +789,7 @@ deploy/                 systemd units, for installing by hand
 ```bash
 bun test          # protocol, supervisor, collectors, config, hub↔node e2e
 bun run typecheck
+bun run lint      # biome: lint, format and import order, the same check CI runs
 ```
 
 The end-to-end tests start a real hub, connect a real node to it over a real

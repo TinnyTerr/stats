@@ -12,6 +12,7 @@
 		"build": "bun scripts/build.ts",
 		"build:host": "bun scripts/build.ts --host",
 		"test": "bun test",
+		"lint": "biome ci .",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {

@@ -12,6 +12,7 @@ import {
 	type HelloPayload,
 	type ModulesApplyParams,
 	type ModulesApplyResult,
+	type ModulesResult,
 	NodeAction,
 	type SnapshotResult,
 	type UpdateApplyParams,
@@ -369,7 +370,8 @@ export function startNode(config: AgentConfig): AgentHandle {
 					control: config.control,
 					notes: active.notes,
 					externals: externals(),
-				};
+					acceptsHubModules: config.allowHubModules === true,
+				} satisfies ModulesResult;
 
 			// Read-only, and allowed even on a node that refuses to be updated —
 			// "you are three versions behind and won't take one" is exactly what

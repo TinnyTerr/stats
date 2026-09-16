@@ -36,9 +36,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - run: bun test
+      - run: bunx biome ci .
 
       - run: bun run typecheck
+
+      - run: bun test
 
       # Cross-compiles every target — the six Linux ones plus the Windows and
       # macOS builds from EXTRA_TARGETS — into dist/, alongside gzipped copies,

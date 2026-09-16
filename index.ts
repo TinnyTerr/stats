@@ -467,7 +467,13 @@ async function main(role: string | undefined) {
 			const config = await loadConfig(flag("config"));
 			const portOverride = flag("port");
 			const hostOverride = flag("host");
-			if (portOverride) config.port = Number(portOverride);
+			if (portOverride) {
+				const port = Number(portOverride);
+				if (!Number.isInteger(port) || port < 0 || port > 65535) {
+					throw new Error(`--port ${portOverride} is not a port number`);
+				}
+				config.port = port;
+			}
 			if (hostOverride) config.host = hostOverride;
 
 			const { registry, notion } = startHub(config);

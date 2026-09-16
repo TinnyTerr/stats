@@ -160,7 +160,7 @@ bun index.ts modules install <repo>          # add one from a git repository
 bun index.ts update --check                  # 0 up to date, 10 if behind
 bun run node -- --hub ws://127.0.0.1:3000    # a node against it
 bun run check                                # validate the projects file
-bun test && bun run typecheck
+bun test && bun run typecheck && bun run lint
 ```
 
 Default to using Bun instead of Node.js.

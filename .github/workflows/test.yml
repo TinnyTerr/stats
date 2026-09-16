@@ -1,16 +1,22 @@
+# Every push and pull request: lint, typecheck, and the test suite with
+# coverage. The release workflow runs the same checks again on a tag.
 name: Test
 on: [push, pull_request]
 
 jobs:
-  build:
-    name: build-app
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install bun
-        uses: oven-sh/setup-bun@v2
-      - name: Install dependencies
-        run: bun install
-      - name: Run tests
-        run: bun test 
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Lint and format
+        run: bunx biome ci .
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test --coverage --coverage-reporter=lcov --bail
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage/lcov.info
