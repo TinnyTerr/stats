@@ -278,6 +278,12 @@ hostname and addresses, and runs its portable modules with the system card
 absent. `src/collect/probe.ts` is the seam and `src/collect/platform/` is where
 a new one goes.
 
+A Windows node is a real node: `projects`, `logs`, `terminal` and `ca` all
+run there (the terminal is PowerShell 7 or Windows PowerShell on a ConPTY,
+the CA lands in the machine's Root store via `certutil`), and the test suite
+passes on Windows with the Linux-only collector and installer tests skipped.
+What it lacks is the `system` probe, so its card has no CPU, memory or disk.
+
 ### Managing modules from the hub
 
 The dashboard's **modules** page lists every node beside every module it could
@@ -657,8 +663,11 @@ installer prefers), `SHA256SUMS` and `manifest.json`. Cross-compiling downloads
 the matching Bun runtime once per target, so the first build needs network
 access.
 
-macOS builds exist under `--all` and can run the hub, but never a node: every
-collector reads `/proc`, `/sys`, `ss`, `systemctl` or the Docker socket.
+macOS builds exist under `--all` and can run the hub, but not yet a node with
+a system card: every collector reads `/proc`, `/sys`, `ss`, `systemctl` or the
+Docker socket. The Windows build (`--targets windows-x64`) is a node — see
+**Platforms** — and `stats update` works on it, swapping the running exe by
+renaming it aside.
 
 ## Versioning
 
@@ -806,4 +815,5 @@ Linux is the only platform with collectors today: the `system` probe reads
 `/proc` and `/sys`, and `processes`, `ports` and `systemd` shell out to `ps`,
 `ss` and `systemctl`. macOS and Windows probes are declared but unwritten, so a
 node on either connects and reports its identity with an empty system card —
-see **Platforms** above. The hub itself runs anywhere Bun does.
+see **Platforms** above, including what a Windows node does run. The hub
+itself runs anywhere Bun does.

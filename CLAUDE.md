@@ -130,6 +130,19 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 
 ## Things that bit us, worth not rediscovering
 
+- **Windows, tested on a real box (`sdv`), not a VM.** `Bun.main` inside a
+  compiled exe is `B:/~BUN/root/stats.exe`, not `/$bunfs/…`; `isCompiledBinary()`
+  in `src/update.ts` knows both. Windows' sshd sets `$SHELL` to cmd.exe, so the
+  terminal ignores `$SHELL` there. A Store-installed `pwsh` is an app execution
+  alias that `stat()` refuses with EACCES, so trust `Bun.which()` without a
+  second `exists()`. A running exe can be renamed but not unlinked, which is
+  how the updater swaps it. scoop's git shim can't spawn from an ssh session,
+  so the store tests probe `git --version` and skip the clone tests without it.
+- **`node:path` on Windows resolves `/srv/x` to `C:\srv\x`.** Any test with a
+  literal absolute path has to compare against `resolve()`, and
+  `src/agent/projects.ts` keeps its own separator-aware helpers because it
+  can't import `node:path` (the dashboard bundles it).
+
 - `Bun.spawn(..., { terminal: {...} })` gives a real pty. Do **not** set
   `COLUMNS`/`LINES` in the child's env: `tput` and friends prefer them over the
   pty, which makes every later resize look ignored. Test resizes with
