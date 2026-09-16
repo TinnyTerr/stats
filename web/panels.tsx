@@ -629,6 +629,9 @@ export function OverviewPanel(props: PanelProps) {
 	const [events, setEvents] = useState<
 		{ ts: number; kind: string; message: string }[]
 	>([]);
+	// `node.lastSeen` is the refetch trigger: a fresh frame may have brought an
+	// event with it, and nothing in the body reads the value itself.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: explained above
 	useEffect(() => {
 		hub
 			.request<{ ts: number; kind: string; message: string }[]>(
@@ -876,8 +879,8 @@ export function OverviewPanel(props: PanelProps) {
 				</header>
 				{events.length ? (
 					<ul className="events">
-						{events.slice(0, 25).map((event, i) => (
-							<li key={`${event.ts}-${i}`}>
+						{events.slice(0, 25).map((event) => (
+							<li key={`${event.ts}-${event.kind}-${event.message}`}>
 								<span className="dim">{dateTime(event.ts)}</span>
 								<Pill
 									tone={
@@ -2013,15 +2016,21 @@ export function LogsPanel({
 	const bottom = useRef<HTMLDivElement>(null);
 
 	// Arriving from another panel ("show me this unit's logs") starts a tail.
+	// Keyed on the two strings rather than the object, which is rebuilt by the
+	// parent on every render.
+	const targetKind = target?.kind;
+	const targetName = target?.target;
 	useEffect(() => {
-		if (!target) return;
-		setKind(target.kind);
-		setValue(target.target);
-		setActive(target);
-	}, [target?.kind, target?.target]);
+		if (!targetKind || !targetName) return;
+		setKind(targetKind);
+		setValue(targetName);
+		setActive({ kind: targetKind, target: targetName });
+	}, [targetKind, targetName]);
 
+	const activeKind = active?.kind;
+	const activeTarget = active?.target;
 	useEffect(() => {
-		if (!active) return;
+		if (!activeKind || !activeTarget) return;
 		setLines([]);
 		setError(null);
 
@@ -2031,8 +2040,8 @@ export function LogsPanel({
 				NodeAction.LogsTail,
 				{
 					nodeId: node.id,
-					kind: active.kind,
-					target: active.target,
+					kind: activeKind,
+					target: activeTarget,
 					tail: 400,
 					follow: true,
 				},
@@ -2053,8 +2062,10 @@ export function LogsPanel({
 		}
 
 		return () => stream?.end();
-	}, [hub, node.id, active?.kind, active?.target]);
+	}, [hub, node.id, activeKind, activeTarget]);
 
+	// `lines` is the trigger — every new batch should scroll — not a read.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: explained above
 	useEffect(() => {
 		if (follow) bottom.current?.scrollIntoView({ block: "end" });
 	}, [lines, follow]);
@@ -2142,6 +2153,10 @@ export function LogsPanel({
 
 			<div className="log-output" onWheel={() => setFollow(false)}>
 				{lines.map((line, i) => (
+					// A tailed line has no identity beyond its position: the list is
+					// append-only and trimmed from the front, so position is stable
+					// enough and nothing else on the line is unique.
+					// biome-ignore lint/suspicious/noArrayIndexKey: explained above
 					<div key={i} className={`log-line ${line.stream}`}>
 						<span className="log-ts">{clock(line.ts)}</span>
 						<span className="log-message">{line.message}</span>

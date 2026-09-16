@@ -5,7 +5,7 @@ import {
 	piholeConfigured,
 	setBlocking,
 	setLocalDns,
-	usePiholeTransport,
+	setPiholeTransport,
 } from "../../collect/pihole.ts";
 import { MODULES } from "../../modules/manifest.ts";
 import { RemoteError } from "../../proto/link.ts";
@@ -30,7 +30,7 @@ import { requireControl } from "./mod.ts";
 
 /** Points the collector's two reaches at the host's gated ones. */
 function wire(ctx: NodeModuleContext) {
-	usePiholeTransport({
+	setPiholeTransport({
 		fetch: (url, init) => ctx.host.fetch(url, init),
 		exec: (argv) => ctx.host.exec(argv, { timeoutMs: CLI_TIMEOUT_MS }),
 	});

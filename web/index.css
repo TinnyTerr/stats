@@ -1121,15 +1121,6 @@ th.right {
 	word-break: break-word;
 }
 
-.log-line.stderr .log-message {
-	color: var(--crit);
-}
-
-.log-line.system .log-message {
-	color: var(--dim);
-	font-style: italic;
-}
-
 .log-ts {
 	color: var(--idle);
 	flex: none;
@@ -1139,6 +1130,15 @@ th.right {
 .log-message {
 	flex: 1;
 	min-width: 0;
+}
+
+.log-line.stderr .log-message {
+	color: var(--crit);
+}
+
+.log-line.system .log-message {
+	color: var(--dim);
+	font-style: italic;
 }
 
 /* ---------- terminal ---------- */

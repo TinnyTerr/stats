@@ -221,7 +221,7 @@ export function decodeFrames(data: Bytes): { frames: Frame[]; rest: Bytes } {
 	const frames: Frame[] = [];
 	let offset = 0;
 	while (offset < data.length) {
-		let decoded;
+		let decoded: { frame: Frame; consumed: number };
 		try {
 			decoded = decodeFrame(data.subarray(offset));
 		} catch (err) {

@@ -124,7 +124,7 @@ let transport = directTransport;
  * with a fake Pi-hole over HTTP has nothing to say about `exec`, and gets the
  * direct one it will never reach.
  */
-export function usePiholeTransport(next: Partial<PiholeTransport> | null) {
+export function setPiholeTransport(next: Partial<PiholeTransport> | null) {
 	transport = next ? { ...directTransport, ...next } : directTransport;
 }
 

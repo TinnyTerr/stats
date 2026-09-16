@@ -12,7 +12,7 @@ const API = "v1.43";
 
 export class DockerUnavailable extends Error {}
 
-/** How an engine-API path is turned into a request. See {@link useDockerTransport}. */
+/** How an engine-API path is turned into a request. See {@link setDockerTransport}. */
 export type DockerTransport = (
 	path: string,
 	init?: RequestInit,
@@ -28,7 +28,7 @@ let transport = directTransport;
  * collector reaches for goes through the module host rather than around it.
  * Passing null restores the direct socket, which is what the tests use.
  */
-export function useDockerTransport(next: DockerTransport | null) {
+export function setDockerTransport(next: DockerTransport | null) {
 	transport = next ?? directTransport;
 }
 

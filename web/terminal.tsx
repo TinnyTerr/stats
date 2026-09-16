@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { moduleOn } from "../src/modules/manifest.ts";
 import { NodeAction } from "../src/proto/messages.ts";
@@ -113,6 +113,9 @@ function TerminalView({
 	const host = useRef<HTMLDivElement>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [info, setInfo] = useState<string | null>(null);
+	// The two strings, not the object: `where` is rebuilt by the parent and
+	// would reopen the shell on every render.
+	const { projectId, container } = where;
 
 	useEffect(() => {
 		if (!host.current) return;
@@ -145,7 +148,7 @@ function TerminalView({
 			shell: string;
 		}>(
 			NodeAction.TerminalOpen,
-			{ nodeId, cols: term.cols, rows: term.rows, ...where },
+			{ nodeId, cols: term.cols, rows: term.rows, projectId, container },
 			{
 				onData: (payload, binary) => {
 					if (binary) {
@@ -221,7 +224,7 @@ function TerminalView({
 			stream.end();
 			term.dispose();
 		};
-	}, [hub, nodeId, where.projectId, where.container]);
+	}, [hub, nodeId, projectId, container]);
 
 	return (
 		<div className="terminal-frame">

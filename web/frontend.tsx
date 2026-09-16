@@ -1,4 +1,4 @@
-import React, {
+import {
 	useCallback,
 	useEffect,
 	useMemo,
@@ -95,9 +95,8 @@ function NodeCard({
 		// A div rather than a button: the face dots are buttons of their own, and
 		// a button inside a button is invalid HTML that browsers handle however
 		// they feel like. The role and key handler put the keyboard back.
+		// biome-ignore lint/a11y/useSemanticElements: explained above
 		<div
-			// biome-ignore lint/a11y/useSemanticElements: a <button> here would
-			// contain the face-dot buttons, which is exactly what we're avoiding
 			role="button"
 			tabIndex={0}
 			aria-pressed={selected}
@@ -464,12 +463,16 @@ function App() {
 	}, []);
 
 	// Seed each card's sparklines from stored history, so a fresh page load isn't
-	// flat. Only the last few minutes: these are shapes, not charts.
+	// flat. Only the last few minutes: these are shapes, not charts. Which nodes
+	// have been asked for is kept in a ref rather than read off `history`, so
+	// this effect can depend on `nodes` without a refetch on every tick.
+	const seeded = useRef(new Set<string>());
 	useEffect(() => {
 		const connection = hub.current;
 		if (!connection || !connected) return;
 		for (const node of nodes) {
-			if (history.has(node.id)) continue;
+			if (seeded.current.has(node.id)) continue;
+			seeded.current.add(node.id);
 			connection
 				.request<MetricPoint[]>(HubAction.History, {
 					nodeId: node.id,
@@ -490,9 +493,11 @@ function App() {
 								}),
 					);
 				})
-				.catch(() => {});
+				.catch(() => {
+					seeded.current.delete(node.id);
+				});
 		}
-	}, [connected, nodes.length]);
+	}, [connected, nodes]);
 
 	// One timer for the whole grid: every card turns its face at the same moment,
 	// which reads as a dashboard changing rather than as tiles flickering.

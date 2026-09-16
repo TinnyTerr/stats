@@ -360,13 +360,12 @@ function parseProcess(
 		`${path}.restart`,
 		DEFAULTS.restart,
 	)!;
-	const restart = RESTART_POLICIES.includes(restartRaw as RestartPolicy)
-		? (restartRaw as RestartPolicy)
-		: (v.fail(
-				`${path}.restart`,
-				`must be one of ${RESTART_POLICIES.join(", ")}`,
-			),
-			DEFAULTS.restart);
+	let restart: RestartPolicy = DEFAULTS.restart;
+	if (RESTART_POLICIES.includes(restartRaw as RestartPolicy)) {
+		restart = restartRaw as RestartPolicy;
+	} else {
+		v.fail(`${path}.restart`, `must be one of ${RESTART_POLICIES.join(", ")}`);
+	}
 
 	const user = v.string(obj.user, `${path}.user`);
 	const group = v.string(obj.group, `${path}.group`);

@@ -57,7 +57,7 @@ const directTransport: ProxmoxTransport = {
 
 let transport = directTransport;
 
-export function useProxmoxTransport(next: ProxmoxTransport | null) {
+export function setProxmoxTransport(next: ProxmoxTransport | null) {
 	transport = next ?? directTransport;
 }
 

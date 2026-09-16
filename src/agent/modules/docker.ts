@@ -5,7 +5,7 @@ import {
 	DockerUnavailable,
 	dockerAvailable,
 	dockerUrl,
-	useDockerTransport,
+	setDockerTransport,
 } from "../../collect/docker.ts";
 import { MODULES } from "../../modules/manifest.ts";
 import { RemoteError } from "../../proto/link.ts";
@@ -22,7 +22,7 @@ import { requireControl } from "./mod.ts";
 
 /** Points the collector's transport at the host's gated socket. */
 function wire(ctx: NodeModuleContext) {
-	useDockerTransport((path, init) =>
+	setDockerTransport((path, init) =>
 		ctx.host.socket(DOCKER_SOCKET, dockerUrl(path), init),
 	);
 }

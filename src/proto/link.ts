@@ -158,7 +158,7 @@ const DEFAULT_TIMEOUT = 30_000;
 export class PeerLink {
 	private pending = new Map<number, Pending>();
 	private inbound = new Map<number, Inbound>();
-	private acks = new Map<number, (value: void) => void>();
+	private acks = new Map<number, () => void>();
 	private handlers = new Map<number, (frame: Frame) => void>();
 	private requestHandler: RequestHandler | null = null;
 	private nextId: number;

@@ -3,7 +3,7 @@ import {
 	guestAction,
 	ProxmoxUnavailable,
 	proxmoxAvailable,
-	useProxmoxTransport,
+	setProxmoxTransport,
 } from "../../collect/proxmox.ts";
 import { MODULES } from "../../modules/manifest.ts";
 import { RemoteError } from "../../proto/link.ts";
@@ -20,7 +20,7 @@ import { requireControl } from "./mod.ts";
 
 /** Points the collector's two reaches at the host's gated versions. */
 function wire(ctx: NodeModuleContext) {
-	useProxmoxTransport({
+	setProxmoxTransport({
 		exec: (argv) => ctx.host.exec(argv),
 		fetch: (url, init) => ctx.host.fetch(url, init),
 	});

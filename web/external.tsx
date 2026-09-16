@@ -133,7 +133,7 @@ function ExternalPanel({
 	const report: ModuleReport | undefined = telemetry?.extras?.[manifest.id];
 
 	if (!spec) return null;
-	if (!report || !report.rows.length) {
+	if (!report?.rows.length) {
 		return (
 			<Empty>
 				{spec.empty ??

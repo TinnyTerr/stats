@@ -8,7 +8,7 @@ import {
 	resetPiholeCache,
 	setBlocking,
 	setLocalDns,
-	usePiholeTransport,
+	setPiholeTransport,
 } from "./pihole.ts";
 
 /**
@@ -50,7 +50,7 @@ function serve(routes: [string, unknown, number?][]): {
 }
 
 afterEach(() => {
-	usePiholeTransport(null);
+	setPiholeTransport(null);
 	resetPiholeCache();
 	delete process.env.PIHOLE_PASSWORD;
 	delete process.env.PIHOLE_TOKEN;
@@ -113,7 +113,7 @@ const V6_ROUTES: [string, unknown, number?][] = [
 describe("a v6 Pi-hole", () => {
 	test("summary, blocking and the leaderboards come back shaped", async () => {
 		const { transport } = serve(V6_ROUTES);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 
 		const { pihole, piholeDetail } = await collectPiholeVia({
 			base: BASE,
@@ -158,7 +158,7 @@ describe("a v6 Pi-hole", () => {
 		let authed = false;
 		const calls: string[] = [];
 
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url) {
 				calls.push(url);
 				if (url.includes("/api/auth")) {
@@ -177,7 +177,7 @@ describe("a v6 Pi-hole", () => {
 	});
 
 	test("no password and a Pi-hole that wants one says which one to set", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch() {
 				return new Response("{}", { status: 401 });
 			},
@@ -191,7 +191,7 @@ describe("a v6 Pi-hole", () => {
 		const { transport, calls } = serve([
 			["/api/dns/blocking", { blocking: "disabled", timer: 300 }],
 		]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 
 		const result = await setBlocking(
 			{ blocking: false, seconds: 300 },
@@ -230,7 +230,7 @@ const V5_BODY = {
 describe("a v5 Pi-hole", () => {
 	test("one request answers everything, in the same shapes v6 does", async () => {
 		const { transport, calls } = serve([["/admin/api.php", V5_BODY]]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 		process.env.PIHOLE_TOKEN = "deadbeef";
 
 		const { pihole, piholeDetail } = await collectPiholeVia({
@@ -268,7 +268,7 @@ describe("a v5 Pi-hole", () => {
 
 	test("api.php's empty-array refusal is reported as the missing token", async () => {
 		const { transport } = serve([["/admin/api.php", []]]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 		expect(collectPiholeVia({ base: BASE, api: "v5" })).rejects.toThrow(
 			/PIHOLE_TOKEN/,
 		);
@@ -278,7 +278,7 @@ describe("a v5 Pi-hole", () => {
 		const { transport, calls } = serve([
 			["/admin/api.php", { status: "enabled" }],
 		]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 		process.env.PIHOLE_TOKEN = "deadbeef";
 
 		const result = await setBlocking(
@@ -330,7 +330,7 @@ function cli(routes: [string, unknown, number?][]): {
 describe("a Pi-hole this node is running on", () => {
 	test("the CLI answers the v6 API, and says it has no URL", async () => {
 		const { transport, argv } = cli(V6_ROUTES);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 
 		const { pihole, piholeDetail } = await collectPiholeVia({ api: "cli" });
 
@@ -352,7 +352,7 @@ describe("a Pi-hole this node is running on", () => {
 	});
 
 	test("a refusal is a status line and an exit code of zero, and still fails", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async exec() {
 				return {
 					code: 0,
@@ -368,7 +368,7 @@ describe("a Pi-hole this node is running on", () => {
 	test("FTL's own refusal is a failure however the CLI framed it", async () => {
 		// No status line, exit 0 — all that is left to go on is the body, and
 		// shaping this one would report a Pi-hole answering nothing but zeroes.
-		usePiholeTransport({
+		setPiholeTransport({
 			async exec() {
 				return {
 					code: 0,
@@ -381,7 +381,7 @@ describe("a Pi-hole this node is running on", () => {
 	});
 
 	test("a command that isn't there is reported as what it said", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async exec() {
 				return { code: 127, stdout: "", stderr: "pihole: command not found" };
 			},
@@ -395,7 +395,7 @@ describe("a Pi-hole this node is running on", () => {
 		const { transport, argv } = cli([
 			["/api/dns/blocking", { blocking: "disabled", timer: 300 }],
 		]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 
 		const result = await setBlocking(
 			{ blocking: false, seconds: 300 },
@@ -411,7 +411,7 @@ describe("a Pi-hole this node is running on", () => {
 		const { transport } = cli([
 			["/api/dns/blocking", { blocking: "enabled", timer: null }],
 		]);
-		usePiholeTransport(transport);
+		setPiholeTransport(transport);
 
 		const result = await setBlocking({ blocking: false }, { api: "cli" });
 		expect(result.ok).toBe(false);
@@ -424,7 +424,7 @@ describe("a Pi-hole this node is running on", () => {
 describe("registering a domain in a Pi-hole's local DNS", () => {
 	test("v6 adds a host entry by PUTting the value into the URL", async () => {
 		const calls: Call[] = [];
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url, init) {
 				calls.push({ url, init });
 				return new Response("{}", { status: 200 });
@@ -448,7 +448,7 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 
 	test("v6 removes a host entry with DELETE", async () => {
 		const calls: Call[] = [];
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url, init) {
 				calls.push({ url, init });
 				return new Response("{}", { status: 200 });
@@ -465,7 +465,7 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 	});
 
 	test("v6 turns a refusal into a failed result, not a throw", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch() {
 				return new Response("nope", { status: 400, statusText: "Bad Request" });
 			},
@@ -481,7 +481,7 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 
 	test("the CLI adds and removes with the same -X verbs", async () => {
 		const argv: string[][] = [];
-		usePiholeTransport({
+		setPiholeTransport({
 			async exec(args) {
 				argv.push(args);
 				return { code: 0, stdout: "", stderr: "" };
@@ -509,7 +509,7 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 
 	test("v5 goes through customdns", async () => {
 		const calls: Call[] = [];
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url) {
 				calls.push({ url });
 				return Response.json({ message: "added" });
@@ -536,7 +536,7 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 
 describe("reaching a Pi-hole at all", () => {
 	test("v6 is recognised even when it refuses the request", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url) {
 				return url.includes("/api/info/version")
 					? new Response("{}", { status: 401 })
@@ -547,7 +547,7 @@ describe("reaching a Pi-hole at all", () => {
 	});
 
 	test("v5 is recognised by api.php answering with a status", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch(url) {
 				return url.includes("/admin/api.php")
 					? Response.json({ status: "enabled" })
@@ -558,7 +558,7 @@ describe("reaching a Pi-hole at all", () => {
 	});
 
 	test("something that isn't a Pi-hole is neither, rather than v5", async () => {
-		usePiholeTransport({
+		setPiholeTransport({
 			async fetch() {
 				return new Response("<html>hello</html>", { status: 200 });
 			},

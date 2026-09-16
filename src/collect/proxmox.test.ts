@@ -5,7 +5,7 @@ import {
 	isValidPveName,
 	type ProxmoxTransport,
 	shapeResources,
-	useProxmoxTransport,
+	setProxmoxTransport,
 } from "./proxmox.ts";
 
 /**
@@ -94,11 +94,11 @@ function fakePvesh(answers: Record<string, unknown>) {
 			throw new Error("the http transport should not be used here");
 		},
 	};
-	useProxmoxTransport(transport);
+	setProxmoxTransport(transport);
 	return calls;
 }
 
-afterEach(() => useProxmoxTransport(null));
+afterEach(() => setProxmoxTransport(null));
 
 describe("shapeResources", () => {
 	test("splits one flat list into guests, hosts and storage", () => {
