@@ -627,7 +627,10 @@ export interface HubConfig {
 	/** accept nodes with ids that aren't listed in `nodes` */
 	allowUnknownNodes: boolean;
 	dbPath: string;
+	/** how long the per-tick metric rows are kept */
 	retentionHours: number;
+	/** how long events, connections and service logs are kept */
+	eventRetentionHours: number;
 	/** how often nodes should send telemetry; handed to them in Welcome */
 	telemetryIntervalMs: number;
 	/** a node is declared offline this long after its last frame */

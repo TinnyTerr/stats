@@ -67,6 +67,43 @@ const SLOW_ACTIONS = new Map<string, number>([
 	[NodeAction.UpdateApply, 10 * 60_000],
 ]);
 
+const DAY_MINUTES = 24 * 60;
+const WEEK_MINUTES = 7 * DAY_MINUTES;
+
+/** A `minutes` parameter clamped to [1, max]; the fallback when it isn't a number. */
+function windowMinutes(raw: unknown, fallback: number, max: number): number {
+	const minutes = Number(raw ?? fallback);
+	return Number.isFinite(minutes)
+		? Math.min(Math.max(minutes, 1), max)
+		: fallback;
+}
+
+/** Epoch ms `minutes` ago, for the "since" side of a query. */
+function since(raw: unknown, fallback: number, max: number): number {
+	return Date.now() - windowMinutes(raw, fallback, max) * 60_000;
+}
+
+/**
+ * The arguments `store.history` takes, from either the socket action or the
+ * REST query. The bucket cap is what a browser can plot, not what the table
+ * holds: a caller asking for buckets is asking for the whole window at a
+ * resolution it can draw.
+ */
+function historyQuery(rawMinutes: unknown, rawBuckets: unknown) {
+	const until = Date.now();
+	const buckets = Number(rawBuckets ?? 0);
+	return {
+		sinceMs: until - windowMinutes(rawMinutes, 60, DAY_MINUTES) * 60_000,
+		options: {
+			untilMs: until,
+			buckets:
+				Number.isFinite(buckets) && buckets > 0
+					? Math.min(Math.max(Math.round(buckets), 2), 1000)
+					: undefined,
+		},
+	};
+}
+
 export function startHub(config: HubConfig) {
 	const store = new MetricStore(config.dbPath);
 	const registry = new NodeRegistry(config, store);
@@ -109,11 +146,10 @@ export function startHub(config: HubConfig) {
 	});
 
 	registry.startSweeper();
-	store.prune(config.retentionHours);
-	const pruneTimer = setInterval(
-		() => store.prune(config.retentionHours),
-		600_000,
-	);
+	const prune = () =>
+		store.prune(config.retentionHours, config.eventRetentionHours);
+	prune();
+	const pruneTimer = setInterval(prune, 600_000);
 	pruneTimer.unref?.();
 
 	/* ---------- browser control requests ---------- */
@@ -185,40 +221,26 @@ export function startHub(config: HubConfig) {
 
 			case HubAction.History: {
 				const p = params as unknown as HistoryParams;
-				const minutes = Number(p.minutes ?? 60);
-				const window = Number.isFinite(minutes)
-					? Math.min(Math.max(minutes, 1), 24 * 60)
-					: 60;
-				// The cap is what a browser can plot, not what the table holds: a
-				// caller asking for buckets is asking for the whole window at a
-				// resolution it can draw.
-				const buckets = Number(p.buckets ?? 0);
-				const until = Date.now();
-				return store.history(String(p.nodeId ?? ""), until - window * 60_000, {
-					untilMs: until,
-					buckets:
-						Number.isFinite(buckets) && buckets > 0
-							? Math.min(Math.max(Math.round(buckets), 2), 1000)
-							: undefined,
-				});
+				const { sinceMs, options } = historyQuery(p.minutes, p.buckets);
+				return store.history(String(p.nodeId ?? ""), sinceMs, options);
 			}
 
 			case HubAction.Events: {
 				const p = params as unknown as EventsParams;
-				const minutes = Number(p.minutes ?? 1440);
-				const window = Number.isFinite(minutes)
-					? Math.min(Math.max(minutes, 1), 7 * 24 * 60)
-					: 1440;
-				return store.events(Date.now() - window * 60_000, 200, p.nodeId);
+				return store.events(
+					since(p.minutes, DAY_MINUTES, WEEK_MINUTES),
+					200,
+					p.nodeId,
+				);
 			}
 
 			case HubAction.Connections: {
 				const p = params as unknown as ConnectionsParams;
-				const minutes = Number(p.minutes ?? 1440);
-				const window = Number.isFinite(minutes)
-					? Math.min(Math.max(minutes, 1), 7 * 24 * 60)
-					: 1440;
-				return store.connections(Date.now() - window * 60_000, 200, p.nodeId);
+				return store.connections(
+					since(p.minutes, DAY_MINUTES, WEEK_MINUTES),
+					200,
+					p.nodeId,
+				);
 			}
 
 			case HubAction.Forget: {
@@ -497,42 +519,33 @@ export function startHub(config: HubConfig) {
 				if (!requireToken(req, config.token)) return unauthorized();
 				const { id } = (req as Request & { params: { id: string } }).params;
 				const query = new URL(req.url).searchParams;
-				const minutes = Number(query.get("minutes") ?? 60);
-				const window = Number.isFinite(minutes)
-					? Math.min(minutes, 24 * 60)
-					: 60;
 				// Same deal as the socket action: a long window is only honest when
 				// it is bucketed, since the row cap otherwise takes a slice of it.
-				const buckets = Number(query.get("buckets") ?? 0);
-				const until = Date.now();
-				return json(
-					store.history(id, until - window * 60_000, {
-						untilMs: until,
-						buckets:
-							Number.isFinite(buckets) && buckets > 0
-								? Math.min(Math.max(Math.round(buckets), 2), 1000)
-								: undefined,
-					}),
+				const { sinceMs, options } = historyQuery(
+					query.get("minutes"),
+					query.get("buckets"),
 				);
+				return json(store.history(id, sinceMs, options));
 			},
 
 			"/api/events": (req: Request) => {
 				if (!requireToken(req, config.token)) return unauthorized();
-				const minutes = Number(
-					new URL(req.url).searchParams.get("minutes") ?? 1440,
+				const query = new URL(req.url).searchParams;
+				return json(
+					store.events(
+						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
+						200,
+						query.get("nodeId") ?? undefined,
+					),
 				);
-				const window = Number.isFinite(minutes) ? minutes : 1440;
-				return json(store.events(Date.now() - window * 60_000));
 			},
 
 			"/api/connections": (req: Request) => {
 				if (!requireToken(req, config.token)) return unauthorized();
 				const query = new URL(req.url).searchParams;
-				const minutes = Number(query.get("minutes") ?? 1440);
-				const window = Number.isFinite(minutes) ? minutes : 1440;
 				return json(
 					store.connections(
-						Date.now() - window * 60_000,
+						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
 						200,
 						query.get("nodeId") ?? undefined,
 					),
@@ -542,11 +555,14 @@ export function startHub(config: HubConfig) {
 			"/api/nodes/:id/connections": (req: Request) => {
 				if (!requireToken(req, config.token)) return unauthorized();
 				const { id } = (req as Request & { params: { id: string } }).params;
-				const minutes = Number(
-					new URL(req.url).searchParams.get("minutes") ?? 1440,
+				const query = new URL(req.url).searchParams;
+				return json(
+					store.connections(
+						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
+						200,
+						id,
+					),
 				);
-				const window = Number.isFinite(minutes) ? minutes : 1440;
-				return json(store.connections(Date.now() - window * 60_000, 200, id));
 			},
 
 			/**
@@ -579,11 +595,9 @@ export function startHub(config: HubConfig) {
 				GET: (req: Request) => {
 					if (!requireToken(req, config.token)) return unauthorized();
 					const query = new URL(req.url).searchParams;
-					const minutes = Number(query.get("minutes") ?? 1440);
-					const window = Number.isFinite(minutes) ? minutes : 1440;
 					return json(
 						store.serviceLogs(
-							Date.now() - window * 60_000,
+							since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
 							200,
 							query.get("source") ?? undefined,
 						),

@@ -57,6 +57,9 @@ export type RegistryEvent =
 
 type Listener = (event: RegistryEvent) => void;
 
+/** How often an unchanged node is re-stamped in the nodes table. */
+const REMEMBER_INTERVAL_MS = 60_000;
+
 /**
  * A refusal with a stable code. It is a {@link RemoteError} so the code
  * survives the trip to whoever asked: the link only forwards codes from that
@@ -75,6 +78,11 @@ export class NodeRegistry {
 	private listeners = new Set<Listener>();
 	private overrides = new Map<string, NodeOverride>();
 	private sweepTimer: ReturnType<typeof setInterval> | null = null;
+	/** when the nodes table last heard about each node, and what it was told */
+	private remembered = new Map<
+		string,
+		{ at: number; hostname: string | null }
+	>();
 
 	constructor(
 		private config: HubConfig,
@@ -105,6 +113,36 @@ export class NodeRegistry {
 				remoteAddress: null,
 			});
 		}
+	}
+
+	/**
+	 * Writes the nodes table. It is a directory, not a log: a row per node that
+	 * says what it is and when it was last heard from. Telemetry arrives every
+	 * few seconds, and `last_seen` doesn't need to be right to the tick — so
+	 * between changes it is refreshed at most once a minute rather than on
+	 * every frame.
+	 */
+	private remember(
+		record: Pick<NodeRecord, "id" | "name" | "version">,
+		hostname: string | null,
+		force = false,
+	) {
+		const last = this.remembered.get(record.id);
+		const now = Date.now();
+		if (
+			!force &&
+			last &&
+			last.hostname === hostname &&
+			now - last.at < REMEMBER_INTERVAL_MS
+		)
+			return;
+		this.remembered.set(record.id, { at: now, hostname });
+		this.store.seen({
+			id: record.id,
+			name: record.name,
+			version: record.version,
+			hostname,
+		});
 	}
 
 	subscribe(listener: Listener): () => void {
@@ -181,12 +219,11 @@ export class NodeRegistry {
 		};
 		this.nodes.set(id, record);
 
-		this.store.seen({
-			id,
-			name: record.name,
-			version: record.version,
-			hostname: hello.host?.hostname ?? hello.facts?.hostname ?? null,
-		});
+		this.remember(
+			record,
+			hello.host?.hostname ?? hello.facts?.hostname ?? null,
+			true,
+		);
 		const message = statusMessage(
 			record.name,
 			"online",
@@ -273,12 +310,10 @@ export class NodeRegistry {
 		// still raises alerts and still appears — it just has no graph.
 		if (telemetry.stats) this.store.record(id, telemetry.stats);
 		if (telemetry.host) record.host = telemetry.host;
-		this.store.seen({
-			id,
-			name: record.name,
-			version: record.version,
-			hostname: telemetry.host?.hostname ?? telemetry.stats?.hostname ?? null,
-		});
+		this.remember(
+			record,
+			telemetry.host?.hostname ?? telemetry.stats?.hostname ?? null,
+		);
 
 		for (const alert of diffAlerts(previous, telemetry)) {
 			this.store.recordEvent(id, alert.kind, alert.message);
@@ -377,6 +412,7 @@ export class NodeRegistry {
 			);
 		}
 		this.nodes.delete(id);
+		this.remembered.delete(id);
 		this.store.forget(id);
 	}
 

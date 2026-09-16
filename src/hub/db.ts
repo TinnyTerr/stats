@@ -64,6 +64,7 @@ export class MetricStore {
 	private insertConnection;
 	private insertServiceLog;
 	private upsertNode;
+	private upsertModule;
 
 	constructor(path: string) {
 		this.db = new Database(path, { create: true });
@@ -96,6 +97,13 @@ export class MetricStore {
          last_seen = excluded.last_seen,
          version = excluded.version,
          hostname = excluded.hostname`,
+		);
+		this.upsertModule = this.db.prepare(
+			`INSERT INTO node_modules (node_id, module_id, enabled, set_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(node_id, module_id) DO UPDATE SET
+         enabled = excluded.enabled,
+         set_at  = excluded.set_at`,
 		);
 	}
 
@@ -310,16 +318,9 @@ export class MetricStore {
 	 * opinion" rather than collapsing to false.
 	 */
 	setDesiredModules(nodeId: string, modules: Record<string, boolean>) {
-		const stmt = this.db.prepare(
-			`INSERT INTO node_modules (node_id, module_id, enabled, set_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(node_id, module_id) DO UPDATE SET
-         enabled = excluded.enabled,
-         set_at  = excluded.set_at`,
-		);
 		const now = Date.now();
 		for (const [id, enabled] of Object.entries(modules)) {
-			stmt.run(nodeId, id, enabled ? 1 : 0, now);
+			this.upsertModule.run(nodeId, id, enabled ? 1 : 0, now);
 		}
 	}
 
@@ -466,13 +467,19 @@ export class MetricStore {
 			.all(...args) as ServiceLogRow[];
 	}
 
-	/** Drops samples older than the retention window. Cheap enough to run often. */
-	prune(retentionHours: number) {
-		const cutoff = Date.now() - retentionHours * 3600_000;
-		this.db.run("DELETE FROM metrics WHERE ts < ?", [cutoff]);
-		this.db.run("DELETE FROM events WHERE ts < ?", [cutoff]);
-		this.db.run("DELETE FROM connections WHERE ts < ?", [cutoff]);
-		this.db.run("DELETE FROM service_logs WHERE ts < ?", [cutoff]);
+	/**
+	 * Drops what has aged out. Cheap enough to run often. Metrics are the bulk
+	 * — a row per node per tick — and keep the short window; the events,
+	 * connections and service logs are a few rows a day and keep the longer
+	 * one, so "what happened last Tuesday" is still answerable.
+	 */
+	prune(retentionHours: number, eventRetentionHours = retentionHours) {
+		const metricsCutoff = Date.now() - retentionHours * 3600_000;
+		const eventsCutoff = Date.now() - eventRetentionHours * 3600_000;
+		this.db.run("DELETE FROM metrics WHERE ts < ?", [metricsCutoff]);
+		this.db.run("DELETE FROM events WHERE ts < ?", [eventsCutoff]);
+		this.db.run("DELETE FROM connections WHERE ts < ?", [eventsCutoff]);
+		this.db.run("DELETE FROM service_logs WHERE ts < ?", [eventsCutoff]);
 	}
 
 	close() {

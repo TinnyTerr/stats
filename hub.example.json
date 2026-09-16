@@ -8,6 +8,7 @@
 
 	"dbPath": "./stats.db",
 	"retentionHours": 24,
+	"eventRetentionHours": 168,
 	"telemetryIntervalMs": 3000,
 
 	"modules": {

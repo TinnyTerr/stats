@@ -186,7 +186,8 @@ Every field is optional:
   "allowUnknownNodes": true,    // false: only ids listed in "nodes" may join
 
   "dbPath": "./stats.db",
-  "retentionHours": 24,
+  "retentionHours": 24,         // per-tick metric rows, the bulk of the database
+  "eventRetentionHours": 168,   // events, the connection log and service logs
   "telemetryIntervalMs": 3000,  // handed to every node when it connects
 
   "modules": {                  // fleet-wide switches; subtractive only

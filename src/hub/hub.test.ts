@@ -433,6 +433,7 @@ async function harness(
 		allowUnknownNodes: true,
 		dbPath: ":memory:",
 		retentionHours: 24,
+		eventRetentionHours: 168,
 		telemetryIntervalMs: 1000,
 		nodeTimeoutMs: 15_000,
 		modules: resolveModules({}),

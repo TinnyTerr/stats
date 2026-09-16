@@ -18,6 +18,7 @@ interface RawConfig {
 	allowUnknownNodes?: boolean;
 	dbPath?: string;
 	retentionHours?: number;
+	eventRetentionHours?: number;
 	telemetryIntervalMs?: number;
 	nodeTimeoutMs?: number;
 	terminal?: boolean;
@@ -144,6 +145,9 @@ export async function loadConfig(path = DEFAULT_PATH): Promise<HubConfig> {
 		allowUnknownNodes: raw.allowUnknownNodes ?? true,
 		dbPath: raw.dbPath ?? "./stats.db",
 		retentionHours: raw.retentionHours ?? 24,
+		// Events are a few rows a day, so they can afford to outlive the metrics
+		// they sit beside — and the dashboard's event windows go up to a week.
+		eventRetentionHours: raw.eventRetentionHours ?? 7 * 24,
 		telemetryIntervalMs,
 		// Three missed ticks, never less than 15s, so a slow box isn't declared dead.
 		nodeTimeoutMs: Math.max(
