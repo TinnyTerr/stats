@@ -901,7 +901,10 @@ export async function setLocalDns(
 		}
 		return { ok: true, output: said };
 	} catch (err) {
-		return { ok: false, output: err instanceof Error ? err.message : String(err) };
+		return {
+			ok: false,
+			output: err instanceof Error ? err.message : String(err),
+		};
 	}
 }
 

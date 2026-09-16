@@ -63,10 +63,7 @@ const LINUX: Installer = {
 			return;
 		}
 		await mkdir("/usr/local/share/ca-certificates", { recursive: true });
-		await Bun.write(
-			"/usr/local/share/ca-certificates/stats-fleet-ca.crt",
-			pem,
-		);
+		await Bun.write("/usr/local/share/ca-certificates/stats-fleet-ca.crt", pem);
 		await ctx.host.exec(["update-ca-certificates"]);
 	},
 };
@@ -85,7 +82,9 @@ const DARWIN: Installer = {
 			pemPath,
 		]);
 		if (result.code !== 0) {
-			throw new Error(result.stderr.trim() || "security add-trusted-cert failed");
+			throw new Error(
+				result.stderr.trim() || "security add-trusted-cert failed",
+			);
 		}
 	},
 };
@@ -151,7 +150,9 @@ async function reconcile(ctx: NodeModuleContext): Promise<CaStatus> {
 
 	return {
 		available: true,
-		installedFingerprint: lastInstalled.error ? null : lastInstalled.fingerprint,
+		installedFingerprint: lastInstalled.error
+			? null
+			: lastInstalled.fingerprint,
 		fleetFingerprint: ca.fingerprint,
 		method: installer.method,
 		error: lastInstalled.error,

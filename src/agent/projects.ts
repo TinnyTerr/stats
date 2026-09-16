@@ -35,7 +35,11 @@ function resolve(...segments: string[]): string {
 	let path = "";
 	for (const segment of segments) {
 		if (!segment) continue;
-		path = isAbsolute(segment) ? segment : path ? `${path}/${segment}` : segment;
+		path = isAbsolute(segment)
+			? segment
+			: path
+				? `${path}/${segment}`
+				: segment;
 	}
 	if (!isAbsolute(path)) path = `${globalThis.process?.cwd?.() ?? "/"}/${path}`;
 

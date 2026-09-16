@@ -316,9 +316,7 @@ function fromRawHealth(raw: unknown): HealthForm {
 		return blankHealth();
 	const h = raw as Record<string, unknown>;
 	const type =
-		h.type === "http" || h.type === "tcp" || h.type === "command"
-			? h.type
-			: "";
+		h.type === "http" || h.type === "tcp" || h.type === "command" ? h.type : "";
 	return {
 		type,
 		url: rawStr(h.url),
@@ -343,7 +341,9 @@ function fromRawProcess(raw: unknown): ProcessForm {
 			? p.command
 			: "";
 	const restart =
-		p.restart === "always" || p.restart === "never" || p.restart === "on-failure"
+		p.restart === "always" ||
+		p.restart === "never" ||
+		p.restart === "on-failure"
 			? p.restart
 			: DEFAULTS.restart;
 	return blankProcess({
@@ -407,7 +407,9 @@ export function importDocument(
 	try {
 		parsed = JSON.parse(text);
 	} catch (err) {
-		return { error: `invalid JSON — ${err instanceof Error ? err.message : err}` };
+		return {
+			error: `invalid JSON — ${err instanceof Error ? err.message : err}`,
+		};
 	}
 	if (
 		typeof parsed !== "object" ||
@@ -1162,7 +1164,11 @@ export function ProjectsBuilder() {
 					</div>
 					{importError && <div className="issues errors">{importError}</div>}
 					<div className="toolbar">
-						<button type="button" onClick={doImport} disabled={!importText.trim()}>
+						<button
+							type="button"
+							onClick={doImport}
+							disabled={!importText.trim()}
+						>
 							Load
 						</button>
 					</div>
@@ -1269,11 +1275,11 @@ function CaDownload() {
 
 			<p className="dim">
 				iOS: open the config profile link on the device, install it under
-				Settings, then flip it on under Settings &gt; General &gt; About
-				&gt; Certificate Trust Settings — installing the profile isn't
-				enough on its own. Everywhere else (Android, desktop browsers,
-				Linux, Windows) the plain <span className="mono">.pem</span> works
-				once it's added to the system trust store.
+				Settings, then flip it on under Settings &gt; General &gt; About &gt;
+				Certificate Trust Settings — installing the profile isn't enough on its
+				own. Everywhere else (Android, desktop browsers, Linux, Windows) the
+				plain <span className="mono">.pem</span> works once it's added to the
+				system trust store.
 			</p>
 		</section>
 	);

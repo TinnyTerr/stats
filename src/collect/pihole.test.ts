@@ -527,7 +527,10 @@ describe("registering a domain in a Pi-hole's local DNS", () => {
 
 	test("a blank domain is refused before anything is asked", () => {
 		expect(
-			setLocalDns({ domain: "  ", ip: "10.0.0.5", present: true }, { api: "cli" }),
+			setLocalDns(
+				{ domain: "  ", ip: "10.0.0.5", present: true },
+				{ api: "cli" },
+			),
 		).rejects.toThrow(/domain is required/);
 	});
 });

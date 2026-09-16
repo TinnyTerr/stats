@@ -969,7 +969,11 @@ describe("hub and node over a websocket", () => {
 					authorization: "Bearer let-me-in",
 					"content-type": "application/json",
 				},
-				body: JSON.stringify({ source: "deploy", level: "info", message: "ok" }),
+				body: JSON.stringify({
+					source: "deploy",
+					level: "info",
+					message: "ok",
+				}),
 			});
 			expect(post.status).toBe(200);
 			expect(await post.json()).toEqual({ ok: true });

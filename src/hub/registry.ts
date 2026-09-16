@@ -234,7 +234,9 @@ export class NodeRegistry {
 		// A late close from a replaced socket must not evict the live one.
 		if (!record || record.link !== link) return;
 
-		const durationMs = record.connectedAt ? Date.now() - record.connectedAt : null;
+		const durationMs = record.connectedAt
+			? Date.now() - record.connectedAt
+			: null;
 		record.link = null;
 		record.connectedAt = null;
 		const message = statusMessage(record.name, "offline", reason);

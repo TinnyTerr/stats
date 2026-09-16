@@ -450,7 +450,8 @@ export function startHub(config: HubConfig) {
 			// same thing every node already gets in Welcome, and the whole point
 			// is that a phone that has never opened the dashboard can fetch it.
 			"/ca.pem": async () => {
-				if (config.modules.ca === false) return json({ error: "ca disabled" }, 404);
+				if (config.modules.ca === false)
+					return json({ error: "ca disabled" }, 404);
 				const ca = await ensureHubCa(config.dbPath).catch(() => null);
 				if (!ca) return json({ error: "local CA unavailable" }, 503);
 				return new Response(ca.pem, {
@@ -462,7 +463,8 @@ export function startHub(config: HubConfig) {
 			},
 
 			"/ca.mobileconfig": async () => {
-				if (config.modules.ca === false) return json({ error: "ca disabled" }, 404);
+				if (config.modules.ca === false)
+					return json({ error: "ca disabled" }, 404);
 				const ca = await ensureHubCa(config.dbPath).catch(() => null);
 				if (!ca) return json({ error: "local CA unavailable" }, 503);
 				return new Response(caMobileConfig(ca.pem), {
@@ -563,7 +565,8 @@ export function startHub(config: HubConfig) {
 					} catch {
 						return json({ error: "body must be JSON" }, 400);
 					}
-					const source = typeof body.source === "string" ? body.source.trim() : "";
+					const source =
+						typeof body.source === "string" ? body.source.trim() : "";
 					const message =
 						typeof body.message === "string" ? body.message.trim() : "";
 					if (!source || !message) {
