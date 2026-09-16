@@ -27,10 +27,11 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   no `default` declares its platforms on its own.
 - **`system` is one module with one probe per platform.** `src/collect/probe.ts`
   is the seam; `src/collect/platform/linux.ts` is the implementation the rest of
-  the codebase grew up around, and darwin/win32 are declared stubs that report
-  unavailable. Probes are imported lazily and one at a time, so a Linux node
-  never loads the Windows probe. Adding a platform is a file and a row in
-  `PROBES` — not a change to the module, the agent, or the wire.
+  the codebase grew up around, `win32.ts` is CIM through PowerShell, and darwin
+  is a declared stub that reports unavailable. Probes are imported lazily and
+  one at a time, so a Linux node never loads the Windows probe. Adding a
+  platform is a file and a row in `PROBES` — not a change to the module, the
+  agent, or the wire.
 - **Docker, systemd, terminals and the rest are modules, not special cases.**
   `src/modules/manifest.ts` is the table all three peers read — what a module
   provides, which actions it owns, which tab it draws, what it may touch.
@@ -138,6 +139,19 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   second `exists()`. A running exe can be renamed but not unlinked, which is
   how the updater swaps it. scoop's git shim can't spawn from an ssh session,
   so the store tests probe `git --version` and skip the clone tests without it.
+- **The Windows probe is one PowerShell spawn per tick, not one per field.**
+  `powershell.exe` is 300ms+ before it runs a line, so `win32.ts` sends one
+  script (`-EncodedCommand`, base64 UTF-16LE — the only form both PowerShells
+  take without a parser in between) and reads one JSON document. Raw perf
+  counters, not the formatted class: a formatted counter is 0 the first time a
+  *process* reads it, and every tick is a new process. `_Total` on the
+  processor class is an average across cores, not a sum, so overall usage is
+  the mean of the per-core deltas and never trusts `_Total`. ConvertTo-Json in
+  5.1 unwraps a one-element array that arrives by pipeline; `-InputObject`
+  keeps it, and the reader tolerates both. Thermal zones need admin and most
+  firmware reports a flat 273.2K anyway, so empty `temps` is the normal case.
+  The pure half (`statsFromReport`, `factsFromReport`) is tested on any host;
+  the live half only on Windows.
 - **`node:path` on Windows resolves `/srv/x` to `C:\srv\x`.** Any test with a
   literal absolute path has to compare against `resolve()`, and
   `src/agent/projects.ts` keeps its own separator-aware helpers because it

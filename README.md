@@ -272,17 +272,22 @@ An empty list means portable, which is the default and the honest answer for a
 module made of HTTP calls. The loader drops anything that doesn't name the host
 it woke up on, before asking the module anything.
 
-Only the Linux probe for `system` is implemented today; macOS and Windows are
-declared stubs that report unavailable, so a node on either connects, shows its
-hostname and addresses, and runs its portable modules with the system card
-absent. `src/collect/probe.ts` is the seam and `src/collect/platform/` is where
-a new one goes.
+`system` has a Linux probe (/proc, /sys, `df`) and a Windows probe (CIM through
+PowerShell — one spawn per tick that prints one JSON document, because process
+start-up is the expensive part there). macOS is a declared stub that reports
+unavailable, so a node on it connects, shows its hostname and addresses, and
+runs its portable modules with the system card absent. `src/collect/probe.ts`
+is the seam and `src/collect/platform/` is where a new one goes.
 
-A Windows node is a real node: `projects`, `logs`, `terminal` and `ca` all
-run there (the terminal is PowerShell 7 or Windows PowerShell on a ConPTY,
-the CA lands in the machine's Root store via `certutil`), and the test suite
-passes on Windows with the Linux-only collector and installer tests skipped.
-What it lacks is the `system` probe, so its card has no CPU, memory or disk.
+A Windows node is a real node: `system`, `projects`, `logs`, `terminal` and
+`ca` all run there (the terminal is PowerShell 7 or Windows PowerShell on a
+ConPTY, the CA lands in the machine's Root store via `certutil`), and the test
+suite passes on Windows with the Linux-only collector and installer tests
+skipped. Its card shows CPU, memory, fixed drives by letter, adapter throughput
+and — where the firmware fills in a thermal zone and the node can read it —
+temperatures. Windows keeps no load average; the one shown is derived, the
+kernel's 1/5/15-minute damping applied to busy cores plus the processor queue
+length. `systemd`, `docker`, `processes` and `ports` still don't run there.
 
 ### Managing modules from the hub
 
@@ -766,7 +771,7 @@ src/collect/            system.ts, facts.ts (the Linux probe's collectors),
                         systemd.ts, docker.ts, proxmox.ts, pihole.ts,
                         processes.ts, logs.ts
 src/collect/probe.ts    the per-platform seam under the `system` module
-src/collect/platform/   linux.ts (real), darwin.ts and win32.ts (declared stubs)
+src/collect/platform/   linux.ts and win32.ts (real), darwin.ts (declared stub)
 src/agent/agent.ts      the node: dial, telemetry loop, control dispatch
 src/agent/identity.ts   hostname and addresses — the only thing not from a module
 src/agent/config.ts     node configuration and hub URL normalisation
