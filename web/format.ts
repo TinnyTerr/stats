@@ -130,6 +130,7 @@ const DISTRO_STYLES: Record<string, { label: string; accent: string }> = {
 	ol: { label: "Oracle Linux", accent: "#c74634" },
 	linuxmint: { label: "Mint", accent: "#87cf3e" },
 	proxmox: { label: "Proxmox", accent: "#e57000" },
+	windows: { label: "Windows", accent: "#0078d4" },
 };
 
 export interface DistroStyle {
