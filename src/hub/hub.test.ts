@@ -9,7 +9,7 @@ import {
 	resolveModules,
 } from "../modules/manifest.ts";
 import { COMPRESS_THRESHOLD, Flags, MessageType } from "../proto/frame.ts";
-import { PeerLink } from "../proto/link.ts";
+import { PeerLink, RemoteError } from "../proto/link.ts";
 import { HubAction, NodeAction } from "../proto/messages.ts";
 import type { HubConfig, NodeSummary, Telemetry } from "../types.ts";
 import { loadConfig } from "./config.ts";
@@ -618,6 +618,13 @@ describe("hub and node over a websocket", () => {
 				() => ui.request<NodeSummary[]>(HubAction.Nodes),
 				(list) => list[0]?.status === "offline",
 			);
+			// And a relayed request now fails with a code the UI can act on, not
+			// a bare "error".
+			const refused = await ui
+				.request(NodeAction.Snapshot, { nodeId: "pushy" })
+				.then(() => null, (err: unknown) => err);
+			expect(refused).toBeInstanceOf(RemoteError);
+			expect((refused as RemoteError).code).toBe("node_offline");
 		} finally {
 			ui.close();
 			await node.stop();

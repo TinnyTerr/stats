@@ -1,6 +1,6 @@
 import { headline } from "../modules/external.ts";
 import { type ModuleSet, narrowModules } from "../modules/manifest.ts";
-import type { PeerLink } from "../proto/link.ts";
+import { type PeerLink, RemoteError } from "../proto/link.ts";
 import type { HelloPayload } from "../proto/messages.ts";
 import type {
 	HostIdentity,
@@ -57,12 +57,16 @@ export type RegistryEvent =
 
 type Listener = (event: RegistryEvent) => void;
 
-export class UnauthorizedNode extends Error {
-	constructor(
-		readonly code: string,
-		message: string,
-	) {
-		super(message);
+/**
+ * A refusal with a stable code. It is a {@link RemoteError} so the code
+ * survives the trip to whoever asked: the link only forwards codes from that
+ * class, and a browser told "error" instead of "node_offline" can't say why
+ * its button did nothing.
+ */
+export class UnauthorizedNode extends RemoteError {
+	constructor(code: string, message: string) {
+		super(code, message);
+		this.name = "UnauthorizedNode";
 	}
 }
 

@@ -731,7 +731,8 @@ export class PeerLink {
 					resolve();
 				},
 				reject,
-				timer: null,
+				// Held here as well as in the closure so dispose() can clear it.
+				timer,
 				settled: false,
 			});
 			this.write(this.jsonFrame(MessageType.Ping, started, { correlationId }));
