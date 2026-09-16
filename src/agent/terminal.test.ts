@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { TerminalManager } from "./terminal.ts";
+
+const WINDOWS = process.platform === "win32";
 
 /**
  * The cwd, mostly. Bun reports a missing working directory as an ENOENT naming
@@ -28,7 +31,7 @@ test("a $HOME that does not exist still gets you a shell", async () => {
 	process.env.HOME = "/home/nobody-made-this";
 	const session = await open();
 	expect(session.pid).toBeGreaterThan(0);
-	expect(session.shell).toMatch(/^\/bin\//);
+	expect(session.shell).toMatch(WINDOWS ? /\.exe$/i : /^\/bin\//);
 });
 
 test("a requested directory that is missing says so, and doesn't blame the shell", async () => {
@@ -38,6 +41,6 @@ test("a requested directory that is missing says so, and doesn't blame the shell
 });
 
 test("a requested directory that exists is honoured", async () => {
-	const session = await open("/tmp");
+	const session = await open(tmpdir());
 	expect(session.pid).toBeGreaterThan(0);
 });

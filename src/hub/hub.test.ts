@@ -19,6 +19,11 @@ import { startHub } from "./server.ts";
 
 const paths: string[] = [];
 
+/** Only Linux has a system probe; the rest of the node works everywhere. */
+const HAS_SYSTEM = process.platform === "linux";
+const WINDOWS = process.platform === "win32";
+const BUN = process.execPath;
+
 const tmp = (name: string) => {
 	const path = join(import.meta.dir, "../..", `.test-${name}`);
 	paths.push(path);
@@ -505,7 +510,11 @@ describe("hub and node over a websocket", () => {
 					{
 						id: "demo",
 						processes: [
-							{ id: "sleeper", command: ["sleep", "60"], restart: "never" },
+							{
+								id: "sleeper",
+								command: [BUN, "-e", "setTimeout(() => {}, 60000)"],
+								restart: "never",
+							},
 						],
 					},
 				],
@@ -529,39 +538,49 @@ describe("hub and node over a websocket", () => {
 			await node.connected;
 			ui = await browser(h.port);
 
-			// The node shows up online with its host facts filled in.
+			// The node shows up online — with its host facts filled in where the
+			// platform has a probe, and with its identity regardless.
 			const nodes = await eventually(
 				() => ui!.request<NodeSummary[]>(HubAction.Nodes),
 				(list) =>
 					list.length === 1 &&
 					list[0]!.status === "online" &&
-					list[0]!.cpu !== null,
+					(!HAS_SYSTEM || list[0]!.cpu !== null) &&
+					list[0]!.projects !== null,
 			);
 			const summary = nodes[0]!;
 			expect(summary.id).toBe("test-node");
 			expect(summary.name).toBe("Test Node");
-			expect(summary.facts?.osPretty ?? summary.facts?.osName).toBeTruthy();
+			expect(summary.hostname).toBeTruthy();
 			expect(moduleOn(summary.capabilities?.modules, "terminal")).toBe(true);
-			expect(summary.mem!.total).toBeGreaterThan(0);
+			if (HAS_SYSTEM) {
+				expect(summary.facts?.osPretty ?? summary.facts?.osName).toBeTruthy();
+				expect(summary.mem!.total).toBeGreaterThan(0);
+			}
 
 			// A relayed request reaches the node and its answer comes back.
 			const snapshot = await ui.request<{
-				stats: { hostname: string };
+				host: { hostname: string };
+				stats?: { hostname: string };
 				projects: unknown[];
 			}>(NodeAction.Snapshot, { nodeId: "test-node" });
-			expect(snapshot.stats.hostname).toBeTruthy();
+			expect(snapshot.host.hostname).toBeTruthy();
+			if (HAS_SYSTEM) expect(snapshot.stats?.hostname).toBeTruthy();
 			expect(snapshot.projects).toHaveLength(1);
 
-			// History accumulated from the telemetry the hub has been storing.
-			const history = await eventually(
-				() =>
-					ui!.request<unknown[]>(HubAction.History, {
-						nodeId: "test-node",
-						minutes: 5,
-					}),
-				(rows) => rows.length > 0,
-			);
-			expect(history.length).toBeGreaterThan(0);
+			// History accumulated from the telemetry the hub has been storing —
+			// which is the system module's, so only where there is one.
+			if (HAS_SYSTEM) {
+				const history = await eventually(
+					() =>
+						ui!.request<unknown[]>(HubAction.History, {
+							nodeId: "test-node",
+							minutes: 5,
+						}),
+					(rows) => rows.length > 0,
+				);
+				expect(history.length).toBeGreaterThan(0);
+			}
 
 			// Project control travels hub → node and takes effect.
 			const stopped = await ui.request<{
@@ -666,60 +685,65 @@ describe("hub and node over a websocket", () => {
 		}
 	}, 30_000);
 
-	test("nothing pushed to a browser is gzipped", async () => {
-		// The dashboard runs in a browser, which has no sync gunzip: a compressed
-		// frame is one it drops on the floor. PeerLink would inflate it here and
-		// hide that, so this reads the header off the raw socket instead.
-		const h = await harness();
-		const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
-		ws.binaryType = "arraybuffer";
-		const frames: { type: number; compressed: boolean; bytes: number }[] = [];
-		ws.onmessage = (event) => {
-			const raw = new Uint8Array(event.data as ArrayBuffer);
-			const view = new DataView(raw.buffer);
-			frames.push({
-				type: view.getUint8(1),
-				compressed: (view.getUint16(2, false) & Flags.COMPRESSED) !== 0,
-				bytes: raw.length,
+	test.skipIf(!HAS_SYSTEM)(
+		"nothing pushed to a browser is gzipped",
+		async () => {
+			// The dashboard runs in a browser, which has no sync gunzip: a compressed
+			// frame is one it drops on the floor. PeerLink would inflate it here and
+			// hide that, so this reads the header off the raw socket instead.
+			const h = await harness();
+			const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`);
+			ws.binaryType = "arraybuffer";
+			const frames: { type: number; compressed: boolean; bytes: number }[] = [];
+			ws.onmessage = (event) => {
+				const raw = new Uint8Array(event.data as ArrayBuffer);
+				const view = new DataView(raw.buffer);
+				frames.push({
+					type: view.getUint8(1),
+					compressed: (view.getUint16(2, false) & Flags.COMPRESSED) !== 0,
+					bytes: raw.length,
+				});
+			};
+			await new Promise<void>((resolve, reject) => {
+				ws.onopen = () => resolve();
+				ws.onerror = () => reject(new Error("browser socket failed"));
 			});
-		};
-		await new Promise<void>((resolve, reject) => {
-			ws.onopen = () => resolve();
-			ws.onerror = () => reject(new Error("browser socket failed"));
-		});
 
-		const node = startNode({
-			hubUrl: `ws://127.0.0.1:${h.port}/node`,
-			token: null,
-			id: "plain",
-			name: "Plain",
-			tags: [],
-			telemetryIntervalMs: 1000,
-			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
-			control: false,
-			projectPaths: [join(h.dir, "nothing.json")],
-		});
+			const node = startNode({
+				hubUrl: `ws://127.0.0.1:${h.port}/node`,
+				token: null,
+				id: "plain",
+				name: "Plain",
+				tags: [],
+				telemetryIntervalMs: 1000,
+				modules: resolveModules({ terminal: false }),
+				trustedModules: [...BUILTIN_MODULE_IDS],
+				control: false,
+				projectPaths: [join(h.dir, "nothing.json")],
+			});
 
-		try {
-			await node.connected;
-			// A whole-host telemetry push is tens of kilobytes — comfortably past
-			// COMPRESS_THRESHOLD, so this only passes if the hub opted out.
-			await eventually(
-				() => frames,
-				(list) =>
-					list.some(
-						(f) =>
-							f.type === MessageType.Telemetry && f.bytes > COMPRESS_THRESHOLD,
-					),
-			);
-			expect(frames.every((f) => !f.compressed)).toBe(true);
-		} finally {
-			ws.close();
-			await node.stop();
-			await h.stop();
-		}
-	}, 30_000);
+			try {
+				await node.connected;
+				// A whole-host telemetry push is tens of kilobytes — comfortably past
+				// COMPRESS_THRESHOLD, so this only passes if the hub opted out.
+				await eventually(
+					() => frames,
+					(list) =>
+						list.some(
+							(f) =>
+								f.type === MessageType.Telemetry &&
+								f.bytes > COMPRESS_THRESHOLD,
+						),
+				);
+				expect(frames.every((f) => !f.compressed)).toBe(true);
+			} finally {
+				ws.close();
+				await node.stop();
+				await h.stop();
+			}
+		},
+		30_000,
+	);
 
 	test("a terminal opens on the node and echoes what it is typed", async () => {
 		const h = await harness();
@@ -744,7 +768,12 @@ describe("hub and node over a websocket", () => {
 			let output = "";
 			const session = ui.openStream<{ sessionId: string; pid: number }>(
 				NodeAction.TerminalOpen,
-				{ nodeId: "shell-node", cols: 100, rows: 30, shell: "/bin/sh" },
+				{
+					nodeId: "shell-node",
+					cols: 100,
+					rows: 30,
+					...(WINDOWS ? {} : { shell: "/bin/sh" }),
+				},
 				{
 					onData: (payload, binary) => {
 						if (binary) output += new TextDecoder().decode(payload);
@@ -757,10 +786,17 @@ describe("hub and node over a websocket", () => {
 			expect(opened.pid).toBeGreaterThan(0);
 
 			// A real pty: the shell prints its marker and `tty` names a pts device.
-			session.bytes(new TextEncoder().encode("echo READY-$((6*7)); tty\n"));
+			// On Windows the shell is PowerShell on a ConPTY; the arithmetic is
+			// the proof it is a live shell and not an echo of the input.
+			session.bytes(
+				new TextEncoder().encode(
+					WINDOWS ? "echo READY-$(6*7)\r\n" : "echo READY-$((6*7)); tty\n",
+				),
+			);
 			await eventually(
 				() => output,
-				(text) => text.includes("READY-42") && text.includes("/dev/pts/"),
+				(text) =>
+					text.includes("READY-42") && (WINDOWS || text.includes("/dev/pts/")),
 			);
 
 			// Resizing reaches the pty, so curses apps lay out correctly.
@@ -772,11 +808,18 @@ describe("hub and node over a websocket", () => {
 			});
 			output = "";
 			// `stty size` reads the pty's ioctl rather than $COLUMNS, so it tells the
-			// truth about whether the resize actually reached the kernel.
-			session.bytes(new TextEncoder().encode("stty size\n"));
+			// truth about whether the resize actually reached the kernel; the
+			// console API is PowerShell's equivalent.
+			session.bytes(
+				new TextEncoder().encode(
+					WINDOWS
+						? "echo SIZE-$($host.UI.RawUI.WindowSize.Height)x$($host.UI.RawUI.WindowSize.Width)\r\n"
+						: "stty size\n",
+				),
+			);
 			await eventually(
 				() => output,
-				(text) => text.includes("43 132"),
+				(text) => text.includes(WINDOWS ? "SIZE-43x132" : "43 132"),
 			);
 
 			session.end();
@@ -798,9 +841,9 @@ describe("hub and node over a websocket", () => {
 							{
 								id: "talker",
 								command: [
-									"sh",
-									"-c",
-									"for i in 1 2 3 4 5; do echo line-$i; sleep 0.2; done; sleep 30",
+									BUN,
+									"-e",
+									"let i = 0; const t = setInterval(() => { console.log('line-' + (++i)); if (i === 5) clearInterval(t); }, 200); setTimeout(() => {}, 30000)",
 								],
 								restart: "never",
 							},

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 import { collectIdentity } from "./identity.ts";
 
@@ -21,7 +22,7 @@ test("the node stays alive while its hub is unreachable", async () => {
 			"--no-terminal",
 		],
 		{
-			cwd: new URL("../..", import.meta.url).pathname,
+			cwd: fileURLToPath(new URL("../..", import.meta.url)),
 			env: { ...process.env, STATS_AGENT_CONFIG: "/nonexistent/agent.json" },
 			stdout: "ignore",
 			stderr: "ignore",

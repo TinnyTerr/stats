@@ -24,7 +24,7 @@ describe("fileTargetAllowed", () => {
 	});
 });
 
-describe("system collectors", () => {
+describe.skipIf(process.platform !== "linux")("system collectors", () => {
 	test("reports plausible cpu and memory", async () => {
 		const stats = await collectSystem();
 
@@ -61,7 +61,7 @@ describe("system collectors", () => {
 	});
 });
 
-describe("process collectors", () => {
+describe.skipIf(process.platform !== "linux")("process collectors", () => {
 	test("returns processes sorted by cpu, capped at the limit", async () => {
 		const procs = await collectProcesses(5);
 		expect(procs.length).toBeLessThanOrEqual(5);

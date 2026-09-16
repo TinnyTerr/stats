@@ -13,6 +13,24 @@ import { Supervisor } from "./supervisor.ts";
 
 const dirs: string[] = [];
 
+/**
+ * The commands the supervisor tests run. Bun itself rather than `sleep`, `sh`
+ * and `true`: it is the one executable guaranteed to be on every host the
+ * suite runs on, Windows included, and a one-liner says exactly what it does.
+ */
+const BUN = process.execPath;
+const sleeps = (seconds: number) => [
+	BUN,
+	"-e",
+	`setTimeout(() => {}, ${seconds * 1000})`,
+];
+const exits = (code: number) => [BUN, "-e", `process.exit(${code})`];
+const says = (text: string, seconds: number) => [
+	BUN,
+	"-e",
+	`console.log(${JSON.stringify(text)}); setTimeout(() => {}, ${seconds * 1000})`,
+];
+
 async function workdir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "stats-projects-"));
 	dirs.push(dir);
@@ -29,7 +47,7 @@ const minimal = (overrides: Record<string, unknown> = {}) => ({
 	projects: [
 		{
 			id: "demo",
-			processes: [{ id: "web", command: ["sleep", "1"], ...overrides }],
+			processes: [{ id: "web", command: sleeps(1), ...overrides }],
 		},
 	],
 });
@@ -316,7 +334,7 @@ describe("supervisor", () => {
 					processes: [
 						{
 							id: "talker",
-							command: ["sh", "-c", "echo hello; sleep 30"],
+							command: says("hello", 30),
 							restart: "never",
 						},
 					],
@@ -357,7 +375,7 @@ describe("supervisor", () => {
 					processes: [
 						{
 							id: "idle",
-							command: ["sleep", "30"],
+							command: sleeps(30),
 							autostart: false,
 							restart: "never",
 						},
@@ -395,7 +413,7 @@ describe("supervisor", () => {
 					processes: [
 						{
 							id: "flaky",
-							command: ["sh", "-c", "exit 3"],
+							command: exits(3),
 							restart: "on-failure",
 							restartDelayMs: 10,
 							maxRestarts: 2,
@@ -428,7 +446,7 @@ describe("supervisor", () => {
 			projects: [
 				{
 					id: "demo",
-					processes: [{ id: "once", command: ["true"], restart: "on-failure" }],
+					processes: [{ id: "once", command: exits(0), restart: "on-failure" }],
 				},
 			],
 		});
@@ -453,8 +471,8 @@ describe("supervisor", () => {
 				{
 					id: "demo",
 					processes: [
-						{ id: "server", command: ["sleep", "30"], restart: "on-failure" },
-						{ id: "build", command: ["true"], restart: "never" },
+						{ id: "server", command: sleeps(30), restart: "on-failure" },
+						{ id: "build", command: exits(0), restart: "never" },
 					],
 				},
 			],
@@ -480,7 +498,7 @@ describe("supervisor", () => {
 			projects: [
 				{
 					id: "demo",
-					processes: [{ id: "build", command: ["false"], restart: "never" }],
+					processes: [{ id: "build", command: exits(1), restart: "never" }],
 				},
 			],
 		});
@@ -512,7 +530,7 @@ describe("supervisor", () => {
 					processes: [
 						{
 							id: "web",
-							command: ["sleep", "30"],
+							command: sleeps(30),
 							restart: "never",
 							healthcheck: {
 								type: "tcp",
@@ -552,7 +570,7 @@ describe("supervisor", () => {
 					processes: [
 						{
 							id: "web",
-							command: ["sleep", "30"],
+							command: sleeps(30),
 							restart: "never",
 							healthcheck: {
 								type: "http",
@@ -592,8 +610,8 @@ describe("supervisor", () => {
 					{
 						id: "demo",
 						processes: [
-							{ id: "a", command: ["sleep", "30"], restart: "never" },
-							{ id: "b", command: ["sleep", "30"], restart: "never" },
+							{ id: "a", command: sleeps(30), restart: "never" },
+							{ id: "b", command: sleeps(30), restart: "never" },
 						],
 					},
 				],
@@ -613,9 +631,7 @@ describe("supervisor", () => {
 					projects: [
 						{
 							id: "demo",
-							processes: [
-								{ id: "a", command: ["sleep", "30"], restart: "never" },
-							],
+							processes: [{ id: "a", command: sleeps(30), restart: "never" }],
 						},
 					],
 				}),
@@ -634,7 +650,7 @@ describe("supervisor", () => {
 	test("shellContext hands a terminal the project's cwd and env", async () => {
 		const { dir, supervisor } = await withProjects({
 			projects: [
-				{ id: "demo", cwd: "/tmp", env: { GREETING: "hi" }, processes: [] },
+				{ id: "demo", cwd: tmpdir(), env: { GREETING: "hi" }, processes: [] },
 			],
 		});
 		void dir;
@@ -642,12 +658,14 @@ describe("supervisor", () => {
 		try {
 			await supervisor.load();
 			const context = await supervisor.shellContext("demo");
-			expect(context.cwd).toBe("/tmp");
+			expect(context.cwd).toBe(tmpdir());
 			expect(context.env).toMatchObject({
 				GREETING: "hi",
 				STATS_PROJECT: "demo",
 			});
-			expect(() => supervisor.shellContext("nope")).toThrow;
+			await expect(supervisor.shellContext("nope")).rejects.toThrow(
+				/unknown project/,
+			);
 		} finally {
 			await supervisor.shutdown();
 		}

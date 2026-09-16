@@ -10,6 +10,9 @@ import { join } from "node:path";
  */
 
 const SCRIPT = join(import.meta.dir, "..", "install.sh");
+
+/** install.sh is a POSIX shell script; install.ps1 is the Windows half. */
+const posix = test.skipIf(process.platform === "win32");
 const ASSET = "stats-linux-x64";
 
 let dir = "";
@@ -50,7 +53,7 @@ afterEach(async () => {
 	await rm(dir, { recursive: true, force: true });
 });
 
-test("installs a local build and verifies its checksum", async () => {
+posix("installs a local build and verifies its checksum", async () => {
 	await writeFakeRelease("correct");
 
 	const { stdout, exitCode } = await run([
@@ -66,7 +69,7 @@ test("installs a local build and verifies its checksum", async () => {
 	expect(await Bun.file(join(prefix(), "stats")).exists()).toBe(true);
 });
 
-test("refuses a binary whose checksum doesn't match", async () => {
+posix("refuses a binary whose checksum doesn't match", async () => {
 	await writeFakeRelease("wrong");
 
 	const { stderr, exitCode } = await run([
@@ -81,7 +84,7 @@ test("refuses a binary whose checksum doesn't match", async () => {
 	expect(await Bun.file(join(prefix(), "stats")).exists()).toBe(false);
 });
 
-test("installs without a checksum file, but says so", async () => {
+posix("installs without a checksum file, but says so", async () => {
 	await writeFakeRelease("none");
 
 	const { stdout, stderr, exitCode } = await run([
@@ -96,7 +99,7 @@ test("installs without a checksum file, but says so", async () => {
 	expect(stdout).toContain("stats 9.9.9");
 });
 
-test("upgrades in place over an existing install", async () => {
+posix("upgrades in place over an existing install", async () => {
 	await writeFakeRelease("correct");
 	await run(["--from", dist(), "--prefix", prefix()]);
 
@@ -118,7 +121,7 @@ test("upgrades in place over an existing install", async () => {
 	expect(stdout).toContain("stats 9.9.10");
 });
 
-test("rejects a binary that can't run here", async () => {
+posix("rejects a binary that can't run here", async () => {
 	await Bun.write(join(dist(), ASSET), "\x7fELF not really\n");
 	await Bun.$`chmod +x ${join(dist(), ASSET)}`.quiet();
 
@@ -133,7 +136,7 @@ test("rejects a binary that can't run here", async () => {
 	expect(stderr).toContain("doesn't run on this machine");
 });
 
-test("names the missing target when the build isn't there", async () => {
+posix("names the missing target when the build isn't there", async () => {
 	await Bun.write(join(dist(), "placeholder"), "");
 
 	const { stderr, exitCode } = await run([
@@ -147,7 +150,7 @@ test("names the missing target when the build isn't there", async () => {
 	expect(stderr).toContain("bun run build --targets linux-x64");
 });
 
-test("--help and unknown flags behave", async () => {
+posix("--help and unknown flags behave", async () => {
 	expect((await run(["--help"])).exitCode).toBe(0);
 
 	const bad = await run(["--nonsense"]);
@@ -155,7 +158,7 @@ test("--help and unknown flags behave", async () => {
 	expect(bad.stderr).toContain("unknown option");
 });
 
-test("points a plain install at the two roles", async () => {
+posix("points a plain install at the two roles", async () => {
 	await writeFakeRelease("correct");
 	const { stdout } = await run(["--from", dist(), "--prefix", prefix()]);
 	expect(stdout).toContain("stats hub");
@@ -167,7 +170,7 @@ test("points a plain install at the two roles", async () => {
  * installer refuses rather than picking an address for you. Checked without
  * root, which is also the path where the service install is skipped.
  */
-test("a node install insists on knowing its hub", async () => {
+posix("a node install insists on knowing its hub", async () => {
 	await writeFakeRelease("correct");
 
 	const { stderr, exitCode } = await run([

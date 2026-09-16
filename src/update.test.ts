@@ -64,9 +64,10 @@ describe("isValidTag", () => {
 describe("detectAsset", () => {
 	test("names a build that the release actually publishes", async () => {
 		const asset = await detectAsset();
-		// The six Linux targets in scripts/build.ts, plus the macOS hub-only ones.
+		// The six Linux targets in scripts/build.ts, the macOS hub-only ones,
+		// and the Windows node.
 		expect(asset).toMatch(
-			/^stats-(linux-(x64|arm64)(-musl)?(-baseline)?|darwin-(x64|arm64))$/,
+			/^stats-(linux-(x64|arm64)(-musl)?(-baseline)?|darwin-(x64|arm64)|windows-x64\.exe)$/,
 		);
 	});
 

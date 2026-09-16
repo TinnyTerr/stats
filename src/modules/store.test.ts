@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { $ } from "bun";
 import {
 	loadExternalModules,
@@ -31,6 +31,15 @@ let root: string;
 let store: string;
 /** a git repository holding a valid module */
 let origin: string;
+
+/**
+ * The store *is* git, so the parts that clone need a git that can be spawned
+ * from here. A host without one — or with one behind a launcher shim that
+ * refuses a session without a console, which is what scoop's does over ssh —
+ * still runs everything that doesn't touch a repository.
+ */
+const gitWorks = (await $`git --version`.nothrow().quiet()).exitCode === 0;
+const withGit = describe.skipIf(!gitWorks);
 
 const MANIFEST = {
 	id: "weather",
@@ -88,6 +97,7 @@ async function makeRepo(
 beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), "stats-store-"));
 	store = join(root, "store");
+	if (!gitWorks) return;
 	origin = await makeRepo(join(root, "origin"), {
 		"stats.module.json": JSON.stringify(MANIFEST, null, "\t"),
 		"node.ts": ENTRY,
@@ -110,7 +120,10 @@ describe("resolveSource", () => {
 		expect(resolveSource("github:owner/repo")).toBe(
 			"https://github.com/owner/repo",
 		);
-		expect(resolveSource("/srv/modules/thing")).toBe("/srv/modules/thing");
+		// A local path comes back the way this host spells absolute paths.
+		expect(resolveSource("/srv/modules/thing")).toBe(
+			resolve("/srv/modules/thing"),
+		);
 	});
 
 	test("refuses what isn't a repository", () => {
@@ -178,7 +191,7 @@ describe("parseExternalManifest", () => {
 	});
 });
 
-describe("installing", () => {
+withGit("installing", () => {
 	test("clones a repository into the store and records where it came from", async () => {
 		const { module, replaced } = await installModule(origin, {
 			storeDir: store,
@@ -255,7 +268,7 @@ describe("installing", () => {
 	});
 });
 
-describe("the node half", () => {
+withGit("the node half", () => {
 	test("loads the entry and collects through it", async () => {
 		const { module: installed } = await installModule(origin, {
 			storeDir: store,
@@ -369,7 +382,7 @@ describe("sanitiseReport", () => {
 	});
 });
 
-describe("installed modules in the module set", () => {
+withGit("installed modules in the module set", () => {
 	test("default on, and nameable in --modules like any other", () => {
 		const weather = toModuleManifest(parseExternalManifest(MANIFEST).manifest!);
 

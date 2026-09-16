@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { unlink } from "node:fs/promises";
+import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentConfig } from "../agent/config.ts";
-import { loadModules } from "../agent/modules/index.ts";
+import { loadModules as loadModulesOn } from "../agent/modules/index.ts";
 import type { NodeModule, NodeModuleContext } from "../agent/modules/mod.ts";
 import type { Supervisor } from "../agent/supervisor.ts";
 import type { TerminalManager } from "../agent/terminal.ts";
@@ -34,6 +34,18 @@ import {
  */
 
 const policy = defaultPolicy(BUILTIN_MODULE_IDS);
+
+/**
+ * The gates under test here are config, policy and availability. The platform
+ * gate is pinned to Linux — the builtin manifests the fakes borrow name it —
+ * so the same answers come back whichever host runs the suite.
+ */
+const loadModules = (
+	ctx: Parameters<typeof loadModulesOn>[0],
+	requested: Parameters<typeof loadModulesOn>[1],
+	pol: Parameters<typeof loadModulesOn>[2],
+	modules: Parameters<typeof loadModulesOn>[3],
+) => loadModulesOn(ctx, requested, pol, modules, "linux");
 
 function manifest(overrides: Partial<ModuleManifest> = {}): ModuleManifest {
 	return { ...MODULES.docker, ...overrides };
@@ -81,9 +93,18 @@ describe("the manifest", () => {
 
 describe("the module host", () => {
 	test("a module only reaches what it declared", async () => {
-		const host = createModuleHost(manifest({ grants: ["read"] }), policy);
+		// A file under a root of our own, so the check is about the policy and
+		// not about whether this host has /proc.
+		const dir = await mkdtemp(join(tmpdir(), "stats-host-"));
+		const file = join(dir, "uptime");
+		await Bun.write(file, "42.0 84.0\n");
+		const host = createModuleHost(manifest({ grants: ["read"] }), {
+			...policy,
+			readRoots: [...policy.readRoots, dir],
+		});
 
-		expect(await host.readFile("/proc/uptime")).toMatch(/\d/);
+		expect(await host.readFile(file)).toMatch(/\d/);
+		await rm(dir, { recursive: true, force: true });
 		await expect(host.fetch("http://example.invalid")).rejects.toThrow(
 			ModuleDenied,
 		);
@@ -216,7 +237,12 @@ describe("a root node", () => {
 		const host = createModuleHost(manifest({ grants: [] }), root);
 		expect(await host.readFile(path)).toBe("outside every read root");
 
-		const result = await host.exec(["/bin/echo", "hi"]);
+		// Bun itself, which is the one executable every host running this has.
+		const result = await host.exec([
+			process.execPath,
+			"-e",
+			"console.log('hi')",
+		]);
 		expect(result.code).toBe(0);
 		expect(result.stdout.trim()).toBe("hi");
 
@@ -244,7 +270,6 @@ describe("a root node", () => {
 			resolveModules({}),
 			root,
 			[{ manifest: MODULES.systemd }],
-			"linux",
 		);
 		expect(loaded.set.systemd).toBe(true);
 		expect(loaded.notes).toEqual([]);
