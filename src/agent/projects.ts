@@ -14,21 +14,28 @@ import type {
  */
 
 /**
- * POSIX-only path helpers, hand-rolled so this file has no top-level import of
+ * Path helpers, hand-rolled so this file has no top-level import of
  * `node:path` — the dashboard's projects builder (web/toolspage.tsx) imports
  * this file for browser-side validation, and Bun's browser bundler turns a
  * `node:path` import into a top-level `require()` call that throws before the
- * bundle can even mount. "Linux is the whole story for this project" (see
- * scripts/build.ts) makes POSIX-only fair game.
+ * bundle can even mount. They understand both `/srv/app` and `C:\srv\app`,
+ * because a Windows node runs the projects module too and its file says
+ * where things are in its own idiom.
  */
+const DRIVE = /^([A-Za-z]:)[\\/]/;
+const SEPARATORS = /[\\/]/;
+
 function isAbsolute(path: string): boolean {
-	return path.startsWith("/");
+	return path.startsWith("/") || path.startsWith("\\\\") || DRIVE.test(path);
 }
 
 function dirname(path: string): string {
-	const idx = path.lastIndexOf("/");
+	const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
 	if (idx < 0) return ".";
-	return idx === 0 ? "/" : path.slice(0, idx);
+	const head = path.slice(0, idx);
+	// The root itself: "/" stays "/", "C:\" stays "C:\".
+	if (idx === 0 || /^[A-Za-z]:$/.test(head)) return path.slice(0, idx + 1);
+	return head;
 }
 
 function resolve(...segments: string[]): string {
@@ -43,13 +50,17 @@ function resolve(...segments: string[]): string {
 	}
 	if (!isAbsolute(path)) path = `${globalThis.process?.cwd?.() ?? "/"}/${path}`;
 
+	// A drive letter decides the idiom of the result; everything else is POSIX.
+	const drive = DRIVE.exec(path);
+	const prefix = drive?.[1] ?? "";
+	const separator = drive ? "\\" : "/";
 	const stack: string[] = [];
-	for (const part of path.split("/")) {
+	for (const part of path.slice(prefix.length).split(SEPARATORS)) {
 		if (part === "" || part === ".") continue;
 		if (part === "..") stack.pop();
 		else stack.push(part);
 	}
-	return `/${stack.join("/")}`;
+	return `${prefix}${separator}${stack.join(separator)}`;
 }
 
 /**

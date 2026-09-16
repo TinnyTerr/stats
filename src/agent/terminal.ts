@@ -60,11 +60,20 @@ async function pickShell(requested?: string): Promise<string> {
 			throw new Error(`no such shell: ${requested}`);
 		return requested;
 	}
-	const fromEnv = process.env.SHELL;
+	// $SHELL is a POSIX convention. Windows' sshd sets it to cmd.exe for its
+	// own sessions, which is not an opinion about what a dashboard shell
+	// should be, so it is only consulted where it means something.
+	const fromEnv = WINDOWS ? undefined : process.env.SHELL;
 	if (fromEnv && (await Bun.file(fromEnv).exists())) return fromEnv;
 	for (const candidate of SHELL_CANDIDATES) {
-		const found = isAbsolutePath(candidate) ? candidate : Bun.which(candidate);
-		if (found && (await Bun.file(found).exists())) return found;
+		if (isAbsolutePath(candidate)) {
+			if (await Bun.file(candidate).exists()) return candidate;
+			continue;
+		}
+		// which() already checked the file is there; on Windows a Store-installed
+		// pwsh is an app execution alias that stat() refuses, so don't ask twice.
+		const found = Bun.which(candidate);
+		if (found) return found;
 	}
 	throw new Error("no shell found on this host");
 }

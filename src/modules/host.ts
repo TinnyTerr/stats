@@ -194,7 +194,20 @@ export interface ModuleHost {
 }
 
 function normalise(path: string): string {
-	return path.replace(/\/+$/, "");
+	return path.replace(/[\\/]+$/, "");
+}
+
+/** `/etc` or `C:\ProgramData`; a relative path is never readable. */
+function isAbsolutePath(path: string): boolean {
+	return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+/** Whether `path` is `root` or lies beneath it, in either separator. */
+function under(path: string, root: string): boolean {
+	const dir = normalise(root);
+	return (
+		path === dir || path.startsWith(`${dir}/`) || path.startsWith(`${dir}\\`)
+	);
 }
 
 export function createModuleHost(
@@ -215,11 +228,9 @@ export function createModuleHost(
 	const readable = (path: string) => {
 		require("read", path);
 		if (policy.unrestricted) return;
-		if (!path.startsWith("/") || path.includes(".."))
+		if (!isAbsolutePath(path) || path.includes(".."))
 			throw new ModuleDenied(id, "read", `'${path}' is not an absolute path`);
-		const root = policy.readRoots.find(
-			(dir) => path === normalise(dir) || path.startsWith(`${normalise(dir)}/`),
-		);
+		const root = policy.readRoots.find((dir) => under(path, dir));
 		if (!root)
 			throw new ModuleDenied(id, "read", `'${path}' is outside the read roots`);
 	};

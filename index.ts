@@ -38,6 +38,7 @@ import {
 	applyUpdate,
 	checkForUpdate,
 	currentUnit,
+	isCompiledBinary,
 	restartUnit,
 } from "./src/update.ts";
 import { PROTOCOL, VERSION } from "./src/version.ts";
@@ -60,7 +61,7 @@ function toggle(name: string): boolean | undefined {
 }
 
 /** `stats` when running as a compiled binary, `bun index.ts` from source. */
-const invocation = Bun.main.startsWith("/$bunfs/") ? "stats" : "bun index.ts";
+const invocation = isCompiledBinary() ? "stats" : "bun index.ts";
 
 const usage = `stats ${VERSION} — server fleet dashboard (protocol ${PROTOCOL})
 

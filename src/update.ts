@@ -62,10 +62,14 @@ export async function detectAsset(): Promise<string> {
 		);
 	}
 	if (process.platform === "darwin") return `stats-darwin-${arch}`;
+	if (process.platform === "win32") {
+		if (arch !== "x64") {
+			throw new UpdateError(`stats ships no Windows build for ${process.arch}`);
+		}
+		return "stats-windows-x64.exe";
+	}
 	if (process.platform !== "linux") {
-		throw new UpdateError(
-			`${process.platform} is not supported — stats is Linux-only (macOS runs the hub only)`,
-		);
+		throw new UpdateError(`stats ships no build for ${process.platform}`);
 	}
 
 	const musl =
@@ -164,7 +168,8 @@ export async function checkForUpdate(
  * answer to "update" is `git pull`.
  */
 export function isCompiledBinary(): boolean {
-	return Bun.main.startsWith("/$bunfs/");
+	// The embedded filesystem is /$bunfs on POSIX and a B:\~BUN drive on Windows.
+	return /^(\/\$bunfs\/|[A-Za-z]:[\\/]~BUN[\\/])/.test(Bun.main);
 }
 
 /**
@@ -276,7 +281,10 @@ async function runUpdate(options: ApplyOptions): Promise<ApplyResult> {
 
 	const base = downloadBase(source, tag);
 	const dir = dirname(binary);
-	const staged = join(dir, `.stats-update-${process.pid}`);
+	// Windows only runs a file it can name as an executable, and the proof run
+	// below has to run it.
+	const suffix = process.platform === "win32" ? ".exe" : "";
+	const staged = join(dir, `.stats-update-${process.pid}${suffix}`);
 	const compressed = `${staged}.gz`;
 
 	// Writing next to the binary means we find out about a read-only /usr/local
@@ -339,12 +347,33 @@ async function runUpdate(options: ApplyOptions): Promise<ApplyResult> {
 		}
 		const reported = proof.stdout.toString().trim();
 
-		await rename(staged, binary);
+		await swapBinary(staged, binary);
 		return { from: VERSION, to: reported, asset, binary };
 	} finally {
 		await rm(staged, { force: true }).catch(() => {});
 		await rm(compressed, { force: true }).catch(() => {});
 	}
+}
+
+/**
+ * Puts the staged file where the running binary is.
+ *
+ * On POSIX that is one rename: the old inode stays alive for the process
+ * still executing it. Windows refuses to unlink or overwrite a running
+ * executable but allows it to be *renamed*, so the swap is two renames — the
+ * live binary steps aside as `.old`, the new one takes its name — and the
+ * `.old` is removed once nothing runs it, which is usually the next update.
+ */
+async function swapBinary(staged: string, binary: string): Promise<void> {
+	if (process.platform !== "win32") {
+		await rename(staged, binary);
+		return;
+	}
+	const old = `${binary}.old`;
+	await rm(old, { force: true }).catch(() => {});
+	await rename(binary, old);
+	await rename(staged, binary);
+	await rm(old, { force: true }).catch(() => {});
 }
 
 /* ---------- restarting whatever is running us ---------- */
