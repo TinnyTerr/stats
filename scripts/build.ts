@@ -139,8 +139,16 @@ function selectTargets(): Target[] {
 
 	return requested.split(",").map((name) => {
 		const key = name.trim();
+		// `windows-x64` should find `stats-windows-x64.exe`: the suffix is a
+		// property of the asset, not something to make the caller type.
+		const bare = (asset: string) =>
+			asset.replace(/^stats-/, "").replace(/\.exe$/, "");
 		const found = ALL_TARGETS.find(
-			(t) => t.asset === key || t.asset === `stats-${key}` || t.target === key,
+			(t) =>
+				t.asset === key ||
+				t.asset === `stats-${key}` ||
+				bare(t.asset) === key ||
+				t.target === key,
 		);
 		if (!found) {
 			throw new Error(
