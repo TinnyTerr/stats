@@ -376,10 +376,16 @@ export function Chart({
 		new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 	const at = hover != null ? Math.min(hover, x.length - 1) : null;
-	const move = (clientX: number) => {
-		const box = host.current?.getBoundingClientRect();
-		if (!box) return;
-		const ratio = (clientX - box.left - PAD.left) / plotW;
+	// Measured off the <svg> itself, not the outer host div: the rendered
+	// width can be a fractional pixel off from the `width` state (the
+	// ResizeObserver reading that drives the viewBox), and clientX has to be
+	// scaled through that same ratio or the cursor and the crosshair drift
+	// apart as the drift compounds toward one edge.
+	const move = (target: SVGSVGElement, clientX: number) => {
+		const box = target.getBoundingClientRect();
+		if (!box.width) return;
+		const scale = width / box.width;
+		const ratio = ((clientX - box.left) * scale - PAD.left) / plotW;
 		setHover(
 			Math.min(x.length - 1, Math.max(0, Math.round(ratio * (x.length - 1)))),
 		);
@@ -416,7 +422,7 @@ export function Chart({
 					// that answer, not a substitute for this half.
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: explained above
 					tabIndex={0}
-					onPointerMove={(event) => move(event.clientX)}
+					onPointerMove={(event) => move(event.currentTarget, event.clientX)}
 					onPointerLeave={() => setHover(null)}
 					onFocus={() => setHover(x.length - 1)}
 					onBlur={() => setHover(null)}
