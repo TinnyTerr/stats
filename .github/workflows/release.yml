@@ -90,13 +90,16 @@ jobs:
 
           for asset in "${assets[@]}"; do
             for attempt in 1 2 3; do
-              if gh release upload "$tag" "$asset" --clobber; then
+              echo "uploading $asset (attempt $attempt)..."
+              if timeout 300 gh release upload "$tag" "$asset" --clobber; then
+                echo "uploaded $asset"
                 break
               fi
               if [ "$attempt" -eq 3 ]; then
                 echo "failed to upload $asset after $attempt attempts" >&2
                 exit 1
               fi
+              echo "upload of $asset failed or timed out, retrying..."
               sleep 2
             done
           done
