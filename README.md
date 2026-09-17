@@ -51,6 +51,9 @@ needs no inbound rule and no fixed address — only the hub does.
   streamed over the same socket.
 - **Terminals** — a real pty on any node (or inside a container), rendered with
   xterm.js. Job control, colour and curses apps all work.
+- **Packets** — a live, decoded tail of every frame the hub sends or receives,
+  node and browser traffic alike, with a raw hex view beside the JSON. See the
+  Packets tab.
 
 ## Install
 
@@ -558,12 +561,21 @@ Control actions a hub sends a node: `snapshot`, `modules`, `facts.refresh`, `log
 `container.action`, `projects.list`, `projects.reload`, `project.action`. A
 browser sends the same actions with a `nodeId`, plus the hub's own: `nodes`,
 `node`, `history`, `events`, `connections`, `info`, `node.forget`,
-`modules.fleet`, `modules.set`, `ca.issue` and `node.watch`.
+`modules.fleet`, `modules.set`, `ca.issue`, `node.watch` and `packets.tail`.
 
 The hub pushes every node's summary, status changes and alerts to every
 browser on every tick. A node's *full* telemetry — every unit, container and
 process — is pushed only to browsers that asked for it with `node.watch`, which
 is what the dashboard sends when a node's detail pane opens.
+
+`packets.tail` is the odd one out: it doesn't ask about a node, it asks to
+watch the hub itself. The hub captures every frame at the raw socket boundary
+— both directions, node and browser links alike — before decoding it for
+itself, so what shows up in the Packets tab is exactly what was on the wire,
+header and all, even for a frame malformed enough that `PeerLink` couldn't
+make sense of it. A subscribing browser gets a backlog on open, then a live
+stream; its own tail traffic is left out of its own log, or every frame it
+watched itself receive would show up as a new frame to watch.
 
 ## HTTP API
 
@@ -577,9 +589,77 @@ curl and scripts (all under the hub's `token` when one is set):
 | `GET /api/nodes/:id` | summary plus the last full telemetry frame |
 | `GET /api/nodes/:id/history?minutes=60&buckets=240` | time series for charts; `buckets` averages the window into that many even slots, which is the only honest way to ask for a long one |
 | `GET /api/events?minutes=1440` | connections, crashes, failed units |
+| `POST /api/logs` | push one log line from a service that isn't a node — see below |
+| `GET /api/logs?minutes=1440&source=deploy` | the lines `POST /api/logs` has recorded |
 | `GET /schema/projects.schema.json` | the projects schema |
 | `WS /node` | where nodes connect |
 | `WS /ws` | where the dashboard connects |
+
+### Pushing your own logs
+
+`/api/logs` is for a service that has something worth putting on the
+dashboard but isn't itself a stats node — a cron job, a CI step, a script that
+doesn't want to become a supervised project just to be seen. It's deliberately
+thin: no levels config, no structured fields beyond source/level/message,
+under `src/hub/db.ts`'s `service_logs` table.
+
+```
+POST /api/logs
+Authorization: Bearer <hub token, if set>
+Content-Type: application/json
+
+{ "source": "deploy", "level": "info", "message": "released v1.4.2" }
+```
+
+`source` and `message` are required; `level` defaults to `"info"`. The hub
+timestamps it on arrival and keeps it for `eventRetentionHours` alongside
+everything else in `hub.json`'s retention window.
+
+### Pushing metrics for graphs — planned, not built yet
+
+The line API above only ever appends — right for "something happened", wrong
+for "here's the value of a thing right now". A metric wants the opposite
+shape: the dashboard should keep showing the last number it was given until a
+newer one replaces it, not fall back to zero or a gap the moment a service
+stops pushing between ticks. That's a gauge, not a log, and it needs its own
+endpoint rather than overloading `/api/logs` with a `value` field logs were
+never meant to carry.
+
+This section is the contract a future SDK is expected to speak — nothing
+under `src/hub/` implements it yet. Anyone hand-rolling a client against it
+before then should expect the shape to move.
+
+```
+POST /api/metrics
+Authorization: Bearer <hub token, if set>
+Content-Type: application/json
+
+{
+  "source": "deploy",       // groups series the same way /api/logs groups lines
+  "series": "build_seconds", // one gauge, addressed by (source, series)
+  "value": 42.5,
+  "unit": "s",               // optional, echoed back verbatim, never interpreted
+  "ts": 1732000000000        // optional; defaults to arrival time on the hub
+}
+```
+
+- The hub keeps exactly one current value per `(source, series)` pair —
+  pushing again with the same pair overwrites it, the same way a Prometheus
+  pushgateway gauge works, not the way a log line appends. A series nobody has
+  pushed today still reads as whatever it last was, which is what "keeping
+  the same information until changed" means here: silence is not a signal to
+  clear the number, only a new push is.
+- Alongside the current value, each push appends to a history table so the
+  series can be charted — the same `minutes`/`buckets` shape
+  `/api/nodes/:id/history` already uses, so a chart component doesn't need a
+  second code path to draw a custom series next to a node's own.
+- Reads mirror `/api/logs`: `GET /api/metrics?source=deploy` for the current
+  gauges under a source, `GET /api/metrics/:source/:series/history?minutes=1440&buckets=240`
+  for the plottable series.
+- No retries, no batching, no auth beyond the hub's existing token — the SDK
+  owns all of that. The hub's only job is "remember the last value, and the
+  history of values", the same division `/api/logs` already draws between a
+  dumb sink and whatever's pushing to it.
 
 ## Security notes
 
