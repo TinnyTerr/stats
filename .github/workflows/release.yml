@@ -67,12 +67,36 @@ jobs:
           } > notes.md
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: notes.md
-          files: |-
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" --title "$tag" --notes-file notes.md
+          fi
+
+          shopt -s nullglob
+          assets=(
             dist/stats-linux-*
             dist/stats-windows-*
             dist/stats-darwin-*
             dist/SHA256SUMS
             dist/manifest.json
+          )
+
+          for asset in "${assets[@]}"; do
+            for attempt in 1 2 3; do
+              if gh release upload "$tag" "$asset" --clobber; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "failed to upload $asset after $attempt attempts" >&2
+                exit 1
+              fi
+              sleep 2
+            done
+          done
