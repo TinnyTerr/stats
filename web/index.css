@@ -1231,6 +1231,65 @@ th.right {
 	max-width: 1100px;
 }
 
+/* A page that wants the whole grid area rather than the 1100px column the
+   modules/tools pages use — a project with several processes, or a packet
+   table with a detail pane, needs the room. */
+.wide-page {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.toolbar button.active {
+	border-color: var(--accent);
+	color: var(--text);
+}
+
+.packets-page {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	height: 100%;
+	min-height: 0;
+}
+
+.packets-body {
+	display: grid;
+	grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+	gap: 14px;
+	min-height: 0;
+	flex: 1;
+}
+
+.packets-list {
+	max-height: calc(100vh - 220px);
+	overflow-y: auto;
+}
+
+.packets-list tr {
+	cursor: pointer;
+}
+
+.packets-detail {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 12px;
+	max-height: calc(100vh - 220px);
+	overflow-y: auto;
+}
+
+.packets-detail pre {
+	max-height: 50vh;
+	overflow: auto;
+}
+
+@media (max-width: 900px) {
+	.packets-body {
+		grid-template-columns: 1fr;
+	}
+}
+
 .code-editor {
 	width: 100%;
 	box-sizing: border-box;

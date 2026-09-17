@@ -1134,13 +1134,6 @@ export function ProjectsBuilder() {
 			<section className="panel">
 				<header className="panel-head">
 					<h4>Projects file</h4>
-					<span className="dim">
-						Built here only — nothing is sent anywhere. Blank fields take the
-						node's defaults and stay out of the file. Drop the result onto a
-						node at <span className="mono">/etc/stats/projects.json</span>, or
-						as a file under <span className="mono">/etc/stats/projects.d/</span>
-						.
-					</span>
 				</header>
 				<details
 					className="fieldset"
@@ -1480,7 +1473,6 @@ export function ToolsPage({
 				</span>
 			</header>
 
-			<ProjectsBuilder />
 			<CaDownload />
 			<CertIssuer hub={hub} nodes={nodes} />
 		</div>

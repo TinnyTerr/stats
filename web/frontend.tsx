@@ -28,6 +28,8 @@ import {
 	tabsFor,
 } from "./modules.tsx";
 import { ModulesPage } from "./modulespage.tsx";
+import { PacketsPage } from "./packetspage.tsx";
+import { ProjectsPage } from "./projectspage.tsx";
 import { ToolsPage } from "./toolspage.tsx";
 import { ActionButton, DistroChip, Dot, Empty, Pill } from "./ui.tsx";
 import "./index.css";
@@ -337,7 +339,7 @@ function writeRotate(ms: number) {
  * rather than a corner of the node drawer — the question "which nodes are
  * running docker" is a fleet question, not a per-node one.
  */
-type View = "fleet" | "modules" | "tools";
+type View = "fleet" | "modules" | "tools" | "projects" | "packets";
 
 function App() {
 	const [view, setView] = useState<View>("fleet");
@@ -579,16 +581,18 @@ function App() {
 					</span>
 				)}
 				<nav className="views">
-					{(["fleet", "modules", "tools"] as View[]).map((id) => (
-						<button
-							key={id}
-							type="button"
-							className={view === id ? "active" : ""}
-							onClick={() => setView(id)}
-						>
-							{id}
-						</button>
-					))}
+					{(["fleet", "modules", "projects", "packets", "tools"] as View[]).map(
+						(id) => (
+							<button
+								key={id}
+								type="button"
+								className={view === id ? "active" : ""}
+								onClick={() => setView(id)}
+							>
+								{id}
+							</button>
+						),
+					)}
 				</nav>
 				<div className="spacer" />
 				{alerts.length > 0 && (
@@ -661,6 +665,18 @@ function App() {
 			{view === "tools" && hub.current && (
 				<main className="page">
 					<ToolsPage hub={hub.current} nodes={nodes} />
+				</main>
+			)}
+
+			{view === "projects" && (
+				<main className="page">
+					<ProjectsPage />
+				</main>
+			)}
+
+			{view === "packets" && hub.current && (
+				<main className="page">
+					<PacketsPage hub={hub.current} />
 				</main>
 			)}
 
