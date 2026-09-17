@@ -24,6 +24,7 @@ import {
 	type ModulesSetResult,
 	NodeAction,
 	type NodeScoped,
+	type PacketsTailParams,
 	type WatchParams,
 	type WatchResult,
 	type WelcomePayload,
@@ -33,6 +34,7 @@ import { versionInfo } from "../version.ts";
 import { caMobileConfig, ensureHubCa, issueCert } from "./ca.ts";
 import { MetricStore } from "./db.ts";
 import { startNotionSync } from "./notion.ts";
+import { PacketLog } from "./packets.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
 
 /**
@@ -114,6 +116,27 @@ export function startHub(config: HubConfig) {
 	const browsers = new Map<PeerLink, SocketData>();
 	// Outbound-only mirror; null unless hub.json configures it.
 	const notion = startNotionSync(config.notion, registry);
+
+	// Every frame the hub sends or receives, for the packets tab. Captured at
+	// the raw byte boundary in makeLink and the socket's message handler below,
+	// so it sees exactly what went over the wire regardless of what PeerLink
+	// makes of it.
+	const packets = new PacketLog();
+	// A browser's own packets.tail reply is StreamData on the same link that
+	// asked for it; capturing it would feed it straight back into itself and
+	// grow without bound, so frames on a subscription's own correlation id are
+	// left out of the log entirely rather than filtered after the fact.
+	const tailCorrelations = new Map<PeerLink, Set<number>>();
+	function isTailFrame(link: PeerLink, data: Uint8Array): boolean {
+		const ids = tailCorrelations.get(link);
+		if (!ids?.size || data.byteLength < 8) return false;
+		const correlationId = new DataView(
+			data.buffer,
+			data.byteOffset,
+			data.byteLength,
+		).getUint32(4, false);
+		return ids.has(correlationId);
+	}
 
 	registry.subscribe((event) => {
 		// One push shape for every browser: the frame type says "telemetry", the
@@ -270,6 +293,35 @@ export function startHub(config: HubConfig) {
 				);
 			}
 
+			case HubAction.PacketsTail: {
+				const p = params as unknown as PacketsTailParams;
+				req.stream.open();
+				for (const record of packets.recent(p.backlog ?? 500)) {
+					req.stream.json(record);
+				}
+				const link = socket.link;
+				let ids = tailCorrelations.get(link);
+				if (!ids) {
+					ids = new Set();
+					tailCorrelations.set(link, ids);
+				}
+				ids.add(req.correlationId);
+				const unsubscribe = packets.subscribe((record) => {
+					if (req.stream.closed) return;
+					req.stream.json(record);
+				});
+				req.signal.addEventListener(
+					"abort",
+					() => {
+						unsubscribe();
+						ids?.delete(req.correlationId);
+						if (ids && !ids.size) tailCorrelations.delete(link);
+					},
+					{ once: true },
+				);
+				return null;
+			}
+
 			case HubAction.Forget: {
 				registry.forget(String(params.nodeId ?? ""));
 				return { ok: true, nodes: registry.summaries() };
@@ -396,7 +448,19 @@ export function startHub(config: HubConfig) {
 				send: (data) => {
 					// Backpressure here means a browser that stopped reading; dropping the
 					// frame is better than growing the buffer without limit.
-					if (ws.readyState === WebSocket.OPEN) ws.send(data, isBrowser);
+					if (ws.readyState === WebSocket.OPEN) {
+						const link = ws.data.link;
+						if (!link || !isTailFrame(link, data)) {
+							packets.capture(
+								isBrowser ? "hub->browser" : "hub->node",
+								isBrowser
+									? (ws.data.remoteAddress ?? "browser")
+									: (ws.data.nodeId ?? ws.data.remoteAddress ?? "?"),
+								data,
+							);
+						}
+						ws.send(data, isBrowser);
+					}
 				},
 				close: (code, reason) => ws.close(code, reason),
 			},
@@ -729,9 +793,16 @@ export function startHub(config: HubConfig) {
 			message(ws, raw) {
 				const link = ws.data.link;
 				if (!link) return;
-				if (typeof raw === "string")
-					link.receive(new TextEncoder().encode(raw));
-				else link.receive(raw);
+				const bytes =
+					typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
+				packets.capture(
+					ws.data.role === "browser" ? "browser->hub" : "node->hub",
+					ws.data.role === "browser"
+						? (ws.data.remoteAddress ?? "browser")
+						: (ws.data.nodeId ?? ws.data.remoteAddress ?? "?"),
+					bytes,
+				);
+				link.receive(bytes);
 			},
 
 			close(ws, code, reason) {

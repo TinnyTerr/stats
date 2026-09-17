@@ -141,6 +141,8 @@ export const HubAction = {
 	 * the only place it is drawn.
 	 */
 	Watch: "node.watch",
+	/** a live, decoded tail of every frame the hub sends or receives */
+	PacketsTail: "packets.tail",
 } as const;
 
 export interface WatchParams {
@@ -152,6 +154,48 @@ export interface WatchResult {
 	nodeId: string | null;
 	/** the node's latest frame, so the pane has something before the next tick */
 	telemetry: Telemetry | null;
+}
+
+/** Which pair of sockets a captured frame crossed, and which way. */
+export type PacketDirection =
+	| "node->hub"
+	| "hub->node"
+	| "browser->hub"
+	| "hub->browser";
+
+/**
+ * One frame off the wire, decoded as far as it safely can be. `json` is set
+ * whenever the payload isn't flagged binary and parses; a malformed or opaque
+ * payload just leaves it null rather than failing the capture. `rawBase64` is
+ * the whole frame — header included — so a packet tab can show the bytes a
+ * decoder disagrees with, capped so one huge telemetry frame can't blow out
+ * every subscriber's memory.
+ */
+export interface PacketRecord {
+	id: number;
+	ts: number;
+	direction: PacketDirection;
+	/** node id, or the remote address for anything not identified yet */
+	peer: string;
+	type: string;
+	correlationId: number;
+	/** the frame's flags byte as sent, before decompression clears COMPRESSED */
+	flags: number;
+	compressed: boolean;
+	binary: boolean;
+	/** total bytes on the wire, header included */
+	bytes: number;
+	json: unknown;
+	/** set when the payload claims to be JSON but doesn't parse */
+	jsonError: string | null;
+	/** base64 of the frame, capped at PACKET_RAW_CAP bytes */
+	rawBase64: string;
+	truncated: boolean;
+}
+
+export interface PacketsTailParams {
+	/** buffered history to replay before switching to live frames */
+	backlog?: number;
 }
 
 export interface CaIssueParams {
