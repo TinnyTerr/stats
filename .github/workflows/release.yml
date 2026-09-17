@@ -67,12 +67,21 @@ jobs:
           } > notes.md
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: notes.md
-          files: |-
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          assets=(
             dist/stats-linux-*
             dist/stats-windows-*
             dist/stats-darwin-*
             dist/SHA256SUMS
             dist/manifest.json
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" "${assets[@]}" --title "$tag" --notes-file notes.md
+          fi
