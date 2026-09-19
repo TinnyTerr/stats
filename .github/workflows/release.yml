@@ -18,6 +18,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -60,6 +61,7 @@ jobs:
             echo 'Windows node (elevated PowerShell):'
             echo
             echo '```powershell'
+            echo '$env:STATS_HUB = "ws://hub.lan:3000"; $env:STATS_NODE_TOKEN = "<token>"'
             echo "iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/main/install.ps1 | iex"
             echo '```'
             echo
@@ -79,6 +81,12 @@ jobs:
             gh release create "$tag" --title "$tag" --notes-file notes.md
           fi
 
+          # gh release upload has stalled here with no output for 20+ minutes on
+          # 80 MB assets, so talk to the API directly: curl gives progress, a
+          # stall detector (<10 KB/s for 60s) and a hard cap, and a timeout is
+          # an ordinary non-zero exit we can retry.
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)"
+
           shopt -s nullglob
           assets=(
             dist/stats-linux-*
@@ -89,17 +97,33 @@ jobs:
           )
 
           for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
             for attempt in 1 2 3; do
-              echo "uploading $asset (attempt $attempt)..."
-              if timeout 300 gh release upload "$tag" "$asset" --clobber; then
-                echo "uploaded $asset"
+              # --clobber: drop any asset of the same name, including the
+              # half-finished one a previous attempt left behind.
+              gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" --paginate \
+                --jq ".[] | select(.name == \"$name\") | .id" |
+                while read -r old; do
+                  gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+                done
+
+              echo "uploading $name ($(du -h "$asset" | cut -f1), attempt $attempt)..."
+              if curl --fail-with-body -sS --max-time 600 \
+                --speed-limit 10240 --speed-time 60 \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary @"$asset" \
+                -o /dev/null \
+                "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$name"; then
+                echo "uploaded $name"
                 break
               fi
               if [ "$attempt" -eq 3 ]; then
-                echo "failed to upload $asset after $attempt attempts" >&2
+                echo "failed to upload $name after $attempt attempts" >&2
                 exit 1
               fi
-              echo "upload of $asset failed or timed out, retrying..."
+              echo "upload of $name failed or stalled, retrying..."
               sleep 2
             done
           done
