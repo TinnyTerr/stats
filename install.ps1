@@ -52,6 +52,10 @@
 .EXAMPLE
     # Node, dialling an existing hub - run from an elevated PowerShell:
     iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.ps1 | iex
+    # Piped through iex there are no switches, so a hub in the environment
+    # means -Node:
+    $env:STATS_HUB = "ws://hub.lan:3000"; $env:STATS_NODE_TOKEN = "<token>"
+    iwr -useb https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.ps1 | iex
     # or, with parameters:
     .\install.ps1 -Node -HubUrl ws://hub.lan:3000 -Token <token>
 
@@ -92,6 +96,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Windows PowerShell 5.1 negotiates TLS 1.0/1.1 by default on older builds and
+# GitHub refuses both.
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+
+# `iwr | iex` can't pass switches, so a hub in the environment means "node".
+if ($HubUrl -and -not $Uninstall) { $Node = $true }
+
 $TaskName = "stats-node"
 $Bin = Join-Path $InstallDir "stats.exe"
 $EnvFile = Join-Path $InstallDir "node.env"
@@ -99,7 +111,9 @@ $ProjectsFile = Join-Path $InstallDir "projects.json"
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Warning $msg }
-function Die($msg) { Write-Error $msg; exit 1 }
+# throw, not exit: piped through iex this runs in the caller's session, and
+# `exit` there closes the operator's PowerShell window before they can read it.
+function Die($msg) { throw $msg }
 
 function Test-Admin {
 	$id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -137,7 +151,7 @@ if ($Uninstall) {
 		Write-Host "kept $InstallDir - pass -Purge to delete it." -ForegroundColor DarkGray
 	}
 	Write-Host "stats removed." -ForegroundColor Green
-	exit 0
+	return
 }
 
 # ------------------------------------------------------------ obtain binary
@@ -196,16 +210,23 @@ try {
 			} else {
 				"https://$InstallHost/api/v1/repos/$Repo/releases/latest"
 			}
-			$release = Invoke-RestMethod -Uri $api
+			$release = Invoke-RestMethod -Uri $api -UseBasicParsing
 			$Version = $release.tag_name
 			if (-not $Version) { Die "couldn't work out the latest release from $api. Pass -Version." }
 		}
 		$base = "https://$InstallHost/$Repo/releases/download/$Version"
 		Step "downloading $Asset ($Version) from $base"
+		# 5.1 redraws a progress bar per chunk and a 90 MB download crawls.
+		$oldProgress = $ProgressPreference
+		$ProgressPreference = "SilentlyContinue"
 		try {
-			Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $Tmp "SHA256SUMS") -ErrorAction Stop
+			Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $Tmp "SHA256SUMS") -UseBasicParsing -ErrorAction Stop
 		} catch { }
-		Invoke-WebRequest -Uri "$base/$Asset" -OutFile $TmpBin
+		try {
+			Invoke-WebRequest -Uri "$base/$Asset" -OutFile $TmpBin -UseBasicParsing
+		} finally {
+			$ProgressPreference = $oldProgress
+		}
 		Test-Checksum $TmpBin $Asset (Join-Path $Tmp "SHA256SUMS")
 	}
 
@@ -226,7 +247,7 @@ try {
 if (-not $Node) {
 	Write-Host ""
 	Write-Host "Next: run with -Node -HubUrl ws://hub.lan:3000 -Token <token> to install as a service."
-	exit 0
+	return
 }
 
 # --------------------------------------------------------------------- node
@@ -283,7 +304,7 @@ Get-Content '$EnvFile' | ForEach-Object {
         [Environment]::SetEnvironmentVariable(`$Matches[1], `$Matches[2], 'Process')
     }
 }
-& '$Bin' $($execArgs -join ' ')
+& '$Bin' $($execArgs -join ' ') *>> '$(Join-Path $InstallDir "node.log")'
 "@ | Set-Content -Path $wrapper -Encoding utf8
 
 	$action = New-ScheduledTaskAction -Execute "powershell.exe" `
