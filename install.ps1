@@ -244,9 +244,23 @@ try {
 	Remove-Item $Tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# Piped through iex there is no way to pass -Node, so ask instead of stopping
+# with a binary and no config.
+if (-not $Node -and [Environment]::UserInteractive) {
+	try {
+		$HubUrl = Read-Host "Hub URL, e.g. ws://hub.lan:3000 (blank = install the binary only)"
+		if ($HubUrl) {
+			$Node = $true
+			if (-not $Token) { $Token = Read-Host "Node token (blank = none)" }
+		}
+	} catch { }
+}
+
 if (-not $Node) {
 	Write-Host ""
-	Write-Host "Next: run with -Node -HubUrl ws://hub.lan:3000 -Token <token> to install as a service."
+	Write-Host "Installed the binary only. To make this a node, re-run with a hub:"
+	Write-Host '  $env:STATS_HUB = "ws://hub.lan:3000"; $env:STATS_NODE_TOKEN = "<token>"'
+	Write-Host "  iwr -useb https://raw.githubusercontent.com/$Repo/main/install.ps1 | iex"
 	return
 }
 
