@@ -104,6 +104,38 @@ bun run node -- --hub ws://127.0.0.1:3000    # in another terminal
 `bun run dev` runs the hub with hot reload for the frontend. A hub with no
 config file at all starts on `127.0.0.1:3000` and accepts any node.
 
+## CLI
+
+One binary, one entry point, for both roles: `stats <command>` once built or
+installed, `bun index.ts <command>` from source — every command below works
+either way, and `stats version` tells you which kind of binary you're holding.
+This is the full surface; later sections walk through *why* you'd reach for
+each one.
+
+| Command | Does |
+| --- | --- |
+| `hub [--config hub.json] [--port 3000] [--host 127.0.0.1]` | starts the hub |
+| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules]` | starts a node |
+| `modules` | list builtin and installed modules, and what each may touch |
+| `modules install <repo> [--ref R] [--force]` | install a module from a git repository |
+| `modules update [id]` | fast-forward one installed module, or all of them |
+| `modules remove <id>` | uninstall one |
+| `update [--check] [--version TAG] [--no-restart]` | replace this binary with the latest release |
+| `cert <common-name> [--san a,b] [--days 825] [--out DIR] [--config hub.json]` | sign a leaf cert with the fleet's own CA |
+| `check [--projects PATH]` | validate the projects file and exit |
+| `version` | print the version and wire protocol number |
+
+Flags that toggle something on by default take `--no-x` to switch it off
+(`--no-terminal`, `--no-control`, `--no-restart`); the rest are `--name value`
+or `--name=value`. Every node flag has an environment-variable equivalent —
+see **Environment** below — and flags win over the environment, which wins
+over `agent.json`/`hub.json`.
+
+A node running as root is unrestricted: every module gets every grant, and the
+hub may switch modules on and ask for an update without either `--allow` flag.
+Run it as anyone else and both are off until asked for, and modules only reach
+what they declared — see **Modules** and **Updating**.
+
 ## Projects: telling a node what to run
 
 The point of the projects file is that "is the app up?" stops being a question
@@ -361,15 +393,13 @@ install it.
 ### Installing a module from a git repository
 
 A module doesn't have to ship in this repo. One git repository with a
-`stats.module.json` at its root is a module, and a node can install it:
+`stats.module.json` at its root is a module, and a node can install it (see
+**CLI** above for the full `modules install`/`update`/`remove` flags):
 
 ```bash
 stats modules install https://git.example.com/you/stats-module-weather
 stats modules install owner/repo --ref v2      # GitHub shorthand, a tag
 stats modules install ./path/to/checkout       # a repository on this machine
-stats modules                                  # what's installed, and at which commit
-stats modules update                           # fast-forward all of them
-stats modules remove weather
 ```
 
 They land in `/var/lib/stats/modules` (`~/.local/share/stats/modules` when the
@@ -506,12 +536,9 @@ ways to ask for one, all going through the same `issueCert()`
 - **The dashboard's Tools tab** — fill in a common name (and optional SANs),
   click Generate. The cert, key and CA chain are shown once and copied from
   there; the hub keeps no copy of the key.
-- **The CLI**, from the hub's own machine (it needs `hub.json`'s `dbPath` to
-  find the CA):
-  ```bash
-  stats cert grafana.internal --san grafana,10.0.0.5 --days 825 --out ./certs
-  # writes ./certs/grafana.internal.{cert,key,chain}.pem
-  ```
+- **`stats cert`** (see **CLI** above), from the hub's own machine — it needs
+  `hub.json`'s `dbPath` to find the CA. Writes
+  `<out>/<common-name>.{cert,key,chain}.pem`.
 - **The wire protocol**, as `ca.issue` — what the Tools tab itself calls:
   ```json
   { "action": "ca.issue", "params": { "commonName": "grafana.internal", "sans": ["10.0.0.5"], "days": 825 } }
@@ -790,10 +817,8 @@ ssh-ing into things":
 # 1. the installer, re-run — always works, upgrades the binary and restarts
 curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/refs/heads/main/install.sh | sudo sh -s -- --node
 
-# 2. the binary updating itself
-stats update                 # to the latest release
+# 2. the binary updating itself — flags in the CLI reference above
 stats update --check         # exit 0 up to date, 10 if there's a newer one
-stats update --version v0.4.0 --no-restart
 ```
 
 `stats update` does what the installer does — resolves the release, picks the
