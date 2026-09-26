@@ -572,6 +572,20 @@ browser⇄hub):
 [N bytes] payload
 ```
 
+```mermaid
+---
+title: "TCP Packet"
+showBits: true
+---
+packet
++8: "Version"
++8: "Message Type"
++16: "Flags"
++64: "correlation id"
++64: "Message Length"
++96: "Message (Variable)"
+```
+
 Multi-byte fields are big-endian; one frame per WebSocket message. Payloads are
 UTF-8 JSON unless `binary` is set, in which case they're opaque bytes belonging
 to the stream named by the correlation id — that's how terminal I/O travels.
