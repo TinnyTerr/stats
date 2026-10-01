@@ -25,6 +25,7 @@ import {
 	NodeAction,
 	type NodeScoped,
 	type PacketsTailParams,
+	type ServiceLogsParams,
 	type WatchParams,
 	type WatchResult,
 	type WelcomePayload,
@@ -74,6 +75,9 @@ const SLOW_ACTIONS = new Map<string, number>([
 ]);
 
 const DAY_MINUTES = 24 * 60;
+const LOG_LEVELS = new Set(["debug", "info", "warn", "error"]);
+const MAX_LOG_SOURCE = 64;
+const MAX_LOG_MESSAGE = 8192;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
 
 /** A `minutes` parameter clamped to [1, max]; the fallback when it isn't a number. */
@@ -281,6 +285,17 @@ export function startHub(config: HubConfig) {
 					since(p.minutes, DAY_MINUTES, WEEK_MINUTES),
 					200,
 					p.nodeId,
+				);
+			}
+
+			case HubAction.ServiceLogs: {
+				const p = params as unknown as ServiceLogsParams;
+				return store.serviceLogs(
+					since(p.minutes, DAY_MINUTES, WEEK_MINUTES),
+					500,
+					p.source || undefined,
+					p.level || undefined,
+					p.project || undefined,
 				);
 			}
 
@@ -664,7 +679,7 @@ export function startHub(config: HubConfig) {
 				},
 
 				/**
-				 * Scaffold: a place for a service to push a log line over HTTP instead
+				 * A place for a service to push a log line over HTTP instead
 				 * of stdout. `console.log` still goes nowhere the dashboard can read
 				 * it, so anything that wants its logs on the hub posts here instead.
 				 * Kept deliberately thin — no levels config, no structured fields
@@ -673,7 +688,13 @@ export function startHub(config: HubConfig) {
 				"/api/logs": {
 					POST: async (req: Request) => {
 						if (!requireToken(req, config.token)) return unauthorized();
-						let body: { source?: unknown; level?: unknown; message?: unknown };
+						let body: {
+							source?: unknown;
+							level?: unknown;
+							message?: unknown;
+							project?: unknown;
+							node?: unknown;
+						};
 						try {
 							body = await req.json();
 						} catch {
@@ -686,8 +707,44 @@ export function startHub(config: HubConfig) {
 						if (!source || !message) {
 							return json({ error: "source and message are required" }, 400);
 						}
-						const level = typeof body.level === "string" ? body.level : "info";
-						store.recordServiceLog(source, level, message);
+						if (source.length > MAX_LOG_SOURCE) {
+							return json(
+								{ error: `source is capped at ${MAX_LOG_SOURCE} characters` },
+								400,
+							);
+						}
+						const level =
+							body.level === undefined
+								? "info"
+								: typeof body.level === "string"
+									? body.level.trim().toLowerCase()
+									: "";
+						if (!LOG_LEVELS.has(level)) {
+							return json(
+								{ error: `level must be one of ${[...LOG_LEVELS].join(", ")}` },
+								400,
+							);
+						}
+						const project =
+							typeof body.project === "string" ? body.project.trim() : "";
+						const nodeId =
+							typeof body.node === "string" ? body.node.trim() : "";
+						if (nodeId && !project) {
+							return json({ error: "node needs a project" }, 400);
+						}
+						// A long line is clipped, not refused: a stack trace is still
+						// worth having the top of.
+						store.recordServiceLog(
+							source,
+							level,
+							message.length > MAX_LOG_MESSAGE
+								? `${message.slice(0, MAX_LOG_MESSAGE)}…`
+								: message,
+							{
+								project: project || undefined,
+								nodeId: nodeId || undefined,
+							},
+						);
 						return json({ ok: true });
 					},
 					GET: (req: Request) => {
@@ -698,6 +755,8 @@ export function startHub(config: HubConfig) {
 								since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
 								200,
 								query.get("source") ?? undefined,
+								query.get("level") ?? undefined,
+								query.get("project") ?? undefined,
 							),
 						);
 					},

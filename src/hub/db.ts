@@ -46,6 +46,9 @@ export interface ServiceLogRow {
 	source: string;
 	level: string;
 	message: string;
+	/** the projects-file id this line belongs to, if it named one */
+	project: string | null;
+	nodeId: string | null;
 }
 
 export interface KnownNode {
@@ -87,7 +90,8 @@ export class MetricStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		);
 		this.insertServiceLog = this.db.prepare(
-			`INSERT INTO service_logs (ts, source, level, message) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO service_logs (ts, source, level, message, project, node_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
 		);
 		this.upsertNode = this.db.prepare(
 			`INSERT INTO nodes (id, name, first_seen, last_seen, version, hostname)
@@ -202,6 +206,21 @@ export class MetricStore {
         PRIMARY KEY (node_id, module_id)
       );
     `);
+
+		// A log line can name the project it belongs to (an id from a node's
+		// projects file) and the node that runs it. Added in place: the table is
+		// a rolling window, but there's no reason to drop it for two columns.
+		const cols = this.db.query("PRAGMA table_info(service_logs)").all() as {
+			name: string;
+		}[];
+		if (!cols.some((c) => c.name === "project")) {
+			this.db.exec(
+				"ALTER TABLE service_logs ADD COLUMN project TEXT; ALTER TABLE service_logs ADD COLUMN node_id TEXT;",
+			);
+			this.db.exec(
+				"CREATE INDEX IF NOT EXISTS idx_service_logs_project ON service_logs (project, ts)",
+			);
+		}
 	}
 
 	record(nodeId: string, stats: SystemStats) {
@@ -252,8 +271,20 @@ export class MetricStore {
 		);
 	}
 
-	recordServiceLog(source: string, level: string, message: string) {
-		this.insertServiceLog.run(Date.now(), source, level, message);
+	recordServiceLog(
+		source: string,
+		level: string,
+		message: string,
+		link: { project?: string; nodeId?: string } = {},
+	) {
+		this.insertServiceLog.run(
+			Date.now(),
+			source,
+			level,
+			message,
+			link.project ?? null,
+			link.nodeId ?? null,
+		);
 	}
 
 	/** Remembers a node so it shows as offline rather than vanishing. */
@@ -452,14 +483,32 @@ export class MetricStore {
 			.all(...args) as ConnectionRow[];
 	}
 
-	serviceLogs(sinceMs: number, limit = 200, source?: string): ServiceLogRow[] {
-		const where = source ? "WHERE ts >= ? AND source = ?" : "WHERE ts >= ?";
-		const args: (string | number)[] = source
-			? [sinceMs, source, limit]
-			: [sinceMs, limit];
+	serviceLogs(
+		sinceMs: number,
+		limit = 200,
+		source?: string,
+		level?: string,
+		project?: string,
+	): ServiceLogRow[] {
+		const clauses = ["ts >= ?"];
+		const args: (string | number)[] = [sinceMs];
+		if (source) {
+			clauses.push("source = ?");
+			args.push(source);
+		}
+		if (level) {
+			clauses.push("level = ?");
+			args.push(level);
+		}
+		if (project) {
+			clauses.push("project = ?");
+			args.push(project);
+		}
+		args.push(limit);
+		const where = `WHERE ${clauses.join(" AND ")}`;
 		return this.db
 			.query(
-				`SELECT ts, source, level, message
+				`SELECT ts, source, level, message, project, node_id AS nodeId
            FROM service_logs ${where}
           ORDER BY ts DESC, id DESC
           LIMIT ?`,

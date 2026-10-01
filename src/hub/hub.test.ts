@@ -1078,6 +1078,38 @@ describe("hub and node over a websocket", () => {
 			});
 			expect(unauthed.status).toBe(401);
 
+			const badLevel = await fetch(`http://127.0.0.1:${h.port}/api/logs`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer let-me-in",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ source: "x", message: "y", level: "loud" }),
+			});
+			expect(badLevel.status).toBe(400);
+
+			const linked = await fetch(`http://127.0.0.1:${h.port}/api/logs`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer let-me-in",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					source: "ci",
+					message: "built",
+					project: "billing-api",
+					node: "web1",
+				}),
+			});
+			expect(linked.status).toBe(200);
+			const byProject = await fetch(
+				`http://127.0.0.1:${h.port}/api/logs?project=billing-api`,
+				{ headers: { authorization: "Bearer let-me-in" } },
+			);
+			expect(await byProject.json()).toMatchObject([
+				{ source: "ci", project: "billing-api", nodeId: "web1" },
+			]);
+
 			const got = await fetch(
 				`http://127.0.0.1:${h.port}/api/logs?source=deploy`,
 				{ headers: { authorization: "Bearer let-me-in" } },

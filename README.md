@@ -653,10 +653,16 @@ POST /api/logs
 Authorization: Bearer <hub token, if set>
 Content-Type: application/json
 
-{ "source": "deploy", "level": "info", "message": "released v1.4.2" }
+{ "source": "deploy", "level": "info", "message": "released v1.4.2",
+  "project": "billing-api", "node": "web1" }
 ```
 
-`source` and `message` are required; `level` defaults to `"info"`. The hub
+`source` and `message` are required; `level` is one of `debug`, `info`,
+`warn`, `error` and defaults to `"info"`. `project` is optional: a project id
+from a node's projects file, shown as a chip on the dashboard's Logs page and
+filterable with `GET /api/logs?project=billing-api` (also `level=`). `node`
+narrows it to one host and needs `project`. Sources are capped at 64
+characters; messages are clipped at 8 KiB. The hub
 timestamps it on arrival and keeps it for `eventRetentionHours` alongside
 everything else in `hub.json`'s retention window.
 
