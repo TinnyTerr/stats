@@ -646,6 +646,22 @@ export interface HubConfig {
 	nodes: NodeOverride[];
 	/** mirror projects into a Notion database, null when not configured */
 	notion: NotionConfig | null;
+	/** serve HTTPS off the fleet CA; absent or null means plain HTTP on `port` only */
+	tls?: HubTls | null;
+}
+
+/**
+ * With `cert` and `key` set the hub listens on `port` over TLS and keeps a
+ * plain-HTTP listener on `httpPort` as the way in when a client doesn't trust
+ * the CA yet. Without them (the CA failed, or nothing has issued one) it is
+ * plain HTTP on `port`, as before. `cmd hub` fills the pair in at boot.
+ */
+export interface HubTls {
+	/** extra names for the cert, beyond the host's own */
+	sans: string[];
+	httpPort: number;
+	cert?: string;
+	key?: string;
 }
 
 /**

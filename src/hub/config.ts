@@ -1,5 +1,10 @@
 import { resolveModules } from "../modules/manifest.ts";
-import type { HubConfig, NodeOverride, NotionConfig } from "../types.ts";
+import type {
+	HubConfig,
+	HubTls,
+	NodeOverride,
+	NotionConfig,
+} from "../types.ts";
 
 /**
  * Hub configuration. Unlike the old poll-based setup, the hub no longer lists
@@ -26,6 +31,7 @@ interface RawConfig {
 	embeddedNode?: boolean;
 	nodes?: NodeOverride[];
 	notion?: RawNotion;
+	tls?: boolean | { sans?: string[]; httpPort?: number };
 }
 
 interface RawNotion {
@@ -161,6 +167,21 @@ export async function loadConfig(path = DEFAULT_PATH): Promise<HubConfig> {
 			token: resolveSecret(node.token) ?? undefined,
 		})),
 		notion,
+		tls: loadTls(raw.tls, modules.ca !== false, raw.port ?? 3000),
+	};
+}
+
+/** On unless switched off or the CA is — there is nothing to sign with then. */
+function loadTls(
+	raw: RawConfig["tls"],
+	caOn: boolean,
+	port: number,
+): HubTls | null {
+	if (raw === false || !caOn) return null;
+	const opts = typeof raw === "object" ? raw : {};
+	return {
+		sans: opts.sans ?? [],
+		httpPort: opts.httpPort ?? port + 1,
 	};
 }
 

@@ -129,6 +129,13 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   browser-safe: nothing at module top level may touch `process`, `Bun` or the
   filesystem unguarded.
 
+- **The hub serves TLS off its own CA, with plain HTTP kept beside it.** `cmd hub`
+  in `index.ts` issues a leaf at boot (never persisted) and puts it in
+  `config.tls`; `startHub` listens on `port` over TLS and on `tls.httpPort`
+  (default `port + 1`) without. No cert, no `ca` module, or `"tls": false`
+  means plain HTTP on `port` as before. Nodes pointed at `ws://host:port` need
+  `wss://` or the http port after this.
+
 ## Things that bit us, worth not rediscovering
 
 - **Windows, tested on a real box (`sdv`), not a VM.** `Bun.main` inside a
