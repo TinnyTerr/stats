@@ -17,6 +17,7 @@ import {
 	setToken,
 	token,
 } from "./link.ts";
+import { LogsPage } from "./logspage.tsx";
 import {
 	type CardFace,
 	EMPTY_HISTORY,
@@ -339,7 +340,7 @@ function writeRotate(ms: number) {
  * rather than a corner of the node drawer — the question "which nodes are
  * running docker" is a fleet question, not a per-node one.
  */
-type View = "fleet" | "modules" | "tools" | "projects" | "packets";
+type View = "fleet" | "modules" | "tools" | "projects" | "logs" | "packets";
 
 function App() {
 	const [view, setView] = useState<View>("fleet");
@@ -581,18 +582,25 @@ function App() {
 					</span>
 				)}
 				<nav className="views">
-					{(["fleet", "modules", "projects", "packets", "tools"] as View[]).map(
-						(id) => (
-							<button
-								key={id}
-								type="button"
-								className={view === id ? "active" : ""}
-								onClick={() => setView(id)}
-							>
-								{id}
-							</button>
-						),
-					)}
+					{(
+						[
+							"fleet",
+							"modules",
+							"projects",
+							"logs",
+							"packets",
+							"tools",
+						] as View[]
+					).map((id) => (
+						<button
+							key={id}
+							type="button"
+							className={view === id ? "active" : ""}
+							onClick={() => setView(id)}
+						>
+							{id}
+						</button>
+					))}
 				</nav>
 				<div className="spacer" />
 				{alerts.length > 0 && (
@@ -671,6 +679,15 @@ function App() {
 			{view === "projects" && (
 				<main className="page">
 					<ProjectsPage />
+				</main>
+			)}
+
+			{view === "logs" && hub.current && (
+				<main className="page">
+					<LogsPage
+						hub={hub.current}
+						onOpenProject={() => setView("projects")}
+					/>
 				</main>
 			)}
 

@@ -1754,3 +1754,12 @@ details.fieldset[open] > summary {
 	flex-wrap: wrap;
 	gap: 6px;
 }
+
+.service-logs li {
+	flex-wrap: wrap;
+}
+
+.service-logs time {
+	color: var(--muted, inherit);
+	white-space: nowrap;
+}
