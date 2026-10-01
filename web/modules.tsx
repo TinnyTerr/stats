@@ -27,7 +27,6 @@ import {
 	PiholePanel,
 	PortsPanel,
 	ProcessesPanel,
-	ProjectsPanel,
 	ServicesPanel,
 } from "./panels.tsx";
 import { TerminalPanel } from "./terminal.tsx";
@@ -375,12 +374,6 @@ export const UI_MODULES: UiModule[] = [
 
 	{
 		id: "projects",
-		tab: {
-			id: "projects",
-			label: "projects",
-			render: (props) => <ProjectsPanel {...props} />,
-			badge: (node) => Boolean(node.projects?.degraded),
-		},
 		faces: [
 			{
 				id: "projects",

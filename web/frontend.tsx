@@ -214,25 +214,39 @@ function NodeDetail({
 	telemetry,
 	hub,
 	onClose,
+	onOpenProjects,
+	initial,
 }: {
 	node: NodeSummary;
 	telemetry: Telemetry | null;
 	hub: HubConnection;
 	onClose: () => void;
+	/** projects live on their own page, not in a tab here */
+	onOpenProjects: () => void;
+	/** where to land, e.g. coming from a project's "logs" button */
+	initial: { tab: string; target?: LogTarget } | null;
 }) {
 	const tabs = useMemo(() => tabsFor(node), [node]);
-	const [tabId, setTabId] = useState<string>(tabs[0]?.id ?? "overview");
-	const [logTarget, setLogTarget] = useState<LogTarget | undefined>();
+	const [tabId, setTabId] = useState<string>(
+		initial?.tab ?? tabs[0]?.id ?? "overview",
+	);
+	const [logTarget, setLogTarget] = useState<LogTarget | undefined>(
+		initial?.target,
+	);
 
 	// A module can go away under you — the node reconnects without docker, or
 	// the hub narrows it — and the pane shouldn't be left on a tab that no
 	// longer exists.
 	const active = tabs.find((tab) => tab.id === tabId) ?? tabs[0] ?? null;
 
-	const go = useCallback((next: string, context?: LogTarget) => {
-		setTabId(next);
-		if (context) setLogTarget(context);
-	}, []);
+	const go = useCallback(
+		(next: string, context?: LogTarget) => {
+			if (next === "projects") return onOpenProjects();
+			setTabId(next);
+			if (context) setLogTarget(context);
+		},
+		[onOpenProjects],
+	);
 
 	const props = { node, telemetry, hub, go, target: logTarget };
 
@@ -350,6 +364,11 @@ function App() {
 	const [alerts, setAlerts] = useState<Alert[]>([]);
 	const [connected, setConnected] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	// Set when another page sends you into a node's drawer on a given tab.
+	const [landing, setLanding] = useState<{
+		tab: string;
+		target?: LogTarget;
+	} | null>(null);
 	const [hubInfo, setHubInfo] = useState<{
 		version: string;
 		protocol: number;
@@ -596,7 +615,10 @@ function App() {
 							key={id}
 							type="button"
 							className={view === id ? "active" : ""}
-							onClick={() => setView(id)}
+							onClick={() => {
+								setView(id);
+								if (id === "fleet") setLanding(null);
+							}}
 						>
 							{id}
 						</button>
@@ -676,9 +698,17 @@ function App() {
 				</main>
 			)}
 
-			{view === "projects" && (
+			{view === "projects" && hub.current && (
 				<main className="page">
-					<ProjectsPage />
+					<ProjectsPage
+						nodes={nodes}
+						hub={hub.current}
+						openLogs={(nodeId, target) => {
+							setLanding({ tab: "logs", target });
+							setSelectedId(nodeId);
+							setView("fleet");
+						}}
+					/>
 				</main>
 			)}
 
@@ -714,9 +744,10 @@ function App() {
 							})
 						}
 						selected={node.id === selectedId}
-						onSelect={() =>
-							setSelectedId(node.id === selectedId ? null : node.id)
-						}
+						onSelect={() => {
+							setLanding(null);
+							setSelectedId(node.id === selectedId ? null : node.id);
+						}}
 						hubVersion={hubInfo?.version ?? null}
 					/>
 				))}
@@ -760,6 +791,11 @@ function App() {
 						telemetry={telemetry.get(drawer.id) ?? null}
 						hub={hub.current}
 						onClose={() => setSelectedId(null)}
+						onOpenProjects={() => {
+							setSelectedId(null);
+							setView("projects");
+						}}
+						initial={landing}
 					/>
 				</>
 			)}
