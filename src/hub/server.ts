@@ -534,300 +534,314 @@ export function startHub(config: HubConfig) {
 		}
 	}
 
-	const server = Bun.serve<SocketData>({
-		port: config.port,
-		hostname: config.host,
-		// Terminals and log tails are idle for long stretches; the protocol's own
-		// heartbeat is what detects a dead peer.
-		idleTimeout: 0,
+	const tlsPair =
+		config.tls?.cert && config.tls.key
+			? { cert: config.tls.cert, key: config.tls.key }
+			: null;
 
-		routes: {
-			"/": index,
+	const serve = (port: number, tls?: { cert: string; key: string }) =>
+		Bun.serve<SocketData>({
+			port,
+			hostname: config.host,
+			tls,
+			// Terminals and log tails are idle for long stretches; the protocol's own
+			// heartbeat is what detects a dead peer.
+			idleTimeout: 0,
 
-			"/api/health": () =>
-				json({
-					ok: true,
-					role: "hub",
-					...versionInfo,
-					nodes: registry.list().length,
-					online: registry.list().filter((n) => n.link && !n.link.closed)
-						.length,
-					time: Date.now(),
-				}),
+			routes: {
+				"/": index,
 
-			/** Served so a projects file can point its $schema at its own hub. */
-			"/schema/projects.schema.json": () =>
-				json(projectsSchema, 200, { "cache-control": "public, max-age=300" }),
+				"/api/health": () =>
+					json({
+						ok: true,
+						role: "hub",
+						...versionInfo,
+						nodes: registry.list().length,
+						online: registry.list().filter((n) => n.link && !n.link.closed)
+							.length,
+						time: Date.now(),
+					}),
 
-			// Unauthenticated on purpose — this is the public half of the CA, the
-			// same thing every node already gets in Welcome, and the whole point
-			// is that a phone that has never opened the dashboard can fetch it.
-			"/ca.pem": async () => {
-				if (config.modules.ca === false)
-					return json({ error: "ca disabled" }, 404);
-				const ca = await ensureHubCa(config.dbPath).catch(() => null);
-				if (!ca) return json({ error: "local CA unavailable" }, 503);
-				return new Response(ca.pem, {
-					headers: {
-						"content-type": "application/x-pem-file",
-						"content-disposition": 'attachment; filename="stats-ca.pem"',
-					},
-				});
-			},
+				/** Served so a projects file can point its $schema at its own hub. */
+				"/schema/projects.schema.json": () =>
+					json(projectsSchema, 200, { "cache-control": "public, max-age=300" }),
 
-			"/ca.mobileconfig": async () => {
-				if (config.modules.ca === false)
-					return json({ error: "ca disabled" }, 404);
-				const ca = await ensureHubCa(config.dbPath).catch(() => null);
-				if (!ca) return json({ error: "local CA unavailable" }, 503);
-				return new Response(caMobileConfig(ca.pem), {
-					headers: {
-						"content-type": "application/x-apple-aspen-config",
-						"content-disposition":
-							'attachment; filename="stats-ca.mobileconfig"',
-					},
-				});
-			},
-
-			/** A read-only REST mirror of the browser protocol, for curl and scripts. */
-			"/api/nodes": (req: Request) =>
-				requireToken(req, config.token)
-					? json(registry.summaries())
-					: unauthorized(),
-
-			"/api/nodes/:id": (req: Request) => {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const { id } = (req as Request & { params: { id: string } }).params;
-				const record = registry.get(id);
-				if (!record) return json({ error: `unknown node '${id}'` }, 404);
-				return json({
-					...registry.summarise(record),
-					telemetry: record.telemetry,
-				});
-			},
-
-			"/api/nodes/:id/history": (req: Request) => {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const { id } = (req as Request & { params: { id: string } }).params;
-				const query = new URL(req.url).searchParams;
-				// Same deal as the socket action: a long window is only honest when
-				// it is bucketed, since the row cap otherwise takes a slice of it.
-				const { sinceMs, options } = historyQuery(
-					query.get("minutes"),
-					query.get("buckets"),
-				);
-				return json(store.history(id, sinceMs, options));
-			},
-
-			"/api/events": (req: Request) => {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const query = new URL(req.url).searchParams;
-				return json(
-					store.events(
-						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
-						200,
-						query.get("nodeId") ?? undefined,
-					),
-				);
-			},
-
-			"/api/connections": (req: Request) => {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const query = new URL(req.url).searchParams;
-				return json(
-					store.connections(
-						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
-						200,
-						query.get("nodeId") ?? undefined,
-					),
-				);
-			},
-
-			"/api/nodes/:id/connections": (req: Request) => {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const { id } = (req as Request & { params: { id: string } }).params;
-				const query = new URL(req.url).searchParams;
-				return json(
-					store.connections(
-						since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
-						200,
-						id,
-					),
-				);
-			},
-
-			/**
-			 * Scaffold: a place for a service to push a log line over HTTP instead
-			 * of stdout. `console.log` still goes nowhere the dashboard can read
-			 * it, so anything that wants its logs on the hub posts here instead.
-			 * Kept deliberately thin — no levels config, no structured fields
-			 * beyond source/level/message — until something actually needs more.
-			 */
-			"/api/logs": {
-				POST: async (req: Request) => {
-					if (!requireToken(req, config.token)) return unauthorized();
-					let body: { source?: unknown; level?: unknown; message?: unknown };
-					try {
-						body = await req.json();
-					} catch {
-						return json({ error: "body must be JSON" }, 400);
-					}
-					const source =
-						typeof body.source === "string" ? body.source.trim() : "";
-					const message =
-						typeof body.message === "string" ? body.message.trim() : "";
-					if (!source || !message) {
-						return json({ error: "source and message are required" }, 400);
-					}
-					const level = typeof body.level === "string" ? body.level : "info";
-					store.recordServiceLog(source, level, message);
-					return json({ ok: true });
+				// Unauthenticated on purpose — this is the public half of the CA, the
+				// same thing every node already gets in Welcome, and the whole point
+				// is that a phone that has never opened the dashboard can fetch it.
+				"/ca.pem": async () => {
+					if (config.modules.ca === false)
+						return json({ error: "ca disabled" }, 404);
+					const ca = await ensureHubCa(config.dbPath).catch(() => null);
+					if (!ca) return json({ error: "local CA unavailable" }, 503);
+					return new Response(ca.pem, {
+						headers: {
+							"content-type": "application/x-pem-file",
+							"content-disposition": 'attachment; filename="stats-ca.pem"',
+						},
+					});
 				},
-				GET: (req: Request) => {
+
+				"/ca.mobileconfig": async () => {
+					if (config.modules.ca === false)
+						return json({ error: "ca disabled" }, 404);
+					const ca = await ensureHubCa(config.dbPath).catch(() => null);
+					if (!ca) return json({ error: "local CA unavailable" }, 503);
+					return new Response(caMobileConfig(ca.pem), {
+						headers: {
+							"content-type": "application/x-apple-aspen-config",
+							"content-disposition":
+								'attachment; filename="stats-ca.mobileconfig"',
+						},
+					});
+				},
+
+				/** A read-only REST mirror of the browser protocol, for curl and scripts. */
+				"/api/nodes": (req: Request) =>
+					requireToken(req, config.token)
+						? json(registry.summaries())
+						: unauthorized(),
+
+				"/api/nodes/:id": (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const { id } = (req as Request & { params: { id: string } }).params;
+					const record = registry.get(id);
+					if (!record) return json({ error: `unknown node '${id}'` }, 404);
+					return json({
+						...registry.summarise(record),
+						telemetry: record.telemetry,
+					});
+				},
+
+				"/api/nodes/:id/history": (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const { id } = (req as Request & { params: { id: string } }).params;
+					const query = new URL(req.url).searchParams;
+					// Same deal as the socket action: a long window is only honest when
+					// it is bucketed, since the row cap otherwise takes a slice of it.
+					const { sinceMs, options } = historyQuery(
+						query.get("minutes"),
+						query.get("buckets"),
+					);
+					return json(store.history(id, sinceMs, options));
+				},
+
+				"/api/events": (req: Request) => {
 					if (!requireToken(req, config.token)) return unauthorized();
 					const query = new URL(req.url).searchParams;
 					return json(
-						store.serviceLogs(
+						store.events(
 							since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
 							200,
-							query.get("source") ?? undefined,
+							query.get("nodeId") ?? undefined,
 						),
 					);
 				},
-			},
-		},
 
-		fetch(req, srv) {
-			const url = new URL(req.url);
-			const remoteAddress = srv.requestIP(req)?.address ?? null;
-
-			if (url.pathname === "/node") {
-				// The node's own token is checked in Hello, where a mismatch can be
-				// reported in-protocol rather than as a bare HTTP status.
-				const upgraded = srv.upgrade(req, {
-					data: {
-						role: "node",
-						link: null as never,
-						nodeId: null,
-						remoteAddress,
-						watching: null,
-					},
-				});
-				return upgraded
-					? undefined
-					: json({ error: "websocket upgrade failed" }, 400);
-			}
-
-			if (url.pathname === "/ws") {
-				if (!requireToken(req, config.token)) return unauthorized();
-				const upgraded = srv.upgrade(req, {
-					data: {
-						role: "browser",
-						link: null as never,
-						nodeId: null,
-						remoteAddress,
-						watching: null,
-					},
-				});
-				return upgraded
-					? undefined
-					: json({ error: "websocket upgrade failed" }, 400);
-			}
-
-			return json({ error: "not found" }, 404);
-		},
-
-		websocket: {
-			// Terminal output and log tails are bursty; a bigger backpressure limit
-			// keeps Bun from closing a socket mid-scrollback.
-			backpressureLimit: 16 * 1024 * 1024,
-
-			// Negotiated with browsers only: node links gzip their own payloads, and
-			// deflating those again would cost CPU for nothing. See makeLink.
-			perMessageDeflate: true,
-
-			open(ws) {
-				const isNode = ws.data.role === "node";
-				const link = makeLink(
-					ws,
-					isNode ? `node@${ws.data.remoteAddress ?? "?"}` : "browser",
-					// The hub allocates odd correlation ids on every link it terminates.
-					"odd",
-				);
-				ws.data.link = link;
-
-				if (isNode) {
-					link.on(MessageType.Hello, (frame) => onNodeHello(ws, frame.payload));
-					link.on(MessageType.Telemetry, (frame) => {
-						if (!ws.data.nodeId) return;
-						try {
-							registry.telemetry(
-								ws.data.nodeId,
-								JSON.parse(new TextDecoder().decode(frame.payload)),
-							);
-						} catch (err) {
-							console.error(
-								`bad telemetry from ${ws.data.nodeId}: ${String(err)}`,
-							);
-						}
-					});
-					// A node may ask the hub for nothing; anything it sends is a mistake.
-					link.onRequest((req) => {
-						throw new RemoteError(
-							"unsupported",
-							`the hub does not handle '${req.action}'`,
-						);
-					});
-					return;
-				}
-
-				browsers.set(link, ws.data);
-				link.onRequest((req) => handleBrowserRequest(req, ws.data));
-				// Paint immediately rather than after the first node reports.
-				link.send(MessageType.Telemetry, {
-					event: "nodes",
-					nodes: registry.summaries(),
-				});
-			},
-
-			message(ws, raw) {
-				const link = ws.data.link;
-				if (!link) return;
-				const bytes =
-					typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
-				packets.capture(
-					ws.data.role === "browser" ? "browser->hub" : "node->hub",
-					ws.data.role === "browser"
-						? (ws.data.remoteAddress ?? "browser")
-						: (ws.data.nodeId ?? ws.data.remoteAddress ?? "?"),
-					bytes,
-				);
-				link.receive(bytes);
-			},
-
-			close(ws, code, reason) {
-				const link = ws.data.link;
-				if (!link) return;
-				link.dispose(reason || `socket closed (${code})`);
-				if (ws.data.role === "browser") {
-					browsers.delete(link);
-				} else if (ws.data.nodeId) {
-					registry.detach(
-						ws.data.nodeId,
-						link,
-						reason || `socket closed (${code})`,
+				"/api/connections": (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const query = new URL(req.url).searchParams;
+					return json(
+						store.connections(
+							since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
+							200,
+							query.get("nodeId") ?? undefined,
+						),
 					);
-				}
+				},
+
+				"/api/nodes/:id/connections": (req: Request) => {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const { id } = (req as Request & { params: { id: string } }).params;
+					const query = new URL(req.url).searchParams;
+					return json(
+						store.connections(
+							since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
+							200,
+							id,
+						),
+					);
+				},
+
+				/**
+				 * Scaffold: a place for a service to push a log line over HTTP instead
+				 * of stdout. `console.log` still goes nowhere the dashboard can read
+				 * it, so anything that wants its logs on the hub posts here instead.
+				 * Kept deliberately thin — no levels config, no structured fields
+				 * beyond source/level/message — until something actually needs more.
+				 */
+				"/api/logs": {
+					POST: async (req: Request) => {
+						if (!requireToken(req, config.token)) return unauthorized();
+						let body: { source?: unknown; level?: unknown; message?: unknown };
+						try {
+							body = await req.json();
+						} catch {
+							return json({ error: "body must be JSON" }, 400);
+						}
+						const source =
+							typeof body.source === "string" ? body.source.trim() : "";
+						const message =
+							typeof body.message === "string" ? body.message.trim() : "";
+						if (!source || !message) {
+							return json({ error: "source and message are required" }, 400);
+						}
+						const level = typeof body.level === "string" ? body.level : "info";
+						store.recordServiceLog(source, level, message);
+						return json({ ok: true });
+					},
+					GET: (req: Request) => {
+						if (!requireToken(req, config.token)) return unauthorized();
+						const query = new URL(req.url).searchParams;
+						return json(
+							store.serviceLogs(
+								since(query.get("minutes"), DAY_MINUTES, WEEK_MINUTES),
+								200,
+								query.get("source") ?? undefined,
+							),
+						);
+					},
+				},
 			},
-		},
 
-		error: (err) => json({ error: err.message }, 500),
+			fetch(req, srv) {
+				const url = new URL(req.url);
+				const remoteAddress = srv.requestIP(req)?.address ?? null;
 
-		development: process.env.NODE_ENV !== "production" && {
-			hmr: true,
-			console: true,
-		},
-	});
+				if (url.pathname === "/node") {
+					// The node's own token is checked in Hello, where a mismatch can be
+					// reported in-protocol rather than as a bare HTTP status.
+					const upgraded = srv.upgrade(req, {
+						data: {
+							role: "node",
+							link: null as never,
+							nodeId: null,
+							remoteAddress,
+							watching: null,
+						},
+					});
+					return upgraded
+						? undefined
+						: json({ error: "websocket upgrade failed" }, 400);
+				}
+
+				if (url.pathname === "/ws") {
+					if (!requireToken(req, config.token)) return unauthorized();
+					const upgraded = srv.upgrade(req, {
+						data: {
+							role: "browser",
+							link: null as never,
+							nodeId: null,
+							remoteAddress,
+							watching: null,
+						},
+					});
+					return upgraded
+						? undefined
+						: json({ error: "websocket upgrade failed" }, 400);
+				}
+
+				return json({ error: "not found" }, 404);
+			},
+
+			websocket: {
+				// Terminal output and log tails are bursty; a bigger backpressure limit
+				// keeps Bun from closing a socket mid-scrollback.
+				backpressureLimit: 16 * 1024 * 1024,
+
+				// Negotiated with browsers only: node links gzip their own payloads, and
+				// deflating those again would cost CPU for nothing. See makeLink.
+				perMessageDeflate: true,
+
+				open(ws) {
+					const isNode = ws.data.role === "node";
+					const link = makeLink(
+						ws,
+						isNode ? `node@${ws.data.remoteAddress ?? "?"}` : "browser",
+						// The hub allocates odd correlation ids on every link it terminates.
+						"odd",
+					);
+					ws.data.link = link;
+
+					if (isNode) {
+						link.on(MessageType.Hello, (frame) =>
+							onNodeHello(ws, frame.payload),
+						);
+						link.on(MessageType.Telemetry, (frame) => {
+							if (!ws.data.nodeId) return;
+							try {
+								registry.telemetry(
+									ws.data.nodeId,
+									JSON.parse(new TextDecoder().decode(frame.payload)),
+								);
+							} catch (err) {
+								console.error(
+									`bad telemetry from ${ws.data.nodeId}: ${String(err)}`,
+								);
+							}
+						});
+						// A node may ask the hub for nothing; anything it sends is a mistake.
+						link.onRequest((req) => {
+							throw new RemoteError(
+								"unsupported",
+								`the hub does not handle '${req.action}'`,
+							);
+						});
+						return;
+					}
+
+					browsers.set(link, ws.data);
+					link.onRequest((req) => handleBrowserRequest(req, ws.data));
+					// Paint immediately rather than after the first node reports.
+					link.send(MessageType.Telemetry, {
+						event: "nodes",
+						nodes: registry.summaries(),
+					});
+				},
+
+				message(ws, raw) {
+					const link = ws.data.link;
+					if (!link) return;
+					const bytes =
+						typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
+					packets.capture(
+						ws.data.role === "browser" ? "browser->hub" : "node->hub",
+						ws.data.role === "browser"
+							? (ws.data.remoteAddress ?? "browser")
+							: (ws.data.nodeId ?? ws.data.remoteAddress ?? "?"),
+						bytes,
+					);
+					link.receive(bytes);
+				},
+
+				close(ws, code, reason) {
+					const link = ws.data.link;
+					if (!link) return;
+					link.dispose(reason || `socket closed (${code})`);
+					if (ws.data.role === "browser") {
+						browsers.delete(link);
+					} else if (ws.data.nodeId) {
+						registry.detach(
+							ws.data.nodeId,
+							link,
+							reason || `socket closed (${code})`,
+						);
+					}
+				},
+			},
+
+			error: (err) => json({ error: err.message }, 500),
+
+			development: process.env.NODE_ENV !== "production" && {
+				hmr: true,
+				console: true,
+			},
+		});
+
+	const server = serve(config.port, tlsPair ?? undefined);
+	// The way in for anything that doesn't trust the CA yet — nodes on ws://,
+	// a phone fetching /ca.pem — and the one that still works if the cert breaks.
+	const httpServer = tlsPair && config.tls ? serve(config.tls.httpPort) : null;
 
 	const shutdown = () => {
 		clearInterval(pruneTimer);
@@ -835,10 +849,11 @@ export function startHub(config: HubConfig) {
 		registry.stop();
 		store.close();
 		void server.stop(true);
+		void httpServer?.stop(true);
 		process.exit(0);
 	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 
-	return { server, registry, store, notion };
+	return { server, httpServer, registry, store, notion };
 }

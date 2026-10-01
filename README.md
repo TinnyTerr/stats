@@ -215,6 +215,10 @@ Every field is optional:
 {
   "port": 3000,
   "host": "127.0.0.1",          // 0.0.0.0 to accept nodes and remote browsers
+  "tls": { "sans": ["stats.local"], "httpPort": 3001 },
+                                // HTTPS on "port" with a leaf cert signed by the
+                                // fleet CA (reissued each boot); plain HTTP
+                                // stays on httpPort (default port+1). false = HTTP only
 
   "token": null,                // bearer token for the dashboard
   "nodeToken": "env:STATS_NODE_TOKEN",   // token nodes must present

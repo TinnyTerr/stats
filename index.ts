@@ -7,6 +7,7 @@
  *   bun index.ts node --hub ws://laptop:3000  # each server: dials the hub
  */
 
+import { hostname } from "node:os";
 import { startNode } from "./src/agent/agent.ts";
 import {
 	type AgentOverrides,
@@ -477,11 +478,49 @@ async function main(role: string | undefined) {
 			}
 			if (hostOverride) config.host = hostOverride;
 
+			if (config.tls) {
+				try {
+					const names = [
+						...new Set([
+							hostname(),
+							"localhost",
+							"127.0.0.1",
+							...(config.host === "0.0.0.0" || config.host === "::"
+								? []
+								: [config.host]),
+							...config.tls.sans,
+						]),
+					];
+					const leaf = await issueCert(config.dbPath, {
+						commonName: names[0] as string,
+						sans: names.slice(1),
+					});
+					config.tls.cert = `${leaf.cert}${leaf.caCert}`;
+					config.tls.key = leaf.key;
+				} catch (err) {
+					console.warn(
+						`warning: no TLS cert (${err instanceof Error ? err.message : err}), serving plain HTTP`,
+					);
+				}
+			}
+
 			const { registry, notion } = startHub(config);
-			console.log(
-				`stats hub ${VERSION} listening on http://${config.host}:${config.port}`,
-			);
-			console.log(`nodes connect to ws://${config.host}:${config.port}/node`);
+			if (config.tls?.cert) {
+				console.log(
+					`stats hub ${VERSION} listening on https://${config.host}:${config.port}`,
+				);
+				console.log(
+					`plain http fallback on http://${config.host}:${config.tls.httpPort}`,
+				);
+				console.log(
+					`nodes connect to wss://${config.host}:${config.port}/node`,
+				);
+			} else {
+				console.log(
+					`stats hub ${VERSION} listening on http://${config.host}:${config.port}`,
+				);
+				console.log(`nodes connect to ws://${config.host}:${config.port}/node`);
+			}
 			const known = registry.list().length;
 			if (known) console.log(`${known} node(s) known from previous runs`);
 			if (notion) {
