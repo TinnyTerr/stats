@@ -474,6 +474,10 @@ async function main(role: string | undefined) {
 				if (!Number.isInteger(port) || port < 0 || port > 65535) {
 					throw new Error(`--port ${portOverride} is not a port number`);
 				}
+				// The plain-HTTP fallback tracks the port unless hub.json pinned it.
+				if (config.tls && config.tls.httpPort === config.port + 1) {
+					config.tls.httpPort = port + 1;
+				}
 				config.port = port;
 			}
 			if (hostOverride) config.host = hostOverride;
@@ -543,7 +547,7 @@ async function main(role: string | undefined) {
 				// includes loading whatever this machine has installed.
 				const installed = await installedModules().catch(() => []);
 				const node = startNode({
-					hubUrl: `ws://127.0.0.1:${config.port}/node`,
+					hubUrl: `ws://127.0.0.1:${config.tls?.cert ? config.tls.httpPort : config.port}/node`,
 					token: config.nodeToken,
 					id: process.env.STATS_NODE_ID ?? "hub-local",
 					name: process.env.STATS_NODE_NAME ?? "This machine",
