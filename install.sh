@@ -592,6 +592,8 @@ if [ "$MODE" = "node" ]; then
 
   # A node is useless without a hub to dial, and guessing one would be worse
   # than asking: it would sit there retrying an address nobody meant.
+  HUB_URL_GIVEN=$HUB_URL
+  TOKEN_GIVEN=$TOKEN
   if [ -z "$HUB_URL" ] && [ -f "$ENV_FILE" ]; then
     HUB_URL=$(sed -n 's/^STATS_HUB=//p' "$ENV_FILE" | head -n1)
   fi
@@ -599,6 +601,15 @@ if [ "$MODE" = "node" ]; then
 
   if [ -f "$ENV_FILE" ]; then
     log "${DIM}keeping the existing $ENV_FILE$RESET"
+    # Flags given on this run beat the file; a re-run that changes the hub
+    # (say, to its plain-HTTP port) has to actually change it.
+    if [ -n "$HUB_URL_GIVEN" ]; then
+      sed -i "s|^STATS_HUB=.*|STATS_HUB=$HUB_URL_GIVEN|" "$ENV_FILE"
+      log "${DIM}hub set to $HUB_URL_GIVEN$RESET"
+    fi
+    if [ -n "$TOKEN_GIVEN" ]; then
+      sed -i "s|^STATS_NODE_TOKEN=.*|STATS_NODE_TOKEN=$TOKEN_GIVEN|" "$ENV_FILE"
+    fi
     [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^STATS_NODE_TOKEN=//p' "$ENV_FILE" | head -n1)
   else
     [ -n "$TOKEN" ] ||
