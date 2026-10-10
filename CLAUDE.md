@@ -27,11 +27,14 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   no `default` declares its platforms on its own.
 - **`system` is one module with one probe per platform.** `src/collect/probe.ts`
   is the seam; `src/collect/platform/linux.ts` is the implementation the rest of
-  the codebase grew up around, `win32.ts` is CIM through PowerShell, and darwin
-  is a declared stub that reports unavailable. Probes are imported lazily and
-  one at a time, so a Linux node never loads the Windows probe. Adding a
-  platform is a file and a row in `PROBES` — not a change to the module, the
-  agent, or the wire.
+  the codebase grew up around, `darwin.ts` is `sysctl`/`vm_stat`/`df`/`netstat`
+  (no temperatures, on purpose), and `win32.ts` is CIM through PowerShell.
+  Probes are imported lazily and one at a time, so a Linux node never loads the
+  Windows probe. **`processes` and `ports` follow the same rule**: the Linux
+  collector lives in `src/collect/processes.ts` and the others are
+  `platform/darwin-processes.ts` / `win32-processes.ts`, imported dynamically on
+  that platform only. Adding a platform is a file and a row in `PROBES` — not a
+  change to the module, the agent, or the wire.
 - **Docker, systemd, terminals and the rest are modules, not special cases.**
   `src/modules/manifest.ts` is the table all three peers read — what a module
   provides, which actions it owns, which tab it draws, what it may touch.
@@ -137,6 +140,17 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   `wss://` or the http port after this.
 
 ## Things that bit us, worth not rediscovering
+
+- **macOS, written without a Mac in reach.** The darwin parsers are pure and
+  tested against captured-shape fixtures on Linux; the live half is not
+  exercised by CI until the macOS runner is green. BSD `ps` has no `--sort` or
+  `etimes`; BSD `sed -i` wants `''`; `df` has no `-T`; `netstat -ibn` puts bytes
+  only on the `<Link#n>` row and drops the Address column for tunnels, so read
+  columns from the right; `netstat -anv` has the pid in column 8 for tcp and 7
+  for udp (no state). launchd has no `EnvironmentFile=`, so the plist is `sh`
+  sourcing the env file and `exec`ing stats, and `XPC_SERVICE_NAME` is how a
+  process knows its own label. Docker Desktop's socket is under `~/.docker/run`
+  and a daemon's `$HOME` is root's, hence the `/Users/*` scan in `docker.ts`.
 
 - **Windows, tested on a real box (`sdv`), not a VM.** `Bun.main` inside a
   compiled exe is `B:/~BUN/root/stats.exe`, not `/$bunfs/…`; `isCompiledBinary()`

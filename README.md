@@ -303,7 +303,8 @@ stats modules      # the table, with a [not on this platform] marker
 | --- | --- |
 | `system` | Linux, macOS, Windows — one probe per platform |
 | `projects`, `logs`, `proxmox`, `pihole` | any platform |
-| `docker`, `processes`, `ports` | Linux, macOS |
+| `docker` | Linux, macOS |
+| `processes`, `ports` | Linux, macOS, Windows |
 | `systemd` | Linux |
 | `terminal` | Linux, macOS, Windows |
 
@@ -311,22 +312,40 @@ An empty list means portable, which is the default and the honest answer for a
 module made of HTTP calls. The loader drops anything that doesn't name the host
 it woke up on, before asking the module anything.
 
-`system` has a Linux probe (/proc, /sys, `df`) and a Windows probe (CIM through
-PowerShell — one spawn per tick that prints one JSON document, because process
-start-up is the expensive part there). macOS is a declared stub that reports
-unavailable, so a node on it connects, shows its hostname and addresses, and
-runs its portable modules with the system card absent. `src/collect/probe.ts`
-is the seam and `src/collect/platform/` is where a new one goes.
+`system` has one probe per platform:
 
-A Windows node is a real node: `system`, `projects`, `logs`, `terminal` and
-`ca` all run there (the terminal is PowerShell 7 or Windows PowerShell on a
-ConPTY, the CA lands in the machine's Root store via `certutil`), and the test
-suite passes on Windows with the Linux-only collector and installer tests
-skipped. Its card shows CPU, memory, fixed drives by letter, adapter throughput
-and — where the firmware fills in a thermal zone and the node can read it —
-temperatures. Windows keeps no load average; the one shown is derived, the
-kernel's 1/5/15-minute damping applied to busy cores plus the processor queue
-length. `systemd`, `docker`, `processes` and `ports` still don't run there.
+- **Linux** — /proc, /sys, `df`, os-release.
+- **macOS** — `sysctl`, `vm_stat`, `df -Pk`, `netstat -ibn`, `sw_vers` and
+  `ioreg`, all of which ship with the OS. CPU comes from `os.cpus()` deltas.
+  There are no temperatures: SMC needs a private framework or root
+  `powermetrics`, so the list is empty rather than faked.
+- **Windows** — CIM through PowerShell, one spawn per tick that prints one JSON
+  document, because process start-up is the expensive part there.
+
+`processes` and `ports` follow the same split: `ps` and `ss` on Linux, `ps` and
+`netstat -anv` (which names every socket's pid without root) on macOS, CIM and
+the NetTCPIP module on Windows. `src/collect/probe.ts` is the seam and
+`src/collect/platform/` is where a platform's code goes.
+
+A macOS node is a full node: `system`, `processes`, `ports`, `docker` (Docker
+Desktop's socket under `~/.docker/run` is found when `/var/run/docker.sock`
+isn't there), `projects`, `logs`, `terminal` and `ca` (`security
+add-trusted-cert` into the System keychain). `install.sh` sets it up as a
+launchd daemon, `dev.stats.node` / `dev.stats.hub`, logging to
+`/var/log/stats-*.log`, and `stats update` restarts it with `launchctl
+kickstart -k`. `systemd` is the one module with no macOS meaning.
+
+A Windows node is a real node: `system`, `processes`, `ports`, `projects`,
+`logs`, `terminal` and `ca` all run there (the terminal is PowerShell 7 or
+Windows PowerShell on a ConPTY, the CA lands in the machine's Root store via
+`certutil`), and the test suite passes on Windows with the Linux-only collector
+and installer tests skipped. Its card shows CPU, memory, fixed drives by letter,
+adapter throughput and — where the firmware fills in a thermal zone and the
+node can read it — temperatures. Windows keeps no load average; the one shown
+is derived, the kernel's 1/5/15-minute damping applied to busy cores plus the
+processor queue length. Process owners are looked up only for the busiest few
+and cached. `systemd` and `docker` don't run there: Docker's Windows endpoint
+is a named pipe, not the unix socket the module's `socket` grant covers.
 
 ### Managing modules from the hub
 
@@ -774,10 +793,10 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 ## Building executables
 
 ```bash
-bun run build                          # every Linux target, into dist/
+bun run build                          # every Linux, macOS and Windows target, into dist/
 bun run build:host                     # just this machine's
 bun run build --targets linux-arm64    # one of them
-bun run build --all                    # Linux + macOS (hub only)
+bun run build --linux                  # Linux only
 ```
 
 | Asset | Runs on |
@@ -788,6 +807,9 @@ bun run build --all                    # Linux + macOS (hub only)
 | `stats-linux-x64-musl-baseline` | Alpine x86-64 without AVX2 |
 | `stats-linux-arm64` | glibc arm64 — Pi 4/5 (64-bit), Graviton, Ampere |
 | `stats-linux-arm64-musl` | Alpine arm64 |
+| `stats-darwin-arm64` | macOS, Apple Silicon |
+| `stats-darwin-x64` | macOS, Intel |
+| `stats-windows-x64.exe` | Windows x86-64 |
 
 Each is built with `bun build --compile --minify --bytecode` and
 `--production`, which strips the dev-only hot-reload path and bundles React's
@@ -799,11 +821,10 @@ installer prefers), `SHA256SUMS` and `manifest.json`. Cross-compiling downloads
 the matching Bun runtime once per target, so the first build needs network
 access.
 
-macOS builds exist under `--all` and can run the hub, but not yet a node with
-a system card: every collector reads `/proc`, `/sys`, `ss`, `systemctl` or the
-Docker socket. The Windows build (`--targets windows-x64`) is a node — see
-**Platforms** — and `stats update` works on it, swapping the running exe by
-renaming it aside.
+macOS and Windows builds ship in every release and are full nodes, not just
+hubs — see **Platforms**. `stats update` works on all three: Linux and macOS
+rename the new binary over the old one, Windows renames the running exe aside
+first.
 
 ## Versioning
 
@@ -900,7 +921,8 @@ src/collect/            system.ts, facts.ts (the Linux probe's collectors),
                         systemd.ts, docker.ts, proxmox.ts, pihole.ts,
                         processes.ts, logs.ts
 src/collect/probe.ts    the per-platform seam under the `system` module
-src/collect/platform/   linux.ts and win32.ts (real), darwin.ts (declared stub)
+src/collect/platform/   linux.ts, darwin.ts and win32.ts, plus the per-platform
+                        process and port collectors
 src/agent/agent.ts      the node: dial, telemetry loop, control dispatch
 src/agent/identity.ts   hostname and addresses — the only thing not from a module
 src/agent/config.ts     node configuration and hub URL normalisation
@@ -923,7 +945,8 @@ web/                    React dashboard (link.ts, panels.tsx, modules.tsx,
                         modulespage.tsx — the fleet's module management page)
 schema/                 the projects JSON Schema
 scripts/build.ts        cross-compiles the standalone binaries into dist/
-install.sh              download/verify/install + systemd units, either role
+install.sh              download/verify/install + systemd units (Linux) or
+                        launchd daemons (macOS), either role
 deploy/                 systemd units, for installing by hand
 ```
 
@@ -945,9 +968,7 @@ error shows up on that node's card.
 
 ## Notes
 
-Linux is the only platform with collectors today: the `system` probe reads
-`/proc` and `/sys`, and `processes`, `ports` and `systemd` shell out to `ps`,
-`ss` and `systemctl`. macOS and Windows probes are declared but unwritten, so a
-node on either connects and reports its identity with an empty system card —
-see **Platforms** above, including what a Windows node does run. The hub
+Linux, macOS and Windows each have a `system` probe, and `processes` and
+`ports` run on all three; `systemd` is Linux's, `docker` is Linux and macOS.
+macOS temperatures are always empty (see **Platforms**). The hub
 itself runs anywhere Bun does.
