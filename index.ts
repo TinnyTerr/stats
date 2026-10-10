@@ -328,8 +328,10 @@ async function updateCommand() {
 		// Run over ssh rather than from the unit, which is the normal case: there
 		// is no service *here* to restart, and guessing at one would be worse.
 		console.log(
-			"not running under systemd — restart the service to pick this up:\n" +
-				"  systemctl restart stats-node   (or stats-hub)",
+			"not running under a service manager — restart the service to pick this up:\n" +
+				(process.platform === "darwin"
+					? "  sudo launchctl kickstart -k system/dev.stats.node   (or dev.stats.hub)"
+					: "  systemctl restart stats-node   (or stats-hub)"),
 		);
 		return;
 	}

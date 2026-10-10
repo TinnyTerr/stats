@@ -379,11 +379,19 @@ async function swapBinary(staged: string, binary: string): Promise<void> {
 /* ---------- restarting whatever is running us ---------- */
 
 /**
- * The systemd unit this process belongs to, read from its cgroup. Guessing the
- * name from the role would restart the wrong thing on a host running both, or
- * on one where somebody renamed the unit.
+ * The service this process belongs to. On Linux that is the systemd unit,
+ * read from the cgroup; guessing the name from the role would restart the wrong
+ * thing on a host running both, or on one where somebody renamed the unit.
+ *
+ * On macOS launchd tells a job its own label through XPC_SERVICE_NAME ("0" when
+ * the process was started from a shell), and install.sh labels everything
+ * `dev.stats.*`, so anything else is somebody's terminal and not ours to restart.
  */
 export async function currentUnit(): Promise<string | null> {
+	if (process.platform === "darwin") {
+		const label = process.env.XPC_SERVICE_NAME ?? "";
+		return /^dev\.stats\./.test(label) ? label : null;
+	}
 	const cgroup = await Bun.file("/proc/self/cgroup")
 		.text()
 		.catch(() => null);
@@ -392,12 +400,17 @@ export async function currentUnit(): Promise<string | null> {
 }
 
 /**
- * Restarts the unit, which for a self-update means killing the caller. Detached
- * on purpose: `systemctl restart` from inside the unit would otherwise wait for
- * a stop that can't finish until this process exits.
+ * Restarts the service, which for a self-update means killing the caller.
+ * Detached on purpose: `systemctl restart` from inside the unit would otherwise
+ * wait for a stop that can't finish until this process exits. `kickstart -k` is
+ * launchd's spelling of the same thing.
  */
 export async function restartUnit(unit: string): Promise<void> {
-	Bun.spawn(["systemctl", "restart", unit], {
+	const cmd =
+		process.platform === "darwin"
+			? ["launchctl", "kickstart", "-k", `system/${unit}`]
+			: ["systemctl", "restart", unit];
+	Bun.spawn(cmd, {
 		stdin: "ignore",
 		stdout: "ignore",
 		stderr: "ignore",

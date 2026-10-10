@@ -3,7 +3,8 @@
 #
 # Installs the single-file `stats` binary (it embeds the Bun runtime, the API
 # and the dashboard, so nothing else is required on the machine) and, on
-# request, a hardened systemd unit for either role.
+# request, a service for either role: a hardened systemd unit on Linux, a
+# launchd daemon on macOS. (Windows has install.ps1.)
 #
 #   Hub, on the machine that shows the dashboard — install this one first, it
 #   prints the token the nodes need:
@@ -23,7 +24,8 @@
 #   /etc/stats/hub.json             hub config           (--hub)
 #   /etc/stats/hub.env              hub secrets          (--hub, mode 0600)
 #   /var/lib/stats/                 hub SQLite history   (--hub)
-#   /etc/systemd/system/stats-*.service
+#   /etc/systemd/system/stats-*.service         (Linux)
+#   /Library/LaunchDaemons/dev.stats.*.plist    (macOS), logging to /var/log/stats-*.log
 #
 # It is re-runnable: installing over an existing copy upgrades the binary and
 # restarts the service, and never overwrites a config or token you already have.
@@ -73,8 +75,8 @@ stats installer
 Usage: install.sh [options]
 
 Role:
-  --node               install a node (dials the hub) + systemd unit
-  --hub                install the dashboard hub + systemd unit
+  --node               install a node (dials the hub) + service
+  --hub                install the dashboard hub + service
   (neither)            install the binary only
 
 Source:
@@ -87,7 +89,7 @@ Placement:
   --prefix DIR         where the binary goes (default: /usr/local/bin,
                        or ~/.local/bin when not running as root)
   --user NAME          system user the services run as (default: root for a
-                       node, stats for the hub). A root node is the permissive
+                       node, stats for the hub; always root on macOS). A root node is the permissive
                        one: modules get every grant, and the hub may switch
                        modules on and ask it to update. --user stats gives you
                        the sandboxed, least-privilege node instead.
@@ -101,7 +103,7 @@ Service:
   --no-control         (--node) refuse start/stop/restart requests
   --port N             (--hub) port to listen on (default 3000)
   --host ADDR          (--hub) address to bind (default 127.0.0.1)
-  --no-service         install the binary and config but no systemd unit
+  --no-service         install the binary and config but no service
 
 Other:
   --clean              wipe this machine's existing stats config and units
@@ -156,6 +158,12 @@ done
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+IS_DARWIN=0
+if [ "$(uname -s)" = "Darwin" ]; then IS_DARWIN=1; fi
+
+# BSD sed wants a backup suffix after -i, GNU sed takes none.
+sed_i() { if [ "$IS_DARWIN" -eq 1 ]; then sed -i '' "$@"; else sed -i "$@"; fi; }
+
 # Only used for irreversible things. Reads from the terminal rather than stdin,
 # because stdin is the script itself when this is piped from curl.
 confirm() {
@@ -180,21 +188,41 @@ BIN="$PREFIX/stats"
 CONF_DIR="/etc/stats"
 STATE_DIR="/var/lib/stats"
 UNIT_DIR="/etc/systemd/system"
+LAUNCHD_DIR="/Library/LaunchDaemons"
+LOG_DIR="/var/log"
+
+# One name per service ("stats-node"), two homes for it.
+unit_path() {
+  if [ "$IS_DARWIN" -eq 1 ]; then printf '%s/dev.stats.%s.plist\n' "$LAUNCHD_DIR" "${1#stats-}"
+  else printf '%s/%s.service\n' "$UNIT_DIR" "$1"; fi
+}
+unit_label() { printf 'dev.stats.%s\n' "${1#stats-}"; }
+
+# Stops and unregisters a service; deleting its file is the caller's call.
+stop_unit() {
+  if [ "$IS_DARWIN" -eq 1 ]; then
+    launchctl bootout "system/$(unit_label "$1")" >/dev/null 2>&1 || true
+  elif have systemctl; then
+    systemctl disable --now "$1" >/dev/null 2>&1 || true
+  fi
+}
 
 # ---------------------------------------------------------------- uninstall
 
 uninstall() {
   [ "$IS_ROOT" -eq 1 ] || warn "not root — system services and /etc/stats will be left alone"
 
-  if [ "$IS_ROOT" -eq 1 ] && have systemctl; then
+  if [ "$IS_ROOT" -eq 1 ]; then
     for unit in stats-node stats-agent stats-hub; do
-      if [ -f "$UNIT_DIR/$unit.service" ]; then
-        step "removing $unit.service"
-        systemctl disable --now "$unit" >/dev/null 2>&1 || true
-        rm -f "$UNIT_DIR/$unit.service"
+      path=$(unit_path "$unit")
+      if [ -f "$path" ]; then
+        step "removing $path"
+        stop_unit "$unit"
+        rm -f "$path"
       fi
     done
-    systemctl daemon-reload || true
+    if [ "$IS_DARWIN" -eq 0 ] && have systemctl; then systemctl daemon-reload || true; fi
+    if [ "$IS_DARWIN" -eq 1 ]; then rm -f /etc/newsyslog.d/stats.conf; fi
   fi
 
   if [ -f "$BIN" ]; then step "removing $BIN"; rm -f "$BIN"; fi
@@ -252,7 +280,7 @@ clean_existing() {
   done
   gone_units=""
   for u in $units; do
-    [ -f "$UNIT_DIR/$u.service" ] && gone_units="${gone_units:+$gone_units }$u"
+    [ -f "$(unit_path "$u")" ] && gone_units="${gone_units:+$gone_units }$u"
   done
   purge_state=0
   if [ "$PURGE" -eq 1 ] && [ "$MODE" != "node" ] && [ -d "$STATE_DIR" ]; then
@@ -265,7 +293,7 @@ clean_existing() {
   fi
 
   step "clean install — this removes:"
-  for u in $gone_units; do log "    $UNIT_DIR/$u.service"; done
+  for u in $gone_units; do log "    $(unit_path "$u")"; done
   for f in $gone_files; do log "    $f"; done
   [ "$purge_state" -eq 1 ] && log "    $STATE_DIR   ${DIM}(the hub's metric history)$RESET"
   case " $gone_files " in
@@ -280,14 +308,12 @@ clean_existing() {
   # Stopping first is not just tidiness: a unit left running while its
   # EnvironmentFile disappears spends the gap in a restart loop, and the noise
   # ends up in the journal this script prints if anything else goes wrong.
-  if have systemctl; then
-    for u in $gone_units; do
-      systemctl disable --now "$u" >/dev/null 2>&1 || true
-      rm -f "$UNIT_DIR/$u.service"
-    done
-    [ -n "$gone_units" ] && systemctl daemon-reload || true
-  else
-    for u in $gone_units; do rm -f "$UNIT_DIR/$u.service"; done
+  for u in $gone_units; do
+    stop_unit "$u"
+    rm -f "$(unit_path "$u")"
+  done
+  if [ "$IS_DARWIN" -eq 0 ] && have systemctl && [ -n "$gone_units" ]; then
+    systemctl daemon-reload || true
   fi
 
   for f in $gone_files; do rm -f "$f"; done
@@ -321,10 +347,8 @@ detect_asset() {
 
   case "$os" in
     Linux)  ;;
-    Darwin)
-      warn "macOS can run the hub, but not a node — every collector is Linux-only."
-      printf 'stats-darwin-%s\n' "$arch"; return ;;
-    *) die "$os is not supported — stats is Linux-only (macOS runs the hub only)." ;;
+    Darwin) printf 'stats-darwin-%s\n' "$arch"; return ;;
+    *) die "$os is not supported — stats runs on Linux and macOS here, and Windows through install.ps1." ;;
   esac
 
   libc=""
@@ -471,6 +495,9 @@ mkdir -p "$PREFIX"
 cp "$TMP/stats" "$BIN.new"
 chmod 0755 "$BIN.new"
 mv -f "$BIN.new" "$BIN"
+# A browser-downloaded binary is quarantined and Gatekeeper then refuses to let
+# a daemon start it; curl doesn't set the flag, but a copied-in --from might.
+if [ "$IS_DARWIN" -eq 1 ]; then xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true; fi
 step "installed $INSTALLED_VERSION → $BIN"
 
 case ":$PATH:" in
@@ -486,23 +513,31 @@ if [ -z "$MODE" ]; then
   log ""
   log "Next: ${BOLD}stats hub${RESET} on the machine showing the dashboard, then"
   log "${BOLD}stats node --hub ws://that-machine:3000${RESET} on each server."
-  log "Re-run with --node or --hub to set one up as a systemd service."
+  log "Re-run with --node or --hub to set one up as a service."
   exit 0
 fi
 
-if [ "$NO_SERVICE" -eq 1 ] || ! have systemctl; then
-  [ "$NO_SERVICE" -eq 1 ] || warn "no systemd here — skipping the service."
+SVC_CTL=systemctl
+if [ "$IS_DARWIN" -eq 1 ]; then SVC_CTL=launchctl; fi
+if [ "$NO_SERVICE" -eq 1 ] || ! have "$SVC_CTL"; then
+  if [ "$NO_SERVICE" -eq 0 ]; then
+    if [ "$IS_DARWIN" -eq 1 ]; then warn "no launchctl here — skipping the service."
+    else warn "no systemd here — skipping the service."; fi
+  fi
   NO_SERVICE=1
 fi
 
 if [ "$IS_ROOT" -ne 1 ]; then
-  warn "not root — skipping the systemd unit, config and service user."
+  warn "not root — skipping the service, config and service user."
   log "Run: ${BOLD}stats $MODE${RESET}"
   exit 0
 fi
 
 ensure_user() {
   if [ "$SERVICE_USER" = "root" ]; then return; fi
+  if [ "$IS_DARWIN" -eq 1 ]; then
+    die "macOS services run as root — there is no useradd to make '$SERVICE_USER' with."
+  fi
   if id "$SERVICE_USER" >/dev/null 2>&1; then return; fi
   step "creating system user '$SERVICE_USER'"
   if have useradd; then
@@ -540,10 +575,14 @@ random_token() {
 # unreachable it retries forever, which is the right behaviour for the node and
 # no feedback at all here. Read the answer out of the journal it just wrote.
 report_node_link() {
-  have journalctl || return 0
+  if [ "$IS_DARWIN" -eq 0 ]; then have journalctl || return 0; fi
   i=0
   while [ "$i" -lt 8 ]; do
-    out=$(journalctl -u stats-node -n 40 --no-pager 2>/dev/null) || return 0
+    if [ "$IS_DARWIN" -eq 1 ]; then
+      out=$(tail -n 40 "$LOG_DIR/stats-node.log" 2>/dev/null) || return 0
+    else
+      out=$(journalctl -u stats-node -n 40 --no-pager 2>/dev/null) || return 0
+    fi
     case "$out" in
       *"connected to hub"*)
         log "${GREEN}connected to $HUB_URL.$RESET"; return 0 ;;
@@ -555,14 +594,73 @@ report_node_link() {
     i=$((i + 1))
     sleep 1
   done
+  follow="journalctl -u stats-node -f"
+  if [ "$IS_DARWIN" -eq 1 ]; then follow="tail -f $LOG_DIR/stats-node.log"; fi
   warn "the node is running but hasn't reached $HUB_URL yet. It will keep
   retrying, so this may just be slow — otherwise check that the name resolves
   from here, that the hub is bound to something other than 127.0.0.1, and that
   port ${HUB_URL##*:} is open. Follow it with:
-    journalctl -u stats-node -f"
+    $follow"
+}
+
+xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# launchd has no EnvironmentFile=, so the daemon is `sh` sourcing the env file
+# and exec'ing stats; set -a exports whatever the file defines. The PATH is
+# widened because a daemon's default is /usr/bin:/bin:/usr/sbin:/sbin, which
+# hides docker and everything else Homebrew puts down.
+write_plist() { # write_plist <unit> <env-file> <stats args...>
+  unit="$1"; envfile="$2"; shift 2
+  plist=$(unit_path "$unit")
+  mkdir -p "$LAUNCHD_DIR"
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+    printf '<plist version="1.0">\n<dict>\n'
+    printf '  <key>Label</key><string>%s</string>\n' "$(unit_label "$unit")"
+    printf '  <key>ProgramArguments</key>\n  <array>\n'
+    for arg in /bin/sh -c 'set -a; if [ -r "$0" ]; then . "$0"; fi; set +a; exec "$@"' \
+               "$envfile" "$BIN" "$@"; do
+      printf '    <string>%s</string>\n' "$(printf '%s' "$arg" | xml_escape)"
+    done
+    printf '  </array>\n'
+    printf '  <key>EnvironmentVariables</key>\n  <dict>\n'
+    printf '    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>\n'
+    printf '  </dict>\n'
+    printf '  <key>RunAtLoad</key><true/>\n'
+    printf '  <key>KeepAlive</key><true/>\n'
+    printf '  <key>ThrottleInterval</key><integer>5</integer>\n'
+    printf '  <key>StandardOutPath</key><string>%s/%s.log</string>\n' "$LOG_DIR" "$unit"
+    printf '  <key>StandardErrorPath</key><string>%s/%s.log</string>\n' "$LOG_DIR" "$unit"
+    printf '</dict>\n</plist>\n'
+  } > "$plist"
+  chmod 0644 "$plist"
+
+  # Rotate the log; launchd just appends forever otherwise.
+  if [ -d /etc/newsyslog.d ]; then
+    printf '%s/%s.log 644 5 2048 * J\n' "$LOG_DIR" "$unit" > "/etc/newsyslog.d/$unit.conf"
+  fi
 }
 
 restart_unit() {
+  if [ "$IS_DARWIN" -eq 1 ]; then
+    label=$(unit_label "$1")
+    launchctl bootout "system/$label" >/dev/null 2>&1 || true
+    # bootout is asynchronous; bootstrapping straight after it can race it.
+    sleep 1
+    launchctl bootstrap system "$(unit_path "$1")" ||
+      die "launchctl couldn't load $(unit_path "$1")."
+    launchctl enable "system/$label" >/dev/null 2>&1 || true
+    sleep 1
+    if launchctl print "system/$label" 2>/dev/null | grep -q 'state = running'; then
+      log "${GREEN}$1 is running.$RESET"
+    else
+      warn "$1 didn't come up. Log:"
+      tail -n 20 "$LOG_DIR/$1.log" 2>/dev/null || true
+      exit 1
+    fi
+    return
+  fi
   systemctl daemon-reload
   systemctl enable "$1" >/dev/null 2>&1 || true
   systemctl restart "$1"
@@ -580,7 +678,11 @@ restart_unit() {
 # and where the hub — the source of truth for the fleet — can switch its modules
 # on and ask it to update. The hub keeps its own unprivileged user; it only
 # needs its database and its port.
-if [ "$MODE" = "node" ] && [ "$USER_SET" -eq 0 ]; then SERVICE_USER="root"; fi
+# macOS has no useradd and its daemons are root's to start, so there it is
+# root for both.
+if { [ "$MODE" = "node" ] || [ "$IS_DARWIN" -eq 1 ]; } && [ "$USER_SET" -eq 0 ]; then
+  SERVICE_USER="root"
+fi
 
 ensure_user
 mkdir -p "$CONF_DIR"
@@ -604,11 +706,11 @@ if [ "$MODE" = "node" ]; then
     # Flags given on this run beat the file; a re-run that changes the hub
     # (say, to its plain-HTTP port) has to actually change it.
     if [ -n "$HUB_URL_GIVEN" ]; then
-      sed -i "s|^STATS_HUB=.*|STATS_HUB=$HUB_URL_GIVEN|" "$ENV_FILE"
+      sed_i "s|^STATS_HUB=.*|STATS_HUB=$HUB_URL_GIVEN|" "$ENV_FILE"
       log "${DIM}hub set to $HUB_URL_GIVEN$RESET"
     fi
     if [ -n "$TOKEN_GIVEN" ]; then
-      sed -i "s|^STATS_NODE_TOKEN=.*|STATS_NODE_TOKEN=$TOKEN_GIVEN|" "$ENV_FILE"
+      sed_i "s|^STATS_NODE_TOKEN=.*|STATS_NODE_TOKEN=$TOKEN_GIVEN|" "$ENV_FILE"
     fi
     [ -n "$TOKEN" ] || TOKEN=$(sed -n 's/^STATS_NODE_TOKEN=//p' "$ENV_FILE" | head -n1)
   else
@@ -678,7 +780,13 @@ RestrictSUIDSGID=yes
 LockPersonality=yes"
   fi
 
-  if [ "$NO_SERVICE" -eq 0 ]; then
+  if [ "$NO_SERVICE" -eq 0 ] && [ "$IS_DARWIN" -eq 1 ]; then
+    step "writing $(unit_path stats-node)"
+    # shellcheck disable=SC2086 # EXEC_FLAGS is a deliberate word list
+    write_plist stats-node "$ENV_FILE" node $EXEC_FLAGS
+    restart_unit stats-node
+    report_node_link
+  elif [ "$NO_SERVICE" -eq 0 ]; then
     step "writing $UNIT_DIR/stats-node.service"
     cat > "$UNIT_DIR/stats-node.service" <<EOF
 # Written by install.sh. Mirrors deploy/stats-node.service in the repo.
@@ -712,7 +820,7 @@ EOF
 
   log ""
   log "Node is dialling ${BOLD}$HUB_URL${RESET} — it should appear on the dashboard within seconds."
-  log "Identity:  ${DIM}${NODE_ID:-/etc/machine-id}  (${NODE_NAME:-$(hostname)})$RESET"
+  log "Identity:  ${DIM}${NODE_ID:-this host's machine id}  (${NODE_NAME:-$(hostname)})$RESET"
   log "Projects:  $PROJECTS   ${DIM}(declare what this host runs; stats check validates it)$RESET"
   if [ "$NO_TERMINAL" -eq 0 ] || [ "$NO_CONTROL" -eq 0 ]; then
     log ""
@@ -783,7 +891,11 @@ STATS_NODE_TOKEN=$TOKEN
 EOF
 fi
 
-if [ "$NO_SERVICE" -eq 0 ]; then
+if [ "$NO_SERVICE" -eq 0 ] && [ "$IS_DARWIN" -eq 1 ]; then
+  step "writing $(unit_path stats-hub)"
+  write_plist stats-hub "$HUB_ENV" hub --config "$CONFIG"
+  restart_unit stats-hub
+elif [ "$NO_SERVICE" -eq 0 ]; then
   step "writing $UNIT_DIR/stats-hub.service"
   cat > "$UNIT_DIR/stats-hub.service" <<EOF
 # Written by install.sh. Mirrors deploy/stats-hub.service in the repo.
@@ -822,7 +934,10 @@ EOF
   restart_unit stats-hub
 fi
 
-ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+ADDR=$(hostname -I 2>/dev/null | awk '{print $1}') || ADDR=""
+if [ -z "$ADDR" ] && [ "$IS_DARWIN" -eq 1 ]; then
+  ADDR=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)
+fi
 [ -n "$ADDR" ] || ADDR="$BIND"
 
 log ""
