@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import { $ } from "bun";
 import type { HostFacts } from "../types.ts";
+import { DOCKER_SOCKET } from "./docker.ts";
 
 /**
  * The slow half of collection: what this machine *is*, rather than what it is
@@ -103,7 +104,7 @@ async function detectInit(): Promise<string> {
 }
 
 async function dockerVersion(): Promise<string | null> {
-	const socket = process.env.DOCKER_SOCKET ?? "/var/run/docker.sock";
+	const socket = DOCKER_SOCKET;
 	try {
 		const res = await fetch("http://localhost/version", { unix: socket });
 		if (!res.ok) return null;

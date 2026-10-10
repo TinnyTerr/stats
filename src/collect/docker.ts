@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import type { Container, ContainerPort } from "../types.ts";
 
 /**
@@ -6,8 +8,30 @@ import type { Container, ContainerPort } from "../types.ts";
  * has the socket bind-mounted.
  */
 
-export const DOCKER_SOCKET =
-	process.env.DOCKER_SOCKET ?? "/var/run/docker.sock";
+/**
+ * Where the engine listens. On Linux that is /var/run/docker.sock. Docker
+ * Desktop on macOS keeps its socket in the user's home and only links it to
+ * /var/run if the "default socket" setting is on — and a launchd daemon's HOME
+ * is root's, so every user under /Users is looked in too.
+ */
+function defaultSocket(): string {
+	if (process.env.DOCKER_SOCKET) return process.env.DOCKER_SOCKET;
+	const system = "/var/run/docker.sock";
+	if (process.platform !== "darwin" || existsSync(system)) return system;
+	const homes = [homedir()];
+	try {
+		for (const user of readdirSync("/Users")) homes.push(`/Users/${user}`);
+	} catch {
+		// no /Users to look in
+	}
+	for (const home of homes) {
+		const candidate = `${home}/.docker/run/docker.sock`;
+		if (existsSync(candidate)) return candidate;
+	}
+	return system;
+}
+
+export const DOCKER_SOCKET = defaultSocket();
 const API = "v1.43";
 
 export class DockerUnavailable extends Error {}
