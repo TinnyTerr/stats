@@ -204,8 +204,8 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "The busiest processes on the host.",
 		required: false,
 		enabledByDefault: true,
-		// `ps` and /proc. Windows wants a different probe entirely.
-		platforms: ["linux", "darwin"],
+		// `ps` on Linux and macOS, CIM on Windows; src/collect/processes.ts picks.
+		platforms: ["linux", "darwin", "win32"],
 		grants: ["read", "exec"],
 		actions: [],
 		tab: "processes",
@@ -217,7 +217,7 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		description: "What is listening, and which process owns it.",
 		required: false,
 		enabledByDefault: true,
-		platforms: ["linux", "darwin"],
+		platforms: ["linux", "darwin", "win32"],
 		grants: ["read", "exec"],
 		actions: [],
 		tab: "ports",

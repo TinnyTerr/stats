@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import os from "node:os";
 import {
 	detectVirtualization,
 	factsFromReport,
@@ -274,4 +275,61 @@ describe.skipIf(process.platform !== "win32")("win32 probe, live", () => {
 		expect(facts.machineId).toMatch(/^[0-9a-f-]{36}$/);
 		expect(facts.cpuModel).toBeTruthy();
 	}, 60_000);
+});
+
+describe("win32 processes and ports", () => {
+	test("cpu is a 100ns-tick delta over wall time, per whole box", async () => {
+		const { freshProcState, processesFromReport } = await import(
+			"./win32-processes.ts"
+		);
+		const state = freshProcState();
+		const row = (pid: number, cpu100ns: number) => ({
+			pid,
+			ppid: 4,
+			name: `p${pid}.exe`,
+			cmd: `C:\\p${pid}.exe --x`,
+			started: 1_700_000_000,
+			rss: 1000,
+			cpu100ns,
+		});
+		processesFromReport(
+			{ procs: [row(10, 0), row(11, 0), row(0, 0)] },
+			state,
+			500,
+			5,
+		);
+		const out = processesFromReport(
+			{
+				procs: [row(10, 1e7), row(11, 2e7), row(0, 9e9)],
+				owners: [{ pid: 11, user: "lewis" }],
+			},
+			state,
+			1500,
+			5,
+			1e6,
+		);
+		// pid 0 is the idle process and never listed
+		expect(out.map((p) => p.pid)).toEqual([11, 10]);
+		expect(out[0]!.cpu).toBeCloseTo(Math.min(1, 2 / os.cpus().length), 5);
+		expect(out[0]!.user).toBe("lewis");
+		expect(out[1]!.command).toBe("p10");
+		expect(out[0]!.mem).toBeCloseTo(0.001, 5);
+	});
+
+	test("ports join owners to names and drop kernel-owned pids", async () => {
+		const { portsFromReport } = await import("./win32-processes.ts");
+		const ports = portsFromReport({
+			tcp: [
+				{ addr: "0.0.0.0", port: 445, pid: 4 },
+				{ addr: "127.0.0.1", port: 3000, pid: 900 },
+			],
+			udp: [{ addr: "0.0.0.0", port: 5353, pid: 0 }],
+			names: [{ pid: 900, name: "bun" }],
+		});
+		expect(ports.map((p) => [p.proto, p.port, p.pid, p.process])).toEqual([
+			["tcp", 445, 4, null],
+			["tcp", 3000, 900, "bun"],
+			["udp", 5353, null, null],
+		]);
+	});
 });

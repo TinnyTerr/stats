@@ -10,6 +10,15 @@ const CORES = os.cpus().length || 1;
  * does the jiffies-to-percent arithmetic and handles the ppid/user lookups.
  */
 export async function collectProcesses(limit = 20): Promise<ProcessInfo[]> {
+	// Probes are imported lazily and one at a time — see src/collect/probe.ts.
+	if (process.platform === "darwin")
+		return (await import("./platform/darwin-processes.ts")).collectProcesses(
+			limit,
+		);
+	if (process.platform === "win32")
+		return (await import("./platform/win32-processes.ts")).collectProcesses(
+			limit,
+		);
 	const out =
 		await $`ps -eo pid=,ppid=,user:32=,pcpu=,pmem=,rss=,etimes=,comm=,args= --sort=-pcpu`
 			.nothrow()
@@ -116,6 +125,14 @@ export function forgetProcess(pid: number) {
  * modern Linux install.
  */
 export async function collectListeningPorts(): Promise<ListeningPort[]> {
+	if (process.platform === "darwin")
+		return (
+			await import("./platform/darwin-processes.ts")
+		).collectListeningPorts();
+	if (process.platform === "win32")
+		return (
+			await import("./platform/win32-processes.ts")
+		).collectListeningPorts();
 	const out = await $`ss -tulnpH`.nothrow().quiet();
 	if (out.exitCode !== 0) return [];
 

@@ -43,7 +43,7 @@ import type { SystemProbe } from "../probe.ts";
 
 /* ---------- the scripts ---------- */
 
-const PRELUDE = `
+export const PRELUDE = `
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -149,7 +149,7 @@ export interface FactsReport {
  * arrives by pipeline; `-InputObject` keeps it, but a wrong shape here would
  * mean a wrong card, so the reader tolerates both.
  */
-function asArray<T>(value: T | T[] | null | undefined): T[] {
+export function asArray<T>(value: T | T[] | null | undefined): T[] {
 	if (value == null) return [];
 	return Array.isArray(value) ? value : [value];
 }
@@ -181,7 +181,7 @@ const SCRIPT_TIMEOUT_MS = 20_000;
  * rather than `-Command`: the script has quotes and newlines, and base64 is
  * the one form both PowerShells take without a parser in between.
  */
-async function runScript<T>(script: string): Promise<T> {
+export async function runScript<T>(script: string): Promise<T> {
 	const exe = findShell();
 	if (!exe) throw new Error("no PowerShell on PATH");
 	const encoded = Buffer.from(script, "utf16le").toString("base64");
