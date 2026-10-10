@@ -3,10 +3,10 @@
  * Cross-compiles standalone `stats` executables — one per CPU/libc combination
  * we care about — into dist/.
  *
- *   bun run build                       # every Linux target
+ *   bun run build                       # every Linux, macOS and Windows target
  *   bun run build --targets linux-x64   # just one
  *   bun run build --host                # only what this machine runs
- *   bun run build --all                 # Linux + the experimental macOS builds
+ *   bun run build --linux               # Linux only (the old default)
  *
  * Each binary embeds the Bun runtime, the server and the bundled dashboard, so
  * the install target needs nothing preinstalled — no bun, no node, no npm.
@@ -28,13 +28,10 @@ interface Target {
 }
 
 /**
- * Linux is the whole story for this project — the collectors read /proc, /sys,
- * ss, systemctl and the Docker socket, and terminals need a pty — so these are
- * what ship.
- *
- * "baseline" targets drop AVX2 and friends: needed on pre-2013 Intel, early
- * AMD, and quite a lot of cheap VPS hosts that mask CPU features. They are
- * slower, so they are a fallback the installer only picks when it has to.
+ * The Linux builds. "baseline" targets drop AVX2 and friends: needed on
+ * pre-2013 Intel, early AMD, and quite a lot of cheap VPS hosts that mask CPU
+ * features. They are slower, so they are a fallback the installer only picks
+ * when it has to.
  */
 const LINUX_TARGETS: Target[] = [
 	{
@@ -69,28 +66,22 @@ const LINUX_TARGETS: Target[] = [
 	},
 ];
 
-/**
- * Built only with --all. The hub half runs fine on macOS — it only listens and
- * relays — but every collector is Linux-specific, so a macOS box can never be
- * a node, only the machine the dashboard runs on.
- */
+/** macOS and Windows: a full node on each, same as Linux. */
 const EXTRA_TARGETS: Target[] = [
 	{
 		target: "bun-darwin-arm64",
 		asset: "stats-darwin-arm64",
-		note: "macOS Apple Silicon (hub only)",
+		note: "macOS Apple Silicon",
 	},
 	{
 		target: "bun-darwin-x64",
 		asset: "stats-darwin-x64",
-		note: "macOS Intel (hub only)",
+		note: "macOS Intel",
 	},
 	{
 		target: "bun-windows-x64",
 		asset: "stats-windows-x64.exe",
-		note:
-			"Windows x86-64 (node only — no system probe yet; terminal, " +
-			"projects and ca work)",
+		note: "Windows x86-64",
 	},
 ];
 
@@ -120,6 +111,7 @@ const has = (name: string) =>
 function hostAsset(): string {
 	const arch = process.arch === "arm64" ? "arm64" : "x64";
 	if (process.platform === "darwin") return `stats-darwin-${arch}`;
+	if (process.platform === "win32") return "stats-windows-x64.exe";
 	const musl =
 		Bun.file("/lib/ld-musl-x86_64.so.1").size > 0 ||
 		Bun.file("/lib/ld-musl-aarch64.so.1").size > 0;
@@ -135,7 +127,7 @@ function selectTargets(): Target[] {
 	}
 
 	const requested = flag("targets");
-	if (!requested) return has("all") ? ALL_TARGETS : LINUX_TARGETS;
+	if (!requested) return has("linux") ? LINUX_TARGETS : ALL_TARGETS;
 
 	return requested.split(",").map((name) => {
 		const key = name.trim();

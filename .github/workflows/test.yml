@@ -1,10 +1,11 @@
-# Every push and pull request: lint, typecheck, and the test suite with
-# coverage. The release workflow runs the same checks again on a tag.
+# Every push and pull request: lint and typecheck once, then the test suite on
+# all three platforms the node runs on. The release workflow runs the Linux
+# checks again on a tag.
 name: Test
 on: [push, pull_request]
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,9 +15,21 @@ jobs:
         run: bunx biome ci .
       - name: Typecheck
         run: bun run typecheck
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
       - name: Test
-        run: bun test --coverage --coverage-reporter=lcov --bail
+        run: bun test --coverage --coverage-reporter=lcov
       - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage/lcov.info
