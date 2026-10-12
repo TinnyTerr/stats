@@ -26,6 +26,9 @@ import {
 	type NodeScoped,
 	type PacketsTailParams,
 	type ServiceLogsParams,
+	type SshKeyResult,
+	type SshSpreadParams,
+	type SshSpreadResult,
 	type WatchParams,
 	type WatchResult,
 	type WelcomePayload,
@@ -396,6 +399,41 @@ export function startHub(config: HubConfig) {
 						},
 					} satisfies CaIssueResult;
 				}
+			}
+
+			// One key to every node that is connected right now. A node that is
+			// offline, or that doesn't accept keys from the hub, reports why and
+			// the rest carry on; nothing is queued for later.
+			case HubAction.SshSpread: {
+				const p = params as unknown as SshSpreadParams;
+				if (typeof p.key !== "string" || !p.key.trim()) {
+					throw new RemoteError("bad_request", "ssh.spread needs a 'key'");
+				}
+				const action = p.revoke
+					? NodeAction.SshRevoke
+					: NodeAction.SshAuthorize;
+				const results = await Promise.all(
+					registry.list().map(async (record) => {
+						const base = { nodeId: record.id, name: record.name };
+						if (!record.link || record.link.closed) {
+							return { ...base, ok: false, error: "offline" };
+						}
+						try {
+							const r = (await relay(
+								{ action, params: { key: p.key } } as InboundRequest,
+								record.id,
+							)) as SshKeyResult;
+							return { ...base, ok: true, changed: r.changed, path: r.path };
+						} catch (err) {
+							return {
+								...base,
+								ok: false,
+								error: err instanceof Error ? err.message : String(err),
+							};
+						}
+					}),
+				);
+				return { results } satisfies SshSpreadResult;
 			}
 
 			case HubAction.ModulesSet: {

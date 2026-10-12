@@ -1,6 +1,6 @@
 import { cloneElement, useId, useMemo, useState } from "react";
 import { DEFAULTS, parseProjectsDocument } from "../src/agent/projects.ts";
-import type { CaIssueResult } from "../src/proto/messages.ts";
+import type { CaIssueResult, SshSpreadResult } from "../src/proto/messages.ts";
 import type { NodeSummary } from "../src/types.ts";
 import type { HubConnection } from "./link.ts";
 import { ActionButton } from "./ui.tsx";
@@ -1456,6 +1456,76 @@ function CertIssuer({
 	);
 }
 
+/* ---------- ssh key spreader ---------- */
+
+function SshSpreader({ hub }: { hub: HubConnection }) {
+	const [key, setKey] = useState("");
+	const [outcome, setOutcome] = useState<SshSpreadResult | null>(null);
+
+	const send = (revoke: boolean) => async () => {
+		setOutcome(
+			await hub.request<SshSpreadResult>("ssh.spread", {
+				key: key.trim(),
+				revoke,
+			}),
+		);
+	};
+
+	return (
+		<section className="panel">
+			<header className="panel-head">
+				<h4>Spread an ssh public key</h4>
+				<span className="dim">
+					Written to the authorized_keys of the account each node runs as,
+					inside a block the hub owns. Only nodes that accept hub keys (root by
+					default) take it; offline nodes are skipped, not queued.
+				</span>
+			</header>
+
+			<div className="toolbar">
+				<input
+					type="text"
+					className="mono"
+					placeholder="ssh-ed25519 AAAA… comment"
+					value={key}
+					onChange={(event) => setKey(event.target.value)}
+					style={{ flex: 1 }}
+				/>
+				<ActionButton
+					disabled={!key.trim()}
+					onAction={send(false)}
+					title="add this key on every connected node"
+				>
+					Spread
+				</ActionButton>
+				<ActionButton
+					disabled={!key.trim()}
+					onAction={send(true)}
+					title="remove this key from the hub-managed block on every connected node"
+				>
+					Revoke
+				</ActionButton>
+			</div>
+
+			{outcome && (
+				<table style={{ marginTop: 12 }}>
+					<tbody>
+						{outcome.results.map((r) => (
+							<tr key={r.nodeId}>
+								<td>{r.name}</td>
+								<td>
+									{r.ok ? (r.changed ? "changed" : "already so") : "failed"}
+								</td>
+								<td className="dim mono">{r.ok ? r.path : r.error}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			)}
+		</section>
+	);
+}
+
 export function ToolsPage({
 	hub,
 	nodes,
@@ -1475,6 +1545,7 @@ export function ToolsPage({
 
 			<CaDownload />
 			<CertIssuer hub={hub} nodes={nodes} />
+			<SshSpreader hub={hub} />
 		</div>
 	);
 }

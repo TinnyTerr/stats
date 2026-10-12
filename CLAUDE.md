@@ -110,6 +110,12 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   checksum or a file path breaks the one rule this feature rests on — that rule
   holds under root too, where the hub may ask freely and still cannot say where
   from.
+- **The hub can hand a node a public key; it can never say where it goes.**
+  `ssh.authorize`/`ssh.revoke` carry one bare key. The node writes it to its own
+  account's `authorized_keys` inside a block it owns (`src/agent/sshkeys.ts`),
+  refuses anything with options, and gates on `allowHubSshKeys` — root on,
+  anyone else off, the same shape as `allowRemoteUpdate`. `ssh.spread` is the
+  hub-side fan-out and skips offline nodes rather than queueing.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
   a test asserts the two agree.

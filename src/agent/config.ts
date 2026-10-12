@@ -62,6 +62,12 @@ export interface AgentConfig {
 	 * running. See src/hub/modules.ts.
 	 */
 	allowHubModules?: boolean;
+	/**
+	 * Let the hub add and remove public keys in this account's authorized_keys.
+	 * It can only ever send a bare key — see src/agent/sshkeys.ts — but a key is
+	 * a login, so same shape as the other two: on for root, off for anyone else.
+	 */
+	allowHubSshKeys?: boolean;
 	/** projects files/directories, in load order */
 	projectPaths: string[];
 	/**
@@ -91,6 +97,7 @@ interface RawAgentConfig {
 	control?: boolean;
 	allowRemoteUpdate?: boolean;
 	allowHubModules?: boolean;
+	allowHubSshKeys?: boolean;
 	projects?: string | string[];
 	modules?: Record<string, boolean>;
 	trustedModules?: string[];
@@ -204,6 +211,7 @@ export interface AgentOverrides {
 	control?: boolean;
 	allowRemoteUpdate?: boolean;
 	allowHubModules?: boolean;
+	allowHubSshKeys?: boolean;
 	projects?: string;
 	config?: string;
 	/** "docker,systemd" or "-terminal"; see parseModuleList */
@@ -308,6 +316,9 @@ export async function loadAgentConfig(
 		allowHubModules:
 			flags.allowHubModules ??
 			envBool("STATS_ALLOW_HUB_MODULES", file.allowHubModules ?? root),
+		allowHubSshKeys:
+			flags.allowHubSshKeys ??
+			envBool("STATS_ALLOW_HUB_SSH_KEYS", file.allowHubSshKeys ?? root),
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(
 					Boolean,

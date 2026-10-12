@@ -76,6 +76,7 @@ Usage:
                        [--modules docker,systemd | --modules -terminal]
                        [--no-terminal] [--no-control] [--allow-remote-update]
                        [--allow-hub-modules]
+                       [--allow-hub-ssh-keys]
   ${invocation} modules                      list builtin and installed modules
   ${invocation} modules install <repo>       install a module from a git repository
   ${invocation} modules update [ID]          fast-forward installed modules
@@ -439,6 +440,7 @@ async function main(role: string | undefined) {
 				control: toggle("control"),
 				allowRemoteUpdate: toggle("allow-remote-update"),
 				allowHubModules: toggle("allow-hub-modules"),
+				allowHubSshKeys: toggle("allow-hub-ssh-keys"),
 			};
 			const config = await loadAgentConfig(overrides);
 
@@ -572,6 +574,7 @@ async function main(role: string | undefined) {
 					// source of truth here as anywhere — under root it takes both
 					// directions, same as a node that went through loadAgentConfig.
 					allowHubModules: isRoot(),
+					allowHubSshKeys: isRoot(),
 					allowRemoteUpdate: isRoot(),
 					installed,
 				});

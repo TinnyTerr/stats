@@ -1,3 +1,6 @@
+import { chmod, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { selectProbe } from "../collect/probe.ts";
 import { emptyProxmoxSummary } from "../collect/proxmox.ts";
 import { hostPolicy } from "../modules/host.ts";
@@ -15,6 +18,8 @@ import {
 	type ModulesResult,
 	NodeAction,
 	type SnapshotResult,
+	type SshKeyParams,
+	type SshKeyResult,
 	type UpdateApplyParams,
 	type UpdateApplyResult,
 	type UpdateCheckResult,
@@ -36,6 +41,7 @@ import {
 	type LoadedModules,
 	loadModules,
 } from "./modules/index.ts";
+import { addKey, normalizeKey, removeKey } from "./sshkeys.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -392,6 +398,12 @@ export function startNode(config: AgentConfig): AgentHandle {
 
 			case NodeAction.ModulesApply:
 				return await applyModules(req.params as ModulesApplyParams);
+
+			case NodeAction.SshAuthorize:
+				return await changeSshKey(req.params as SshKeyParams, addKey);
+
+			case NodeAction.SshRevoke:
+				return await changeSshKey(req.params as SshKeyParams, removeKey);
 		}
 
 		const handler = active.dispatch(req.action);
@@ -402,6 +414,56 @@ export function startNode(config: AgentConfig): AgentHandle {
 			);
 		}
 		return await handler(req);
+	}
+
+	/* ---------- ssh keys ---------- */
+
+	/**
+	 * Edits the authorized_keys of the account this node runs as, inside the
+	 * block src/agent/sshkeys.ts owns. The hub supplies a key and nothing about
+	 * where it goes.
+	 */
+	async function changeSshKey(
+		params: SshKeyParams,
+		edit: typeof addKey,
+	): Promise<SshKeyResult> {
+		if (!config.allowHubSshKeys) {
+			throw new RemoteError(
+				"forbidden",
+				"this node does not accept ssh keys from the hub — start it with --allow-hub-ssh-keys (the default for a node running as root)",
+			);
+		}
+		if (!config.control) {
+			throw new RemoteError(
+				"forbidden",
+				"control actions are disabled on this node",
+			);
+		}
+		if (process.platform === "win32") {
+			throw new RemoteError(
+				"unsupported",
+				"authorized_keys on Windows lives in different places for admins and users; set it by hand",
+			);
+		}
+		const key = normalizeKey(params?.key);
+		if (!key) {
+			throw new RemoteError(
+				"bad_request",
+				"expected one public key line: 'ssh-ed25519 AAAA… comment'",
+			);
+		}
+
+		const dir = join(homedir(), ".ssh");
+		const path = join(dir, "authorized_keys");
+		await mkdir(dir, { recursive: true, mode: 0o700 });
+		const file = Bun.file(path);
+		const current = (await file.exists()) ? await file.text() : "";
+		const next = edit(current, key);
+		if (next.changed) {
+			await Bun.write(path, next.content);
+			await chmod(path, 0o600);
+		}
+		return { changed: next.changed, path };
 	}
 
 	/* ---------- self-update ---------- */

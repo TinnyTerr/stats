@@ -115,7 +115,7 @@ each one.
 | Command | Does |
 | --- | --- |
 | `hub [--config hub.json] [--port 3000] [--host 127.0.0.1]` | starts the hub |
-| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules]` | starts a node |
+| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules] [--allow-hub-ssh-keys]` | starts a node |
 | `modules` | list builtin and installed modules, and what each may touch |
 | `modules install <repo> [--ref R] [--force]` | install a module from a git repository |
 | `modules update [id]` | fast-forward one installed module, or all of them |
@@ -371,6 +371,16 @@ stats node --hub … --allow-hub-modules     # let a non-root node take addition
 STATS_ALLOW_HUB_MODULES=1 stats node …     # same, from the environment
 STATS_ALLOW_HUB_MODULES=0 stats node …     # refuse them even as root
 ```
+
+### Spreading an ssh key
+
+The Tools tab (or `ssh.spread` on the wire) sends one public key to every
+connected node, which appends it to `~/.ssh/authorized_keys` of the account it
+runs as, inside a `stats-managed` block. Revoke takes it back out of that block
+and nothing else. The hub sends a key and nothing about where it goes, and a key
+with options (`command=`, `from=`) is refused. Same opt-in as the above:
+`--allow-hub-ssh-keys` / `STATS_ALLOW_HUB_SSH_KEYS`, on for root, off otherwise.
+Not supported on Windows nodes. Offline nodes are skipped, not queued.
 
 `modules` in `hub.json` stays fleet-wide and stays subtractive: it beats
 per-node intent in both directions, and no node can turn one back on.
@@ -729,6 +739,7 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `PIHOLE_CLI` | node | `1` (a root node uses the local `pihole` command) |
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
 | `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
+| `STATS_ALLOW_HUB_SSH_KEYS` | node | `0` (let the hub add/remove authorized_keys entries; on for root) |
 | `STATS_HOST` | both | `github.com` (where updates come from) |
 | `STATS_REPO` | both | `tinnyterr/stats` |
 | `STATS_ASSET` | both | detected from arch, libc and AVX2 |

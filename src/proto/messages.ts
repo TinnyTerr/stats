@@ -116,6 +116,9 @@ export const NodeAction = {
 	ProjectAction: "project.action",
 	/** the hub telling a node which modules it should be running */
 	ModulesApply: "modules.apply",
+	/** put a public key in this node's authorized_keys; see SshKeyParams */
+	SshAuthorize: "ssh.authorize",
+	SshRevoke: "ssh.revoke",
 } as const;
 
 /** Actions the browser sends to the hub. Anything else is relayed to a node. */
@@ -136,6 +139,8 @@ export const HubAction = {
 	ModulesSet: "modules.set",
 	/** a one-off leaf cert signed by the fleet CA */
 	CaIssue: "ca.issue",
+	/** ssh.authorize / ssh.revoke across every connected node at once */
+	SshSpread: "ssh.spread",
 	/**
 	 * Which node's full telemetry this browser wants pushed. Summaries for the
 	 * whole fleet arrive regardless; the full frame — every unit, container and
@@ -428,6 +433,43 @@ export interface UpdateApplyResult {
 	/** the unit about to be restarted, null when not running under systemd */
 	unit: string | null;
 	restarting: boolean;
+}
+
+/* ---------- ssh keys ---------- */
+
+/**
+ * The hub handing a node a public key. There is no path, user or option field:
+ * the node writes to the authorized_keys of the account it runs as, inside a
+ * block it owns, and refuses anything that isn't a bare key. A node without
+ * `allowHubSshKeys` — the default for anything not running as root — refuses.
+ */
+export interface SshKeyParams extends Partial<NodeScoped> {
+	/** one public key line, `type base64 [comment]` */
+	key: string;
+}
+
+export interface SshKeyResult {
+	/** false when the node already had it (or never did, for a revoke) */
+	changed: boolean;
+	/** the file written, for the operator to go and look at */
+	path: string;
+}
+
+export interface SshSpreadParams {
+	key: string;
+	/** take the key back out instead of putting it in */
+	revoke?: boolean;
+}
+
+export interface SshSpreadResult {
+	results: {
+		nodeId: string;
+		name: string;
+		ok: boolean;
+		changed?: boolean;
+		path?: string;
+		error?: string;
+	}[];
 }
 
 /* ---------- managing modules from the hub ---------- */
