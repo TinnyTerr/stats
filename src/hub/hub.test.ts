@@ -80,55 +80,6 @@ describe("hub config", () => {
 	test("rejects an explicit config path that isn't there", () => {
 		expect(loadConfig(tmp("nope.json"))).rejects.toThrow(/config not found/);
 	});
-
-	test("leaves notion off when the file says nothing about it", async () => {
-		const config = await loadConfig(await writeConfig("no-notion", {}));
-		expect(config.notion).toBeNull();
-	});
-
-	test("resolves the notion token and floors the interval", async () => {
-		process.env.TEST_NOTION_TOKEN = "ntn_x";
-		const path = await writeConfig("notion", {
-			notion: {
-				token: "env:TEST_NOTION_TOKEN",
-				database: "abc123",
-				intervalMs: 1000,
-			},
-		});
-		const config = await loadConfig(path);
-		expect(config.notion?.token).toBe("ntn_x");
-		expect(config.notion?.database).toBe("abc123");
-		// Notion rate-limits per integration, so a typo can't become a hot loop.
-		expect(config.notion?.intervalMs).toBe(15_000);
-		delete process.env.TEST_NOTION_TOKEN;
-	});
-
-	test("an enabled notion block without credentials fails the boot", async () => {
-		const noDb = await writeConfig("notion-nodb", {
-			notion: { token: "ntn_x" },
-		});
-		expect(loadConfig(noDb)).rejects.toThrow(/notion.database/);
-
-		const noToken = await writeConfig("notion-notoken", {
-			notion: { database: "abc123" },
-		});
-		expect(loadConfig(noToken)).rejects.toThrow(/notion.token/);
-	});
-
-	test("an unset env var is a clearer error than a missing token", async () => {
-		delete process.env.TEST_NOTION_ABSENT;
-		const path = await writeConfig("notion-unset", {
-			notion: { token: "env:TEST_NOTION_ABSENT", database: "abc123" },
-		});
-		expect(loadConfig(path)).rejects.toThrow(/is the env var set/);
-	});
-
-	test("notion can be present but switched off without being valid", async () => {
-		const path = await writeConfig("notion-off", {
-			notion: { enabled: false },
-		});
-		expect((await loadConfig(path)).notion?.enabled).toBe(false);
-	});
 });
 
 function fakeStats(ts: number, cpu: number) {
@@ -444,7 +395,6 @@ async function harness(
 		modules: resolveModules({}),
 		embeddedNode: false,
 		nodes: [],
-		notion: null,
 		...overrides,
 	};
 

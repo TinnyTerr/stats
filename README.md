@@ -236,14 +236,7 @@ Every field is optional:
 
   "nodes": [                    // optional per-node overrides
     { "id": "web-1", "name": "Web 1", "tags": ["prod"], "notes": "nginx" }
-  ],
-
-  "notion": {                   // omit the block entirely to disable
-    "token": "env:NOTION_TOKEN",
-    "database": "1f2a…",        // the 32-char id from the database URL
-    "intervalMs": 60000,        // floored at 15s
-    "archiveStale": false       // true: archive rows whose project is gone
-  }
+  ]
 }
 ```
 
@@ -493,55 +486,6 @@ host it mattered on.
 `examples/stats-module-endpoints/` is a complete, working one — HTTP checks
 against a list of URLs — written to be read.
 
-## Notion mirror
-
-The hub can mirror every project the fleet reports into a Notion database, one
-row per (node, project), refreshed on a timer.
-
-It only ever writes. The node's `projects.json` stays the source of truth — the
-hub can narrow what a node reports but never widen it — so nothing you type in
-Notion changes what a node runs. Treat the database as a view.
-
-Setup:
-
-1. Create an internal integration at
-   [notion.so/my-integrations](https://www.notion.so/my-integrations), copy the
-   secret into `NOTION_TOKEN`.
-2. Create a database, then **… → Connections → your integration**. Without
-   this the API returns 404 for a database that plainly exists.
-3. Copy the database id — the 32 hex characters in its URL, before the `?`.
-
-The database needs these properties. Any that are missing are logged once and
-skipped, so you can start with a subset:
-
-| Property    | Type           | Holds                              |
-| ----------- | -------------- | ---------------------------------- |
-| *(title)*   | `title`        | project name — any name works      |
-| `Key`       | `rich_text`    | `nodeId/projectId`, the upsert key |
-| `Node`      | `rich_text`    | node display name                  |
-| `Status`    | `select`       | running / degraded / stopped / empty / offline |
-| `Processes` | `rich_text`    | `3/4 running`                      |
-| `Uptime`    | `rich_text`    | longest-running process            |
-| `Restarts`  | `number`       | summed across the project          |
-| `Tags`      | `multi_select` | the project's tags                 |
-| `URL`       | `url`          | the project's `url`                |
-| `Updated`   | `date`         | last sync                          |
-
-`Key` is the one that matters: it is what makes the sync an upsert. Without it
-every pass creates duplicate rows, so the hub refuses to guess and says so.
-Rename any column via `"properties": { "restarts": "Crash count" }`.
-
-A project on a node the hub has lost contact with reports `offline` rather than
-whatever its last telemetry claimed. Rows are only rewritten when something
-other than the timestamp changed, so a quiet fleet costs one query per pass.
-
-**On reaching the hub from Notion:** you can't. A tailnet address is only
-routable inside your tailnet, and Notion's servers aren't on it — so Notion
-automations, webhooks and buttons pointed at the hub will simply time out. This
-mirror works because every request goes the other way, out to `api.notion.com`.
-Exposing the hub publicly (Tailscale Funnel, a reverse proxy) is the only way
-round that, and is worth wanting only if you need Notion to drive the fleet.
-
 ## Certificates
 
 The hub is its own tiny CA. The first time a node loads the `ca` module (on
@@ -788,7 +732,6 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `STATS_HOST` | both | `github.com` (where updates come from) |
 | `STATS_REPO` | both | `tinnyterr/stats` |
 | `STATS_ASSET` | both | detected from arch, libc and AVX2 |
-| `NOTION_TOKEN` | hub | none (only if `hub.json` refers to it) |
 
 ## Building executables
 
@@ -938,7 +881,6 @@ src/hub/config.ts       hub.json loading
 src/hub/db.ts           SQLite history, events and known nodes
 src/hub/registry.ts     who's connected, and the alerts derived from telemetry
 src/hub/modules.ts      module intent vs. reality, and what the hub may decide
-src/hub/notion.ts       outbound mirror of projects into a Notion database
 src/hub/server.ts       node and browser endpoints, and the relay between them
 web/                    React dashboard (link.ts, panels.tsx, modules.tsx,
                         external.tsx — the renderer for installed modules,

@@ -1,10 +1,5 @@
 import { resolveModules } from "../modules/manifest.ts";
-import type {
-	HubConfig,
-	HubTls,
-	NodeOverride,
-	NotionConfig,
-} from "../types.ts";
+import type { HubConfig, HubTls, NodeOverride } from "../types.ts";
 
 /**
  * Hub configuration. Unlike the old poll-based setup, the hub no longer lists
@@ -30,17 +25,7 @@ interface RawConfig {
 	modules?: Record<string, boolean>;
 	embeddedNode?: boolean;
 	nodes?: NodeOverride[];
-	notion?: RawNotion;
 	tls?: boolean | { sans?: string[]; httpPort?: number };
-}
-
-interface RawNotion {
-	enabled?: boolean;
-	token?: string | null;
-	database?: string | null;
-	intervalMs?: number;
-	archiveStale?: boolean;
-	properties?: Record<string, string>;
 }
 
 /** Resolves "env:NAME" indirection; passes anything else through. */
@@ -48,45 +33,6 @@ export function resolveSecret(value: string | null | undefined): string | null {
 	if (!value) return null;
 	if (value.startsWith("env:")) return process.env[value.slice(4)] ?? null;
 	return value;
-}
-
-/**
- * Notion is off unless it has both a token and a database. Turning it on
- * without one of those is a mistake worth failing the boot for, rather than a
- * mirror that silently never writes anything.
- */
-function loadNotion(
-	raw: RawNotion | undefined,
-	errors: string[],
-): NotionConfig | null {
-	if (!raw) return null;
-
-	const token = resolveSecret(raw.token);
-	const database = raw.database?.trim() || null;
-	const enabled = raw.enabled ?? true;
-
-	if (enabled) {
-		if (!token) {
-			errors.push(
-				raw.token
-					? `notion.token: '${raw.token}' resolved to nothing — is the env var set?`
-					: "notion.token: required when notion is enabled",
-			);
-		}
-		if (!database)
-			errors.push("notion.database: required when notion is enabled");
-	}
-
-	return {
-		enabled,
-		token,
-		database,
-		// Notion's rate limit is per-integration, and a fleet of any size is
-		// several requests per pass; a floor keeps a typo out of the 429s.
-		intervalMs: Math.max(15_000, raw.intervalMs ?? 60_000),
-		archiveStale: raw.archiveStale ?? false,
-		properties: raw.properties,
-	};
 }
 
 function validateNode(node: NodeOverride, index: number): string[] {
@@ -123,7 +69,6 @@ export async function loadConfig(path = DEFAULT_PATH): Promise<HubConfig> {
 
 	const nodes = raw.nodes ?? [];
 	const errors = nodes.flatMap(validateNode);
-	const notion = loadNotion(raw.notion, errors);
 	const ids = new Set<string>();
 	for (const node of nodes) {
 		if (ids.has(node.id)) errors.push(`duplicate node id '${node.id}'`);
@@ -166,7 +111,6 @@ export async function loadConfig(path = DEFAULT_PATH): Promise<HubConfig> {
 			...node,
 			token: resolveSecret(node.token) ?? undefined,
 		})),
-		notion,
 		tls: loadTls(raw.tls, modules.ca !== false, raw.port ?? 3000),
 	};
 }

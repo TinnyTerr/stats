@@ -35,13 +35,5 @@
 			"tags": ["prod", "postgres"],
 			"token": "env:DB1_TOKEN"
 		}
-	],
-
-	"notion": {
-		"enabled": false,
-		"token": "env:NOTION_TOKEN",
-		"database": "",
-		"intervalMs": 60000,
-		"archiveStale": false
-	}
+	]
 }

@@ -510,7 +510,7 @@ async function main(role: string | undefined) {
 				}
 			}
 
-			const { registry, notion } = startHub(config);
+			const { registry } = startHub(config);
 			if (config.tls?.cert) {
 				console.log(
 					`stats hub ${VERSION} listening on https://${config.host}:${config.port}`,
@@ -529,13 +529,6 @@ async function main(role: string | undefined) {
 			}
 			const known = registry.list().length;
 			if (known) console.log(`${known} node(s) known from previous runs`);
-			if (notion) {
-				console.log(
-					`mirroring projects to Notion database ${config.notion?.database} every ${
-						(config.notion?.intervalMs ?? 0) / 1000
-					}s`,
-				);
-			}
 			if (!config.nodeToken) {
 				console.warn(
 					"warning: no nodeToken set — any host that can reach this port can register. " +

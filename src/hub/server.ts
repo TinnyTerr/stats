@@ -34,7 +34,6 @@ import type { HubConfig } from "../types.ts";
 import { versionInfo } from "../version.ts";
 import { caMobileConfig, ensureHubCa, issueCert } from "./ca.ts";
 import { MetricStore } from "./db.ts";
-import { startNotionSync } from "./notion.ts";
 import { PacketLog } from "./packets.ts";
 import { NodeRegistry, UnauthorizedNode } from "./registry.ts";
 
@@ -118,8 +117,6 @@ export function startHub(config: HubConfig) {
 	const store = new MetricStore(config.dbPath);
 	const registry = new NodeRegistry(config, store);
 	const browsers = new Map<PeerLink, SocketData>();
-	// Outbound-only mirror; null unless hub.json configures it.
-	const notion = startNotionSync(config.notion, registry);
 
 	// Every frame the hub sends or receives, for the packets tab. Captured at
 	// the raw byte boundary in makeLink and the socket's message handler below,
@@ -904,7 +901,6 @@ export function startHub(config: HubConfig) {
 
 	const shutdown = () => {
 		clearInterval(pruneTimer);
-		notion?.stop();
 		registry.stop();
 		store.close();
 		void server.stop(true);
@@ -914,5 +910,5 @@ export function startHub(config: HubConfig) {
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 
-	return { server, httpServer, registry, store, notion };
+	return { server, httpServer, registry, store };
 }

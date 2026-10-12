@@ -644,8 +644,6 @@ export interface HubConfig {
 	/** run a node in-process so the hub machine watches itself */
 	embeddedNode: boolean;
 	nodes: NodeOverride[];
-	/** mirror projects into a Notion database, null when not configured */
-	notion: NotionConfig | null;
 	/** serve HTTPS off the fleet CA; absent or null means plain HTTP on `port` only */
 	tls?: HubTls | null;
 }
@@ -662,25 +660,6 @@ export interface HubTls {
 	httpPort: number;
 	cert?: string;
 	key?: string;
-}
-
-/**
- * Outbound mirror of the fleet's projects into a Notion database. Read-only by
- * design: the node's projects file stays the source of truth, so nothing set
- * in Notion can change what a node runs.
- */
-export interface NotionConfig {
-	enabled: boolean;
-	/** Notion internal integration secret */
-	token: string | null;
-	/** the database id to write rows into */
-	database: string | null;
-	/** how often to push, floored at 15s to stay well inside Notion's limits */
-	intervalMs: number;
-	/** archive rows whose project no longer exists anywhere in the fleet */
-	archiveStale: boolean;
-	/** override the Notion property name used for a column */
-	properties?: Partial<Record<string, string>>;
 }
 
 /** The list-view shape the dashboard renders, one per known node. */

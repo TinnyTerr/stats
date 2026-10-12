@@ -118,11 +118,6 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   `telemetry.errors` and shows on the node's card. A host with no *probe* is not
   a failure at all — the `system` module is simply absent, which is how a new
   platform is brought up additively.
-- **Outbound integrations mirror, they don't drive.** `src/hub/notion.ts`
-  pushes projects into a Notion database and never reads anything back: the
-  node's projects file is the source of truth, and the hub can only narrow it.
-  Everything is an outbound call to the third party, which is also the only
-  reason it works behind Tailscale — nothing off-tailnet can reach the hub.
 - **`schema/projects.schema.json` is the documentation for the projects file;
   `src/agent/projects.ts` is the enforcement.** A test compares the schema's
   `default` keywords against the loader's `DEFAULTS`, so change both together.
