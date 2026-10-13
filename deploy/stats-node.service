@@ -12,35 +12,19 @@
 # The node dials the hub — nothing listens on this machine, so no inbound
 # firewall rule is needed.
 #
-# NOTE ON PRIVILEGE: a node can open shells and start and stop things, and it
-# supervises whatever /etc/stats/projects.json declares. As written it runs as
-# root, which is the configuration the rest of the design assumes:
+# NOTE ON PRIVILEGE: a node runs as root. It can open shells and start and stop
+# things, and it supervises whatever /etc/stats/projects.json declares.
 #
-#   - Modules are unrestricted. The grant policy in src/modules/host.ts stops
-#     refusing anything, because a fence inside a root process is furniture —
-#     the module is one Bun.spawn from whatever it was denied.
-#   - The hub may switch modules on and ask this node to update itself, without
-#     --allow-hub-modules or --allow-remote-update. The hub is the source of
-#     truth for the fleet, and this machine has already been handed over.
+#   - Modules are unrestricted; nothing checks the grants they declare.
+#   - The hub may switch modules on and ask this node to update itself.
 #   - Terminals, supervised processes and unit control are root's, so a managed
 #     process's `user:` field works and systemctl needs no polkit rules.
 #
-# Only run it this way on hosts where you'd hand out a root shell anyway,
-# because through the dashboard you have. The confinement is *who can reach the
-# hub*, not what the node will do once asked.
+# Only run it on hosts where you'd hand out a root shell anyway, because
+# through the dashboard you have. The confinement is *who can reach the hub*,
+# not what the node will do once asked.
 #
-# LEAST PRIVILEGE instead: uncomment the User/Group, SupplementaryGroups and
-# sandboxing lines below. The node then runs as an unprivileged user, modules
-# get only the grants they declared and only the ones the policy hands out,
-# and the two hub-directed switches go back to being off unless you add the
-# flags to ExecStart. Managed processes lose their `user:` field, unit control
-# needs polkit rules, and self-update needs the binary to be writable:
-#
-#   ReadWritePaths=/usr/local/bin        (here or in a drop-in)
-#   sudo chown stats /usr/local/bin/stats
-#
-# Add --no-terminal and/or --no-control to ExecStart to refuse either outright,
-# under any user.
+# Add --no-terminal and/or --no-control to ExecStart to refuse either outright.
 
 [Unit]
 Description=stats node (telemetry, projects and control for one host)
@@ -56,14 +40,6 @@ RestartSec=5
 # STATS_HUB and STATS_NODE_TOKEN live here, in a root-only file.
 EnvironmentFile=/etc/stats/node.env
 
-# Least privilege: uncomment these three, the sandboxing block below, and give
-# ExecStart --allow-hub-modules / --allow-remote-update if you still want them.
-#User=stats
-#Group=stats
-# docker: container state and `docker exec` terminals.
-# systemd-journal: the journal log source. Root needs neither group.
-#SupplementaryGroups=docker systemd-journal
-
 # Supervised processes are children of this unit, so they share its limits.
 # Raise these if a project needs more.
 TasksMax=512
@@ -72,16 +48,6 @@ LimitNOFILE=8192
 # KillMode=control-group (the default) takes the supervised processes down with
 # the node; the supervisor also stops them itself on SIGTERM.
 TimeoutStopSec=30
-
-# The other half of least privilege. ProtectSystem=full makes /usr read-only,
-# which is also what stops a self-update, so these come as a set with User=.
-#NoNewPrivileges=yes
-#ProtectSystem=full
-#ProtectHome=read-only
-#PrivateTmp=yes
-#RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-#RestrictSUIDSGID=yes
-#LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

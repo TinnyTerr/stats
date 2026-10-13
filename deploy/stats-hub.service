@@ -28,22 +28,10 @@ RestartSec=5
 # means systemd starts the hub anyway when the file isn't there.
 EnvironmentFile=-/etc/stats/hub.env
 
-User=stats
-Group=stats
-
-# The SQLite history is all it writes; systemd creates /var/lib/stats and hands
-# it over, which is what keeps ProtectSystem=strict workable. Point dbPath at
+# Runs as root, like the node: the embedded node it hosts is a full one. The
+# SQLite history lives in /var/lib/stats; point dbPath at
 # /var/lib/stats/stats.db in hub.json.
 StateDirectory=stats
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-# AF_NETLINK is not optional: getifaddrs() opens a netlink socket, and the
-# embedded node collects the hub's own addresses with it.
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
-LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

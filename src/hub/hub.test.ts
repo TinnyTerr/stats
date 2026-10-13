@@ -478,7 +478,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: true }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -580,7 +579,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -667,7 +665,6 @@ describe("hub and node over a websocket", () => {
 				tags: [],
 				telemetryIntervalMs: 1000,
 				modules: resolveModules({ terminal: false }),
-				trustedModules: [...BUILTIN_MODULE_IDS],
 				control: false,
 				projectPaths: [join(h.dir, "nothing.json")],
 			});
@@ -705,7 +702,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: true }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -810,7 +806,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [join(h.dir, "projects.json")],
 		});
@@ -870,7 +865,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -912,7 +906,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 2000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			// allowRemoteUpdate not set: the default has to be "no".
 			projectPaths: [join(h.dir, "nothing.json")],
@@ -949,7 +942,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: false,
 			projectPaths: [join(h.dir, "nothing.json")],
 		});
@@ -1089,7 +1081,6 @@ describe("hub and node over a websocket", () => {
 			modules: resolveModules(
 				Object.fromEntries(BUILTIN_MODULE_IDS.map((id) => [id, false])),
 			),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [],
 		});
@@ -1140,7 +1131,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: true }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [],
 			// The opt-in that lets the hub turn a module *on*. Narrowing works
@@ -1215,7 +1205,6 @@ describe("hub and node over a websocket", () => {
 			tags: [],
 			telemetryIntervalMs: 1000,
 			modules: resolveModules({ terminal: false }),
-			trustedModules: [...BUILTIN_MODULE_IDS],
 			control: true,
 			projectPaths: [],
 			// allowHubModules left off: the old rule, still in force.

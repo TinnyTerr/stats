@@ -1,8 +1,4 @@
-import {
-	checkGrants,
-	createModuleHost,
-	type ModulePolicy,
-} from "../../modules/host.ts";
+import { createModuleHost } from "../../modules/host.ts";
 import {
 	type ModuleId,
 	type ModuleSet,
@@ -72,7 +68,6 @@ export interface LoadedModules {
 export async function loadModules(
 	ctx: Omit<NodeModuleContext, "host">,
 	requested: ModuleSet,
-	policy: ModulePolicy,
 	modules: NodeModule[] = BUILTIN_MODULES,
 	/** the host to load for; the running one unless a test says otherwise */
 	platform: Platform | null = currentPlatform(),
@@ -96,15 +91,9 @@ export async function loadModules(
 			continue;
 		}
 
-		const denied = checkGrants(module.manifest, policy);
-		if (denied.length) {
-			notes.push(`${id}: ${denied.join("; ")}`);
-			continue;
-		}
-
 		const scoped: NodeModuleContext = {
 			...ctx,
-			host: createModuleHost(module.manifest, policy),
+			host: createModuleHost(module.manifest),
 		};
 
 		try {

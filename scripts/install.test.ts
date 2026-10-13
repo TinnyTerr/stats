@@ -167,8 +167,9 @@ posix("points a plain install at the two roles", async () => {
 
 /**
  * A node with no hub would sit in a reconnect loop against nothing, so the
- * installer refuses rather than picking an address for you. Checked without
- * root, which is also the path where the service install is skipped.
+ * installer refuses rather than picking an address for you. An explicit prefix
+ * is the binary-only escape for a non-root run, so as non-root the same flags
+ * install the binary and stop before any config is written.
  */
 posix("a node install insists on knowing its hub", async () => {
 	await writeFakeRelease("correct");
@@ -185,7 +186,14 @@ posix("a node install insists on knowing its hub", async () => {
 		expect(exitCode).not.toBe(0);
 		expect(stderr).toContain("a node needs its hub");
 	} else {
-		// Unprivileged: it stops earlier, at the systemd unit it can't write.
 		expect(stderr).toContain("not root");
 	}
+});
+
+posix("without root and without a prefix it refuses to install", async () => {
+	if (process.getuid?.() === 0) return;
+	await writeFakeRelease("correct");
+	const { stderr, exitCode } = await run(["--from", dist(), "--node"]);
+	expect(exitCode).not.toBe(0);
+	expect(stderr).toContain("installs as root");
 });

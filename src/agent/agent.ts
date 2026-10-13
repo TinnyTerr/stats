@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectProbe } from "../collect/probe.ts";
 import { emptyProxmoxSummary } from "../collect/proxmox.ts";
-import { hostPolicy } from "../modules/host.ts";
 import {
 	type ModuleSet,
 	moduleOn,
@@ -156,7 +155,6 @@ export function startNode(config: AgentConfig): AgentHandle {
 				trustedCa: () => trustedCa,
 			},
 			request,
-			hostPolicy(config.trustedModules),
 			[...BUILTIN_MODULES, ...external.modules],
 		);
 		result.notes.unshift(...external.notes);

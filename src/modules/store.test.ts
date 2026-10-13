@@ -9,7 +9,7 @@ import {
 	toNodeModule,
 } from "../agent/modules/external.ts";
 import { parseExternalManifest, toModuleManifest } from "./external.ts";
-import { createModuleHost, defaultPolicy } from "./host.ts";
+import { createModuleHost } from "./host.ts";
 import { moduleOn, narrowModules, resolveModules } from "./manifest.ts";
 import {
 	installedModules,
@@ -276,7 +276,7 @@ withGit("the node half", () => {
 		});
 		const node = await toNodeModule(installed, { name: "from settings" });
 
-		const host = createModuleHost(node.manifest, defaultPolicy([]));
+		const host = createModuleHost(node.manifest);
 		const ctx = {
 			host,
 			config: {} as never,
@@ -302,7 +302,7 @@ withGit("the node half", () => {
 		const installed = (await installedModules(store))[0]!;
 		const node = await toNodeModule(installed);
 		const handler = node.actions!["weather.refresh"]!;
-		const host = createModuleHost(node.manifest, defaultPolicy([]));
+		const host = createModuleHost(node.manifest);
 
 		const req = { params: { city: "Bristol" } } as never;
 		await expect(
@@ -340,17 +340,6 @@ withGit("the node half", () => {
 		const loaded = await loadExternalModules([module]);
 		expect(loaded.modules).toEqual([]);
 		expect(loaded.notes.join()).toMatch(/no default export/);
-	});
-
-	test("an installed module cannot use a grant it didn't declare", async () => {
-		// The manifest asks for http and nothing else, so the host it is handed
-		// refuses exec even though the policy would otherwise allow it.
-		const installed = (await installedModules(store)).find(
-			(entry) => entry.manifest.id === "weather",
-		)!;
-		const node = await toNodeModule(installed);
-		const host = createModuleHost(node.manifest, defaultPolicy(["weather"]));
-		expect(host.exec(["id"])).rejects.toThrow(/not allowed to exec/);
 	});
 });
 

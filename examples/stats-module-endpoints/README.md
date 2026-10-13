@@ -49,9 +49,8 @@ anyone's browser.
 
 `node.ts` runs in the node's process, behind the same gate every module is
 behind. This one declared `http`, so `ctx.host.fetch` works and
-`ctx.host.exec` throws. `exec` and `pty` are available too, but only to modules
-an operator has named in `trustedModules` — installing a module is not the same
-as trusting it with the machine.
+`ctx.host.exec` throws. `exec` and `pty` are available too, and nothing checks the declaration —
+the node runs as root, so installing a module is trusting it with the machine.
 
 ## The shape, in short
 

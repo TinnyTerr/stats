@@ -3,8 +3,11 @@
 #
 # Installs the single-file `stats` binary (it embeds the Bun runtime, the API
 # and the dashboard, so nothing else is required on the machine) and, on
-# request, a service for either role: a hardened systemd unit on Linux, a
-# launchd daemon on macOS. (Windows has install.ps1.)
+# request, a service for either role: a systemd unit on Linux, a launchd daemon
+# on macOS. (Windows has install.ps1.) Everything is installed as root, for the
+# whole machine: services run as root, config lives in /etc/stats and state in
+# /var/lib/stats, readable by every user. Run without root it re-runs itself
+# under sudo, or stops and says so.
 #
 #   Hub, on the machine that shows the dashboard — install this one first, it
 #   prints the token the nodes need:
@@ -54,8 +57,6 @@ CLEAN=0
 UNINSTALL=0
 PURGE=0
 ASSUME_YES=0
-SERVICE_USER="stats"
-USER_SET=0
 
 BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; RESET=""
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -86,13 +87,9 @@ Source:
   --url BASE           fetch assets straight from this directory URL
 
 Placement:
-  --prefix DIR         where the binary goes (default: /usr/local/bin,
-                       or ~/.local/bin when not running as root)
-  --user NAME          system user the services run as (default: root for a
-                       node, stats for the hub; always root on macOS). A root node is the permissive
-                       one: modules get every grant, and the hub may switch
-                       modules on and ask it to update. --user stats gives you
-                       the sandboxed, least-privilege node instead.
+  --prefix DIR         where the binary goes (default: /usr/local/bin). A
+                       non-root run given a prefix installs the binary there
+                       and nothing else; services and config always need root.
 
 Service:
   --hub-url URL        (--node) the hub to dial, e.g. ws://hub.lan:3000
@@ -115,6 +112,13 @@ Other:
 EOF
 }
 
+# Kept quoted so a re-run under sudo gets exactly the arguments we were given.
+PREFIX_GIVEN=0
+ORIG_ARGS=""
+for arg in "$@"; do
+  ORIG_ARGS="$ORIG_ARGS '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'"
+done
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --node|--agent) MODE="node" ;;
@@ -135,10 +139,8 @@ while [ $# -gt 0 ]; do
     --repo=*)     REPO="${1#--repo=}" ;;
     --url)        BASE_URL="${2:?--url needs a URL}"; shift ;;
     --url=*)      BASE_URL="${1#--url=}" ;;
-    --prefix)     PREFIX="${2:?--prefix needs a directory}"; shift ;;
-    --prefix=*)   PREFIX="${1#--prefix=}" ;;
-    --user)       SERVICE_USER="${2:?--user needs a name}"; USER_SET=1; shift ;;
-    --user=*)     SERVICE_USER="${1#--user=}"; USER_SET=1 ;;
+    --prefix)     PREFIX="${2:?--prefix needs a directory}"; PREFIX_GIVEN=1; shift ;;
+    --prefix=*)   PREFIX="${1#--prefix=}"; PREFIX_GIVEN=1 ;;
     --port)       PORT="${2:?--port needs a number}"; shift ;;
     --port=*)     PORT="${1#--port=}" ;;
     --host)       HUB_HOST="${2:?--host needs an address}"; shift ;;
@@ -155,6 +157,19 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# Installed as root, always. Not root: hand the whole run to sudo when there is
+# a terminal to ask on and a script file to re-run, otherwise stop. An explicit
+# --prefix is the one exception — a binary-only install to a directory of your
+# own, which never touches services or config.
+if [ "$(id -u)" -ne 0 ] && [ "$PREFIX_GIVEN" -eq 0 ]; then
+  if [ -t 0 ] && [ -f "$0" ] && command -v sudo >/dev/null 2>&1; then
+    eval "set -- $ORIG_ARGS"
+    exec sudo -E sh "$0" "$@"
+  fi
+  die "stats installs as root, for every user. Re-run with sudo:
+  curl -fsSL .../install.sh | sudo sh -s --$ORIG_ARGS"
+fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -180,9 +195,7 @@ confirm() {
 IS_ROOT=0
 if [ "$(id -u)" -eq 0 ]; then IS_ROOT=1; fi
 
-if [ -z "$PREFIX" ]; then
-  if [ "$IS_ROOT" -eq 1 ]; then PREFIX="/usr/local/bin"; else PREFIX="$HOME/.local/bin"; fi
-fi
+if [ -z "$PREFIX" ]; then PREFIX="/usr/local/bin"; fi
 
 BIN="$PREFIX/stats"
 CONF_DIR="/etc/stats"
@@ -231,8 +244,9 @@ uninstall() {
     confirm "Delete $CONF_DIR (tokens, config) and $STATE_DIR (metric history)?"
     step "purging $CONF_DIR and $STATE_DIR"
     rm -rf "$CONF_DIR" "$STATE_DIR"
-    if id "$SERVICE_USER" >/dev/null 2>&1 && have userdel; then
-      userdel "$SERVICE_USER" >/dev/null 2>&1 || true
+    # Older installs ran the hub as a 'stats' user.
+    if id stats >/dev/null 2>&1 && have userdel; then
+      userdel stats >/dev/null 2>&1 || true
     fi
   elif [ -d "$CONF_DIR" ]; then
     log "${DIM}kept $CONF_DIR and $STATE_DIR — pass --purge to delete them.$RESET"
@@ -528,39 +542,10 @@ if [ "$NO_SERVICE" -eq 1 ] || ! have "$SVC_CTL"; then
 fi
 
 if [ "$IS_ROOT" -ne 1 ]; then
-  warn "not root — skipping the service, config and service user."
+  warn "not root — installed the binary only; the service and config need root."
   log "Run: ${BOLD}stats $MODE${RESET}"
   exit 0
 fi
-
-ensure_user() {
-  if [ "$SERVICE_USER" = "root" ]; then return; fi
-  if [ "$IS_DARWIN" -eq 1 ]; then
-    die "macOS services run as root — there is no useradd to make '$SERVICE_USER' with."
-  fi
-  if id "$SERVICE_USER" >/dev/null 2>&1; then return; fi
-  step "creating system user '$SERVICE_USER'"
-  if have useradd; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER" 2>/dev/null ||
-      useradd --system --no-create-home "$SERVICE_USER"
-  elif have adduser; then
-    adduser -S -H -D "$SERVICE_USER" 2>/dev/null || adduser --system --no-create-home "$SERVICE_USER"
-  else
-    die "no useradd/adduser — create the '$SERVICE_USER' user yourself, or pass --user."
-  fi
-}
-
-# Docker container state and journal logs are readable through group
-# membership; without either group those two collectors simply report
-# unavailable and everything else carries on.
-supplementary_groups() {
-  extra=""
-  if getent group docker >/dev/null 2>&1; then extra="docker"; fi
-  if getent group systemd-journal >/dev/null 2>&1; then
-    extra="${extra:+$extra }systemd-journal"
-  fi
-  printf '%s\n' "$extra"
-}
 
 random_token() {
   if have openssl; then openssl rand -hex 32
@@ -674,20 +659,8 @@ restart_unit() {
   fi
 }
 
-# A node runs as root unless asked otherwise: that is where it is unrestricted,
-# and where the hub — the source of truth for the fleet — can switch its modules
-# on and ask it to update. The hub keeps its own unprivileged user; it only
-# needs its database and its port.
-# macOS has no useradd and its daemons are root's to start, so there it is
-# root for both.
-if { [ "$MODE" = "node" ] || [ "$IS_DARWIN" -eq 1 ]; } && [ "$USER_SET" -eq 0 ]; then
-  SERVICE_USER="root"
-fi
-
-ensure_user
 mkdir -p "$CONF_DIR"
 chmod 0755 "$CONF_DIR"
-GROUPS_LINE=$(supplementary_groups)
 
 if [ "$MODE" = "node" ]; then
   ENV_FILE="$CONF_DIR/node.env"
@@ -759,27 +732,6 @@ EOF
   [ "$NO_TERMINAL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-terminal"
   [ "$NO_CONTROL" -eq 1 ] && EXEC_FLAGS="$EXEC_FLAGS --no-control"
 
-  # Root gets neither a User= line nor the sandbox: ProtectSystem=full alone
-  # would make the self-update it now accepts fail on a read-only /usr, and a
-  # node kept from reading /home is a node lying about the disk it reports.
-  # Under any other user both come back, and so does the grant policy.
-  if [ "$SERVICE_USER" = "root" ]; then
-    UNIT_USER=""
-    UNIT_SANDBOX=""
-  else
-    UNIT_USER="User=$SERVICE_USER
-Group=$SERVICE_USER${GROUPS_LINE:+
-SupplementaryGroups=$GROUPS_LINE}"
-    UNIT_SANDBOX="StateDirectory=stats
-NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=read-only
-PrivateTmp=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
-LockPersonality=yes"
-  fi
-
   if [ "$NO_SERVICE" -eq 0 ] && [ "$IS_DARWIN" -eq 1 ]; then
     step "writing $(unit_path stats-node)"
     # shellcheck disable=SC2086 # EXEC_FLAGS is a deliberate word list
@@ -802,14 +754,10 @@ Restart=always
 RestartSec=5
 EnvironmentFile=$ENV_FILE
 
-$UNIT_USER
-
 # Supervised project processes are children of this unit.
 TasksMax=512
 LimitNOFILE=8192
 TimeoutStopSec=30
-
-$UNIT_SANDBOX
 
 [Install]
 WantedBy=multi-user.target
@@ -825,13 +773,8 @@ EOF
   if [ "$NO_TERMINAL" -eq 0 ] || [ "$NO_CONTROL" -eq 0 ]; then
     log ""
     log "${YELLOW}This node accepts${RESET}${BOLD}$([ "$NO_TERMINAL" -eq 0 ] && printf ' shells')$([ "$NO_CONTROL" -eq 0 ] && printf ' start/stop')${RESET}${YELLOW} from the hub,"
-    if [ "$SERVICE_USER" = "root" ]; then
-      log "as root — and the hub may also switch its modules on and ask it to update."
-      log "Re-run with --no-terminal / --no-control to refuse either, or --user stats"
-      log "for an unprivileged node that keeps the module grant policy.$RESET"
-    else
-      log "as the '$SERVICE_USER' user. Re-run with --no-terminal / --no-control to refuse.$RESET"
-    fi
+    log "as root — and the hub may also switch its modules on and ask it to update."
+    log "Re-run with --no-terminal / --no-control to refuse either.$RESET"
   fi
   exit 0
 fi
@@ -844,7 +787,6 @@ CONFIG="$CONF_DIR/hub.json"
 HUB_ENV="$CONF_DIR/hub.env"
 
 mkdir -p "$STATE_DIR"
-chown "$SERVICE_USER" "$STATE_DIR" 2>/dev/null || true
 
 if [ -f "$CONFIG" ]; then
   log "${DIM}keeping the existing $CONFIG$RESET"
@@ -912,21 +854,9 @@ RestartSec=5
 # Tokens referenced as "env:NAME" in hub.json live here.
 EnvironmentFile=-$HUB_ENV
 
-User=$SERVICE_USER
-Group=$SERVICE_USER
-${GROUPS_LINE:+SupplementaryGroups=$GROUPS_LINE}
-
-# The SQLite history is the only thing it writes; systemd creates and owns it.
+# Runs as root, like the node: the embedded node it hosts is a full one.
+# The SQLite history lives in /var/lib/stats.
 StateDirectory=stats
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-# AF_NETLINK is not optional: getifaddrs() opens a netlink socket, so without
-# it the embedded node's identity collection fails and takes the hub with it.
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-RestrictSUIDSGID=yes
-LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

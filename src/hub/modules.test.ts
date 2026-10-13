@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadModules } from "../agent/modules/index.ts";
 import type { NodeModule } from "../agent/modules/mod.ts";
-import { defaultPolicy } from "../modules/host.ts";
 import type { ModuleManifest } from "../modules/manifest.ts";
 import { plannedModules, resolveNodeModules } from "./modules.ts";
 
@@ -50,7 +49,6 @@ describe("the loader's platform gate", () => {
 		const loaded = await loadModules(
 			ctx,
 			{ linuxonly: true, portable: true },
-			defaultPolicy([]),
 			[
 				nodeModule({
 					id: "linuxonly",
@@ -74,7 +72,6 @@ describe("the loader's platform gate", () => {
 		const loaded = await loadModules(
 			ctx,
 			{ nope: true },
-			defaultPolicy([]),
 			[
 				nodeModule(
 					{ id: "nope", label: "Nope", platforms: ["win32"] },

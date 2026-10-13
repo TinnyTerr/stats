@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentConfig } from "./config.ts";
 
-/**
- * Who the node runs as decides two defaults and nothing else. Everything here
- * passes `root` explicitly rather than asking the machine, so the answers don't
- * depend on whether the suite happens to be running under sudo.
- */
+/** The hub-directed switches default on and can each be refused. */
 
 const dir = await mkdtemp(join(tmpdir(), "stats-config-"));
 const cleared = [
@@ -38,26 +34,22 @@ async function write(name: string, body: Record<string, unknown>) {
 	return path;
 }
 
-describe("the two switches the hub needs", () => {
-	test("root takes both directions from the hub; anyone else takes neither", async () => {
+describe("the switches the hub needs", () => {
+	test("all default on", async () => {
 		const path = await write("plain.json", { hub: "hub.lan" });
-
-		const asRoot = await loadAgentConfig({ config: path }, true);
-		expect(asRoot.allowRemoteUpdate).toBe(true);
-		expect(asRoot.allowHubModules).toBe(true);
-
-		const asUser = await loadAgentConfig({ config: path }, false);
-		expect(asUser.allowRemoteUpdate).toBe(false);
-		expect(asUser.allowHubModules).toBe(false);
+		const config = await loadAgentConfig({ config: path });
+		expect(config.allowRemoteUpdate).toBe(true);
+		expect(config.allowHubModules).toBe(true);
+		expect(config.allowHubSshKeys).toBe(true);
 	});
 
-	test("the config file still says no to a root node", async () => {
+	test("the config file can still say no", async () => {
 		const path = await write("refusing.json", {
 			hub: "hub.lan",
 			allowRemoteUpdate: false,
 			allowHubModules: false,
 		});
-		const config = await loadAgentConfig({ config: path }, true);
+		const config = await loadAgentConfig({ config: path });
 		expect(config.allowRemoteUpdate).toBe(false);
 		expect(config.allowHubModules).toBe(false);
 	});
@@ -66,26 +58,15 @@ describe("the two switches the hub needs", () => {
 		const path = await write("env.json", { hub: "hub.lan" });
 
 		process.env.STATS_ALLOW_HUB_MODULES = "0";
-		const env = await loadAgentConfig({ config: path }, true);
+		const env = await loadAgentConfig({ config: path });
 		expect(env.allowHubModules).toBe(false);
 		// Untouched by the one that was set.
 		expect(env.allowRemoteUpdate).toBe(true);
 
-		const flagged = await loadAgentConfig(
-			{ config: path, allowRemoteUpdate: false },
-			true,
-		);
-		expect(flagged.allowRemoteUpdate).toBe(false);
-	});
-
-	test("a non-root node can still be handed both", async () => {
-		const path = await write("opted-in.json", {
-			hub: "hub.lan",
-			allowRemoteUpdate: true,
-			allowHubModules: true,
+		const flagged = await loadAgentConfig({
+			config: path,
+			allowRemoteUpdate: false,
 		});
-		const config = await loadAgentConfig({ config: path }, false);
-		expect(config.allowRemoteUpdate).toBe(true);
-		expect(config.allowHubModules).toBe(true);
+		expect(flagged.allowRemoteUpdate).toBe(false);
 	});
 });

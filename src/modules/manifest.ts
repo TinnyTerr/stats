@@ -48,10 +48,9 @@ export type ModuleId = string;
 export type ModuleSet = Partial<Record<ModuleId, boolean>>;
 
 /**
- * What a module is allowed to reach out to. The first four are the open set:
- * any module may ask for them, and {@link ModuleHost} is the only way to use
- * them. `exec` and `pty` hand over the machine itself, so they are privileged —
- * a module holding one has to be trusted explicitly.
+ * What a module says it reaches out to. A declaration, not a limit: nothing
+ * enforces it, see src/modules/host.ts. `exec` and `pty` hand over the machine
+ * itself, and the module page shows them as such.
  */
 export type ModuleGrant = "read" | "http" | "ws" | "socket" | "exec" | "pty";
 
@@ -63,16 +62,6 @@ export const OPEN_GRANTS: readonly ModuleGrant[] = [
 ];
 
 export const PRIVILEGED_GRANTS: readonly ModuleGrant[] = ["exec", "pty"];
-
-/** Every grant there is. What a root node hands out — see `rootPolicy()`. */
-export const ALL_GRANTS: readonly ModuleGrant[] = [
-	...OPEN_GRANTS,
-	...PRIVILEGED_GRANTS,
-];
-
-export function isPrivilegedGrant(grant: ModuleGrant): boolean {
-	return PRIVILEGED_GRANTS.includes(grant);
-}
 
 export interface ModuleManifest {
 	id: ModuleId;

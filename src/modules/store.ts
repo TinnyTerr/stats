@@ -16,10 +16,8 @@ import { currentPlatform, resolveEntry } from "./platform.ts";
  * at install time so `stats modules` can say exactly what is running.
  *
  * Installing a module means agreeing to run its code on that host. Nothing here
- * pretends otherwise — the CLI says so, and the grant policy in
- * src/modules/host.ts is what actually holds the line: an installed module gets
- * the open grants and nothing else unless an operator names it in
- * `trustedModules`.
+ * pretends otherwise — the CLI says so, and nothing restricts the module once
+ * it is loaded.
  */
 
 export const MANIFEST_FILE = "stats.module.json";
@@ -49,9 +47,8 @@ export interface BrokenModule {
 }
 
 /**
- * Root-run nodes keep modules with the rest of their state; a node running as
- * you keeps them in your data directory. STATS_MODULE_DIR overrides both, which
- * is what the tests use.
+ * Modules live with the rest of the node's state, in the system state
+ * directory. STATS_MODULE_DIR overrides it, which is what the tests use.
  */
 export function moduleStoreDir(): string {
 	const override = process.env.STATS_MODULE_DIR;

@@ -19,7 +19,6 @@ import { issueCert } from "./src/hub/ca.ts";
 import { loadConfig } from "./src/hub/config.ts";
 import { startHub } from "./src/hub/server.ts";
 import { toModuleManifest } from "./src/modules/external.ts";
-import { isRoot } from "./src/modules/host.ts";
 import {
 	MODULE_LIST,
 	moduleRunsOn,
@@ -88,10 +87,10 @@ Usage:
   ${invocation} check  [--projects PATH]      validate the projects file and exit
   ${invocation} version
 
-A node running as root is unrestricted: every module gets every grant, and the
-hub — the source of truth for the fleet — may switch modules on and ask for an
-update without either --allow flag. Run it as anyone else and both are off
-until asked for, and modules only reach what they declared.
+A node is unrestricted: every module gets every grant, and the hub — the
+source of truth for the fleet — may switch modules on, ask for an update and
+hand out ssh keys unless a --no/--allow flag, env var or agent.json says
+otherwise. Install it as root.
 
 Environment:
   STATS_CONFIG        hub config path (default ./hub.json)
@@ -102,8 +101,7 @@ Environment:
   STATS_NODE_NAME     display name (default hostname)
   STATS_PROJECTS      projects file or directory (colon-separated)
   STATS_MODULES       modules to load, e.g. "docker,systemd" or "-terminal"
-  STATS_MODULE_DIR    where installed modules live (default /var/lib/stats/modules
-                      as root, ~/.local/share/stats/modules otherwise)
+  STATS_MODULE_DIR    where installed modules live (default /var/lib/stats/modules)
   STATS_HOST          forge to check for updates (default github.com)
   STATS_REPO          owner/repo for updates (default tinnyterr/stats)
   STATS_ASSET         force a build, e.g. stats-linux-x64-baseline
@@ -195,13 +193,8 @@ async function modulesCommand(sub: string | undefined) {
 		case "list":
 			describeBuiltins();
 			await describeInstalled();
-			// Whoever is reading this list wants to know whether the grants in it
-			// are a limit, and that depends on who runs the node — which is very
-			// often not whoever is typing this.
 			console.log(
-				isRoot()
-					? "\na node run as root loads modules unrestricted: the grants above are a\ndeclaration of what a module touches, not a limit on what it can."
-					: "\na node run as this user is held to the grants above, and to trustedModules\nfor exec and pty. A node run as root is held to neither.",
+				"\nthe grants above are a declaration of what a module touches, not a limit\non what it can.",
 			);
 			break;
 
@@ -230,9 +223,7 @@ async function modulesCommand(sub: string | undefined) {
 			if (privileged.length) {
 				console.warn(
 					`  note: this module wants ${privileged.join(" and ")}, which hands it the machine.\n` +
-						(isRoot()
-							? `  A node running as root gives it that: the grants are a declaration there, not a request.`
-							: `  It will not load until you add '${manifest.id}' to trustedModules in the node config.`),
+						`  Nothing restricts it: the grants are a declaration, not a request.`,
 				);
 			}
 			console.log("restart the node to load it");
@@ -569,13 +560,11 @@ async function main(role: string | undefined) {
 					projectPaths: (process.env.STATS_PROJECTS ?? "./projects.json").split(
 						":",
 					),
-					trustedModules: MODULE_LIST.map((module) => module.id),
 					// This node is the hub's own machine, so the hub is as much the
-					// source of truth here as anywhere — under root it takes both
-					// directions, same as a node that went through loadAgentConfig.
-					allowHubModules: isRoot(),
-					allowHubSshKeys: isRoot(),
-					allowRemoteUpdate: isRoot(),
+					// source of truth here as anywhere.
+					allowHubModules: true,
+					allowHubSshKeys: true,
+					allowRemoteUpdate: true,
 					installed,
 				});
 				process.on("SIGINT", () => void node.stop());

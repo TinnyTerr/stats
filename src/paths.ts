@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -6,19 +5,14 @@ import { join } from "node:path";
  * fleet CA it trusts. One answer, so the module store and the `ca` module
  * can't drift apart on where "the state directory" is.
  *
- * systemd's StateDirectory= creates and chowns this for us and — under
- * ProtectHome — is the only writable state directory a non-root unit has, so
- * it wins when set. Root outside systemd keeps the same path; anyone else gets
- * their own data directory.
+ * It is a system directory, shared by every user on the machine: nodes are
+ * installed as root. systemd's StateDirectory= wins when set, since it creates
+ * and chowns the path for us.
  */
 export function stateDir(): string {
 	if (process.env.STATE_DIRECTORY) return process.env.STATE_DIRECTORY;
-	if (process.getuid?.() === 0) return "/var/lib/stats";
 	if (process.platform === "win32") {
-		return join(
-			process.env.LOCALAPPDATA ?? process.env.APPDATA ?? homedir(),
-			"stats",
-		);
+		return join(process.env.ProgramData ?? "C:\\ProgramData", "stats");
 	}
-	return join(homedir(), ".local", "share", "stats");
+	return "/var/lib/stats";
 }

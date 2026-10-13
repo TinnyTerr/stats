@@ -131,10 +131,10 @@ or `--name=value`. Every node flag has an environment-variable equivalent —
 see **Environment** below — and flags win over the environment, which wins
 over `agent.json`/`hub.json`.
 
-A node running as root is unrestricted: every module gets every grant, and the
-hub may switch modules on and ask for an update without either `--allow` flag.
-Run it as anyone else and both are off until asked for, and modules only reach
-what they declared — see **Modules** and **Updating**.
+A node is unrestricted: every module gets every grant, and the hub may switch
+modules on and ask for an update without either `--allow` flag. Both can be
+refused with `STATS_ALLOW_*=0`, a flag or `agent.json` — see **Modules** and
+**Updating**.
 
 ## Projects: telling a node what to run
 
@@ -360,16 +360,14 @@ the node picks it up on its next connection without anyone touching it.
 
 **Narrowing always works; widening depends on who the node is.** The hub can
 take a module away from any node. Turning one *on* is the hub reaching into a
-machine, so it needs `--allow-hub-modules` — which **a node running as root
-defaults to on**, because a root node has already handed the machine over and
-the hub is the source of truth for what it should be running. A node running as
-anyone else has it off until asked, answers "no", and the page shows `refused`
-rather than pretending it worked.
+machine, so it needs `--allow-hub-modules` — which **defaults to on**, because
+a node is installed as root, which has already handed the machine over, and the
+hub is the source of truth for what it should be running. A node that has
+refused it answers "no", and the page shows `refused` rather than pretending it
+worked.
 
 ```bash
-stats node --hub … --allow-hub-modules     # let a non-root node take additions
-STATS_ALLOW_HUB_MODULES=1 stats node …     # same, from the environment
-STATS_ALLOW_HUB_MODULES=0 stats node …     # refuse them even as root
+STATS_ALLOW_HUB_MODULES=0 stats node …     # refuse additions
 ```
 
 ### Spreading an ssh key
@@ -399,22 +397,14 @@ through the grants it declared in `src/modules/manifest.ts`:
 | `exec` | **privileged**: running a command |
 | `pty` | **privileged**: spawning a process on a pty |
 
-The first four are the open set: any module may ask for them. `exec` and `pty`
-hand over the machine, so a module holding either has to be in the policy's
-trust list — the modules in this repo are, and nothing else is unless you say
-so. Asking for a grant the policy won't give means the module doesn't load at
-all, reported at startup rather than discovered when it first misbehaves.
-
-**All of which stops applying when the node runs as root.** A root node's policy
-is unrestricted: every grant is held, every path readable, every socket and host
-reachable, and the trust list goes unread. This is not a shortcut, it is the
-honest version — a module denied `exec` inside a root process is one `Bun.spawn`
-away from having it, so the refusal bought nothing and cost you an evening
-working out why your module wouldn't load. The confinement that does the work is
-*who can run the node as root* and *who can reach the hub*. The grants stay in
-the manifest either way: `stats modules install` prints them and the module page
-shows them, so you can still see what a module says it touches before you
-install it.
+**These are a declaration, not a limit.** Nodes run as root and nothing checks
+the grants: every path is readable, every socket and host reachable, and `exec`
+and `pty` are open to every module. A module denied `exec` inside a root process
+is one `Bun.spawn` away from having it, so a refusal would buy nothing. The
+confinement that does the work is *who can reach the hub*. The grants stay in
+the manifest: `stats modules install` prints them and the module page shows
+them, so you can still see what a module says it touches before you install
+it.
 
 ### Installing a module from a git repository
 
@@ -428,8 +418,7 @@ stats modules install owner/repo --ref v2      # GitHub shorthand, a tag
 stats modules install ./path/to/checkout       # a repository on this machine
 ```
 
-They land in `/var/lib/stats/modules` (`~/.local/share/stats/modules` when the
-node doesn't run as root, `STATS_MODULE_DIR` to override), and a node loads them
+They land in `/var/lib/stats/modules` (`STATS_MODULE_DIR` to override), and a node loads them
 on its next start. From then on an installed module is an ordinary one: it can
 be switched off with `--modules -weather`, narrowed away fleet-wide from
 `hub.json`, and it appears in `stats modules` next to the builtins.
@@ -444,14 +433,10 @@ Configure one in the node's `agent.json`:
 }
 ```
 
-**Installing a module means running its code on that host.** On an unprivileged
-node the grant policy is what limits it: it gets the open set and nothing more,
-so it can make HTTP requests but cannot run a command unless you add its id to
-`trustedModules` in the node config. **On a root node it gets everything it
-asked for and everything it didn't** — read the manifest before you install it,
-and treat installing on a root node as what it is: running someone else's code
-as root. Either way it never gets the supervisor, the terminal manager or the
-log streams — those are builtin territory.
+**Installing a module means running its code on that host, as root.** It gets
+everything it asked for and everything it didn't — read the manifest before you
+install it. It never gets the supervisor, the terminal manager or the log
+streams — those are builtin territory.
 
 Its dashboard half is a *declaration*, not code. The manifest says which columns
 its tab has and which tiles and meter its card face shows, and the dashboard
@@ -699,14 +684,11 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 - **Set `nodeToken`.** Without one, any host that can reach the hub can
   register as a node and appear on your dashboard. Set
   `allowUnknownNodes: false` to accept only ids you've listed.
-- **Terminals and supervised processes run as the user the node runs as, and
-  the packaged node unit runs as root.** That is what makes `user:` in projects,
-  unit control and unrestricted modules work, and it is equivalent to handing
-  out a root shell to whoever can reach the dashboard. A root node also takes
-  module changes and update requests from the hub by default. Install with
-  `--user stats` for the sandboxed, least-privilege node instead — modules keep
-  the grant policy and both hub-directed switches go back to off. Choose
-  deliberately.
+- **Terminals and supervised processes run as root, and so does the node.**
+  That is what makes `user:` in projects, unit control and unrestricted modules
+  work, and it is equivalent to handing out a root shell to whoever can reach
+  the dashboard. The node also takes module changes and update requests from
+  the hub by default. Only install it on hosts where that is acceptable.
 - Traffic is plain WebSocket. Run it over a private network (Tailscale,
   WireGuard, LAN) or put a TLS proxy in front and point nodes at `wss://`.
 - The `file` log source is allowlisted to `STATS_LOG_DIRS` (default `/var/log`)
@@ -829,36 +811,13 @@ install anything it can't verify, and it refuses to run from source, where the
 
 3. From the dashboard: a node's **overview** tab has *check for updates*, and an
 **update** button when one is waiting. A node running as root accepts these by
-default; any other node has to be started with `--allow-remote-update` (or
-`allowRemoteUpdate: true` in `agent.json`, or `STATS_ALLOW_REMOTE_UPDATE=1`)
-first. Setting any of those to false refuses them on a root node too.
+default; `--no-allow-remote-update`, `allowRemoteUpdate: false` in `agent.json`
+or `STATS_ALLOW_REMOTE_UPDATE=0` refuses them.
 
 The hub can only ask. It cannot say where from: the node resolves the release
 from the forge *it* is configured with and verifies it against that release's
 published checksums, so a compromised hub can at worst ask for an update the
 node was already willing to install.
-
-### Making a hardened node able to update itself
-
-The root unit replaces its own binary without any of this. But a node installed
-with `--user stats` runs with `ProtectSystem=full`, which makes `/usr`
-read-only — so it cannot replace its own binary, and `update.apply` fails with a
-clear permission error rather than half-swapping anything. If you want option 3
-on such a node, you have to open exactly that hole:
-
-```ini
-# /etc/systemd/system/stats-node.service.d/update.conf
-[Service]
-ReadWritePaths=/usr/local/bin
-```
-
-```bash
-sudo chown stats /usr/local/bin/stats
-```
-
-Weigh that: it means anything that compromises the `stats` user can rewrite a
-binary root runs. If it doesn't appeal, options 1 and 2 stay available and need
-no privilege the node didn't already have.
 
 ## Layout
 

@@ -42,17 +42,19 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   frame, action handlers); `web/modules.tsx` is the browser half (a tab and the
   card faces). Adding a capability is a row in the manifest plus those two
   halves; the shell doesn't change.
-- **A module only reaches what it declared — until the node is root.** Grants
-  are `read`, `http`, `ws` and `socket` for anyone, `exec` and `pty` for modules
-  in the policy's trust list. `src/modules/host.ts` is the enforcement, checked
-  at load, and a module wanting more than the policy allows doesn't start. That
-  is the *unprivileged* half: `hostPolicy()` hands a root node `rootPolicy()`
-  instead, where `unrestricted` is set and nothing is refused — a fence inside a
-  root process is furniture, since the module it stops is one `Bun.spawn` from
-  what it was denied. The grants survive as a declaration (the CLI prints them,
-  the module page shows them); they stop being a request. Root is the only thing
-  that switches this, and non-root keeps the real enforcement, because there the
-  policy is all that stands between a module and the account the node runs as.
+- **Nothing filters what a module reaches.** Nodes are installed as root, and a
+  fence inside a root process is furniture — the module it stops is one
+  `Bun.spawn` from what it was denied. `src/modules/host.ts` hands every module
+  an unrestricted host. The manifest's grants (`read`, `http`, `ws`, `socket`,
+  `exec`, `pty`) survive as a declaration only: the CLI prints them and the
+  module page shows them, nothing checks them. Don't reintroduce a policy or a
+  trust list.
+- **Everything installs as root, for the whole machine.** `install.sh` re-runs
+  itself under sudo or stops; services run as root (no `stats` user, no
+  sandbox directives); config is `/etc/stats`, state `/var/lib/stats`
+  (`ProgramData\stats` on Windows) via `stateDir()` in `src/paths.ts`, never a
+  home directory. The one escape is a non-root run with an explicit `--prefix`,
+  which installs the binary and nothing else.
 - **A module can come from a git repository, and then it isn't in the
   manifest.** `src/modules/store.ts` clones one per directory; the repo's
   `stats.module.json` becomes an ordinary `ModuleManifest` via
@@ -91,8 +93,9 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   module away, which is the rule this codebase has always had — but **widening
   needs the node's `allowHubModules`**, the same opt-in shape as
   `allowRemoteUpdate`, because turning a module *on* is the hub reaching into a
-  machine. Both default to **on for a root node** and off for any other, decided
-  in `loadAgentConfig()` and nowhere else: a config built by hand (tests, the
+  machine. All three switches (this, `allowRemoteUpdate`, `allowHubSshKeys`) default
+  to **on**, decided in `loadAgentConfig()` and nowhere else; a flag, env var or
+  `agent.json` can still turn one off. A config built by hand (tests, the
   embedded node) means exactly what it says, and `agent.ts` only ever reads
   `=== true`. A node that hasn't opted in answers "no" rather than erroring, and
   the module page renders that as `refused` instead of pretending it worked.
@@ -105,16 +108,14 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
 - **The hub can ask a node to update; it can never say where from.**
   `src/update.ts` resolves the release from the node's own forge and verifies it
   against that release's `SHA256SUMS`, so `update.apply` carries a version tag
-  at most. It is on by default for a root node and off for any other, the same
-  shape as `allowHubModules`. Anything that would let the hub name a URL, a
-  checksum or a file path breaks the one rule this feature rests on — that rule
-  holds under root too, where the hub may ask freely and still cannot say where
-  from.
+  at most. It is on by default, the same shape as `allowHubModules`.
+  Anything that would let the hub name a URL, a checksum or a file path breaks
+  the one rule this feature rests on.
 - **The hub can hand a node a public key; it can never say where it goes.**
   `ssh.authorize`/`ssh.revoke` carry one bare key. The node writes it to its own
   account's `authorized_keys` inside a block it owns (`src/agent/sshkeys.ts`),
-  refuses anything with options, and gates on `allowHubSshKeys` — root on,
-  anyone else off, the same shape as `allowRemoteUpdate`. `ssh.spread` is the
+  refuses anything with options, and gates on `allowHubSshKeys` — on by
+  default, the same shape as `allowRemoteUpdate`. `ssh.spread` is the
   hub-side fan-out and skips offline nodes rather than queueing.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
