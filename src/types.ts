@@ -541,6 +541,18 @@ export interface ProjectStatus {
 	watch: ProjectWatch;
 	/** worst state across the project's processes, for the card badge */
 	summary: "running" | "degraded" | "stopped" | "empty";
+	/** null for a project that declares neither `source` nor `build` */
+	deploy: DeployStatus | null;
+}
+
+export interface DeployStatus {
+	state: "idle" | "running" | "ok" | "failed";
+	startedAt: number | null;
+	finishedAt: number | null;
+	/** why the last deploy failed */
+	error: string | null;
+	/** short commit the working tree is at, when it is a git checkout */
+	revision: string | null;
 }
 
 /* ---------- telemetry ---------- */

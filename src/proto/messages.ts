@@ -114,6 +114,7 @@ export const NodeAction = {
 	ProjectsList: "projects.list",
 	ProjectsReload: "projects.reload",
 	ProjectAction: "project.action",
+	ProjectDeploy: "project.deploy",
 	/** the hub telling a node which modules it should be running */
 	ModulesApply: "modules.apply",
 	/** put a public key in this node's authorized_keys; see SshKeyParams */
@@ -317,6 +318,10 @@ export interface PiholeDnsParams extends Partial<NodeScoped> {
 	ip: string;
 	/** false removes the record instead of adding it */
 	present?: boolean;
+}
+
+export interface ProjectDeployParams extends Partial<NodeScoped> {
+	projectId: string;
 }
 
 export type ProjectVerb = "start" | "stop" | "restart";

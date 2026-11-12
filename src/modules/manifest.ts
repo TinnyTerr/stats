@@ -122,7 +122,12 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		// agrees on, so this stays portable.
 		platforms: [],
 		grants: ["read", "http", "exec"],
-		actions: ["projects.list", "projects.reload", "project.action"],
+		actions: [
+			"projects.list",
+			"projects.reload",
+			"project.action",
+			"project.deploy",
+		],
 		tab: "projects",
 		provides: ["projects"],
 	},

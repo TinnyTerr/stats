@@ -2,6 +2,7 @@ import { connect } from "node:net";
 import type { Subprocess } from "bun";
 import { forgetProcess, sampleProcess } from "../collect/processes.ts";
 import type {
+	DeployStatus,
 	HealthCheck,
 	HealthState,
 	LogLine,
@@ -11,6 +12,7 @@ import type {
 	ProjectSpec,
 	ProjectStatus,
 } from "../types.ts";
+import { buildSteps, fetchSource } from "./deploy.ts";
 import { type LoadedProjects, loadEnvFiles, loadProjects } from "./projects.ts";
 
 /**
@@ -597,6 +599,21 @@ async function probe(
 	}
 }
 
+async function revisionOf(cwd: string | null): Promise<string | null> {
+	if (!cwd) return null;
+	try {
+		const proc = Bun.spawn(["git", "rev-parse", "--short", "HEAD"], {
+			cwd,
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const out = (await new Response(proc.stdout).text()).trim();
+		return (await proc.exited) === 0 && out ? out : null;
+	} catch {
+		return null;
+	}
+}
+
 /** PATH lookup without a shell, so it answers the same on every platform. */
 async function which(binary: string): Promise<boolean> {
 	return Bun.which(binary) !== null;
@@ -608,6 +625,8 @@ export class Supervisor {
 	private sources: string[] = [];
 	private loadErrors: string[] = [];
 	private listeners = new Set<() => void>();
+	private deploys = new Map<string, DeployStatus>();
+	private deployLogs = new Map<string, LogBuffer>();
 
 	constructor(private paths?: string[]) {}
 
@@ -723,6 +742,83 @@ export class Supervisor {
 		await Promise.all(targets.map((m) => m.restart()));
 	}
 
+	private deployLog(projectId: string): LogBuffer {
+		let buffer = this.deployLogs.get(projectId);
+		if (!buffer) {
+			buffer = new LogBuffer(2000);
+			this.deployLogs.set(projectId, buffer);
+		}
+		return buffer;
+	}
+
+	/**
+	 * Fetch, build, then restart. The running processes are only touched once
+	 * the build has passed, so a broken commit leaves the old version serving.
+	 */
+	deploy(projectId: string): Promise<DeployStatus> {
+		// Not async: a refusal throws to the caller, who is waiting to hear it,
+		// while the build itself runs on without them.
+		const project = this.projects.find((p) => p.id === projectId);
+		if (!project) throw new Error(`unknown project '${projectId}'`);
+		if (!project.source && !project.build)
+			throw new Error(`project '${projectId}' declares no source or build`);
+		if (this.deploys.get(projectId)?.state === "running")
+			throw new Error(`'${projectId}' is already deploying`);
+
+		const status: DeployStatus = {
+			state: "running",
+			startedAt: Date.now(),
+			finishedAt: null,
+			error: null,
+			revision: null,
+		};
+		this.deploys.set(projectId, status);
+		this.changed();
+		return this.runDeploy(project, status);
+	}
+
+	private async runDeploy(
+		project: ProjectSpec,
+		status: DeployStatus,
+	): Promise<DeployStatus> {
+		const projectId = project.id;
+		const logs = this.deployLog(projectId);
+		const log = (stream: string, message: string) =>
+			logs.push({ ts: Date.now(), stream, message });
+		const env = {
+			...(await loadEnvFiles(project.envFiles)),
+			...project.env,
+			STATS_PROJECT: project.id,
+		};
+
+		try {
+			log("deploy", "— deploy started");
+			await fetchSource(project, { env, timeoutSec: 600, log });
+			await buildSteps(project, { env, log });
+			if (project.enabled) await this.restartAll(projectId);
+			status.state = "ok";
+			log("deploy", "— deploy finished");
+		} catch (err) {
+			status.state = "failed";
+			status.error = err instanceof Error ? err.message : String(err);
+			log("stderr", `— deploy failed: ${status.error}`);
+		}
+		status.finishedAt = Date.now();
+		status.revision = await revisionOf(project.cwd);
+		this.changed();
+		return status;
+	}
+
+	private async restartAll(projectId: string) {
+		// Autostart is what "should be running"; a one-shot that was stopped
+		// on purpose stays stopped.
+		await Promise.all(
+			this.processesOf(projectId)
+				.filter((m) => m.spec.autostart || m.running)
+				.map((m) => m.restart()),
+		);
+	}
+
 	/** Last N lines, then live ones until the signal aborts. */
 	tail(
 		projectId: string,
@@ -731,9 +827,13 @@ export class Supervisor {
 		onLine: (line: LogLine) => void,
 		signal?: AbortSignal,
 	): () => void {
-		const managed = this.find(projectId, processId);
-		for (const line of managed.logs.tail(count)) onLine(line);
-		const unsubscribe = managed.logs.subscribe(onLine);
+		// '@deploy' can't collide with a process id; ids must start alphanumeric.
+		const buffer =
+			processId === "@deploy"
+				? this.deployLog(projectId)
+				: this.find(projectId, processId).logs;
+		for (const line of buffer.tail(count)) onLine(line);
+		const unsubscribe = buffer.subscribe(onLine);
 		signal?.addEventListener("abort", unsubscribe, { once: true });
 		return unsubscribe;
 	}
@@ -784,6 +884,16 @@ export class Supervisor {
 				processes,
 				watch: project.watch,
 				summary,
+				deploy:
+					project.source || project.build
+						? (this.deploys.get(project.id) ?? {
+								state: "idle",
+								startedAt: null,
+								finishedAt: null,
+								error: null,
+								revision: null,
+							})
+						: null,
 			};
 		});
 	}

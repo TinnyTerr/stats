@@ -2,6 +2,7 @@ import { MODULES } from "../../modules/manifest.ts";
 import { RemoteError } from "../../proto/link.ts";
 import type {
 	ProjectActionParams,
+	ProjectDeployParams,
 	ProjectsListResult,
 } from "../../proto/messages.ts";
 import type { NodeModule } from "./mod.ts";
@@ -35,6 +36,16 @@ export const projectsModule: NodeModule = {
 				sources: loaded.sources,
 				errors: loaded.errors,
 			} satisfies ProjectsListResult;
+		},
+
+		// Fire and report: a build outlasts the hub's 30s one-shot, so this returns
+		// once the deploy has started and progress comes through the project
+		// status and the '@deploy' log.
+		"project.deploy": async (req, ctx) => {
+			requireControl(ctx);
+			const p = (req.params ?? {}) as unknown as ProjectDeployParams;
+			void ctx.supervisor.deploy(p.projectId);
+			return { ok: true, projects: await ctx.supervisor.status() };
 		},
 
 		"project.action": async (req, ctx) => {
