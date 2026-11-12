@@ -1,6 +1,9 @@
 import type {
 	HealthCheck,
+	ProcessRoute,
 	ProcessSpec,
+	ProjectBuild,
+	ProjectSource,
 	ProjectSpec,
 	ProjectWatch,
 	RestartPolicy,
@@ -87,6 +90,8 @@ export const DEFAULTS = {
 	stopSignal: "SIGTERM",
 	stopTimeoutSec: 10,
 	logLines: 1000,
+	sourceRef: "main",
+	buildTimeoutSec: 600,
 	health: {
 		intervalSec: 30,
 		timeoutMs: 3000,
@@ -351,6 +356,97 @@ function parseWatch(raw: unknown, v: Validator, path: string): ProjectWatch {
 	};
 }
 
+function parseRoute(
+	raw: unknown,
+	v: Validator,
+	path: string,
+): ProcessRoute | null {
+	if (raw === undefined || raw === null) return null;
+	if (typeof raw !== "object" || Array.isArray(raw)) {
+		v.fail(path, "expected an object");
+		return null;
+	}
+	const obj = raw as Record<string, unknown>;
+	const hosts =
+		typeof obj.host === "string"
+			? [obj.host]
+			: v.strings(obj.host, `${path}.host`);
+	if (!hosts.length) {
+		v.fail(`${path}.host`, "is required — a hostname or a list of them");
+		return null;
+	}
+	if (typeof obj.port !== "number" || !Number.isInteger(obj.port)) {
+		v.fail(`${path}.port`, "is required — the port the process listens on");
+		return null;
+	}
+	const port = v.int(obj.port, `${path}.port`, obj.port, 1, 65535);
+	const routePath = v.string(obj.path, `${path}.path`);
+	if (routePath && !routePath.startsWith("/"))
+		v.fail(`${path}.path`, "must start with /");
+	return {
+		hosts,
+		path: routePath,
+		port,
+		target: v.string(obj.target, `${path}.target`),
+	};
+}
+
+function parseSource(
+	raw: unknown,
+	v: Validator,
+	path: string,
+	cwd: string | null,
+): ProjectSource | null {
+	if (raw === undefined || raw === null) return null;
+	if (typeof raw !== "object" || Array.isArray(raw)) {
+		v.fail(path, "expected an object");
+		return null;
+	}
+	const obj = raw as Record<string, unknown>;
+	const repo = v.string(obj.repo, `${path}.repo`);
+	if (!repo) {
+		v.fail(`${path}.repo`, "is required — a git URL");
+		return null;
+	}
+	if (!cwd) v.fail(path, "needs the project's 'cwd' to say where to clone to");
+	return {
+		repo,
+		ref: v.string(obj.ref, `${path}.ref`, DEFAULTS.sourceRef)!,
+	};
+}
+
+function parseBuild(
+	raw: unknown,
+	v: Validator,
+	path: string,
+): ProjectBuild | null {
+	if (raw === undefined || raw === null) return null;
+	// `"build": "bun run build"` and `"build": ["a", "b"]` are the common cases.
+	const obj: Record<string, unknown> =
+		typeof raw === "string" || Array.isArray(raw)
+			? { steps: raw }
+			: typeof raw === "object"
+				? (raw as Record<string, unknown>)
+				: {};
+	const steps = v.strings(
+		typeof obj.steps === "string" ? [obj.steps] : obj.steps,
+		`${path}.steps`,
+	);
+	if (!steps.length) {
+		v.fail(path, "needs at least one step");
+		return null;
+	}
+	return {
+		steps,
+		timeoutSec: v.int(
+			obj.timeoutSec,
+			`${path}.timeoutSec`,
+			DEFAULTS.buildTimeoutSec,
+			1,
+		),
+	};
+}
+
 function parseProcess(
 	raw: unknown,
 	v: Validator,
@@ -440,6 +536,7 @@ function parseProcess(
 			100_000,
 		),
 		healthcheck: parseHealthcheck(obj.healthcheck, v, `${path}.healthcheck`),
+		route: parseRoute(obj.route, v, `${path}.route`),
 	};
 }
 
@@ -517,6 +614,8 @@ export function parseProjectsDocument(
 			enabled: v.bool(obj.enabled, `${path}.enabled`, DEFAULTS.enabled),
 			processes,
 			watch: parseWatch(obj.watch, v, `${path}.watch`),
+			source: parseSource(obj.source, v, `${path}.source`, cwd),
+			build: parseBuild(obj.build, v, `${path}.build`),
 		});
 	});
 

@@ -439,6 +439,31 @@ export interface ProcessSpec {
 	/** lines of output kept in memory for the log tail */
 	logLines: number;
 	healthcheck: HealthCheck | null;
+	/** how the proxy reaches this process; registered while it is healthy */
+	route: ProcessRoute | null;
+}
+
+/** A hostname (and optional path prefix) the proxy should send to a process. */
+export interface ProcessRoute {
+	hosts: string[];
+	path: string | null;
+	/** the port the process listens on, on this node */
+	port: number;
+	/** `to` override for a proxy that isn't on this node; defaults to the node's own address */
+	target: string | null;
+}
+
+/** Where a project's code comes from; a deploy clones or fast-forwards it into `cwd`. */
+export interface ProjectSource {
+	repo: string;
+	ref: string;
+}
+
+/** What a deploy runs after the code is in place and before processes restart. */
+export interface ProjectBuild {
+	/** shell commands, run in order in `cwd`; the first failure aborts the deploy */
+	steps: string[];
+	timeoutSec: number;
 }
 
 /** External things a project owns but does not run, surfaced alongside it. */
@@ -462,6 +487,8 @@ export interface ProjectSpec {
 	enabled: boolean;
 	processes: ProcessSpec[];
 	watch: ProjectWatch;
+	source: ProjectSource | null;
+	build: ProjectBuild | null;
 }
 
 export type ProcessState =

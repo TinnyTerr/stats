@@ -52,6 +52,67 @@ const minimal = (overrides: Record<string, unknown> = {}) => ({
 	],
 });
 
+describe("source, build and route", () => {
+	const doc = (
+		extra: Record<string, unknown>,
+		proc: Record<string, unknown> = {},
+	) => ({
+		projects: [
+			{
+				id: "app",
+				cwd: "/srv/app",
+				processes: [{ id: "web", command: "bun start", ...proc }],
+				...extra,
+			},
+		],
+	});
+
+	test("parses a source, a build shorthand and a route", () => {
+		const { projects, errors } = parseProjectsDocument(
+			doc(
+				{
+					source: { repo: "https://x/y.git" },
+					build: ["bun install", "bun run build"],
+				},
+				{ route: { host: "app.lan", port: 3000 } },
+			),
+			"t",
+		);
+		expect(errors).toEqual([]);
+		expect(projects[0]?.source).toEqual({
+			repo: "https://x/y.git",
+			ref: "main",
+		});
+		expect(projects[0]?.build).toEqual({
+			steps: ["bun install", "bun run build"],
+			timeoutSec: 600,
+		});
+		expect(projects[0]?.processes[0]?.route).toEqual({
+			hosts: ["app.lan"],
+			path: null,
+			port: 3000,
+			target: null,
+		});
+	});
+
+	test("rejects a route with no port, and a source with no cwd", () => {
+		const bad = parseProjectsDocument(
+			{
+				projects: [
+					{
+						id: "a",
+						source: { repo: "r" },
+						processes: [{ id: "w", command: "x", route: { host: "h" } }],
+					},
+				],
+			},
+			"t",
+		);
+		expect(bad.errors.join("\n")).toContain("route.port");
+		expect(bad.errors.join("\n")).toContain("cwd");
+	});
+});
+
 describe("projects schema", () => {
 	/**
 	 * The schema is what people read; the loader is what enforces it. If a
@@ -71,6 +132,12 @@ describe("projects schema", () => {
 		expect(schema.$defs.project.properties.enabled.default).toBe(
 			DEFAULTS.enabled,
 		);
+
+		expect(schema.$defs.source.properties.ref.default).toBe(DEFAULTS.sourceRef);
+		const build = schema.$defs.build.oneOf[2] as {
+			properties: { timeoutSec: { default: number } };
+		};
+		expect(build.properties.timeoutSec.default).toBe(DEFAULTS.buildTimeoutSec);
 
 		const health = schema.$defs.healthcheck.properties;
 		expect(health.intervalSec.default).toBe(DEFAULTS.health.intervalSec);

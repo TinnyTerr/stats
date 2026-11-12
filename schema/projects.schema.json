@@ -7,7 +7,9 @@
 	"required": ["projects"],
 	"additionalProperties": false,
 	"properties": {
-		"$schema": { "type": "string" },
+		"$schema": {
+			"type": "string"
+		},
 		"version": {
 			"description": "Schema version of this file. Only 1 exists.",
 			"type": "integer",
@@ -16,7 +18,9 @@
 		},
 		"projects": {
 			"type": "array",
-			"items": { "$ref": "#/$defs/project" }
+			"items": {
+				"$ref": "#/$defs/project"
+			}
 		}
 	},
 	"$defs": {
@@ -28,13 +32,24 @@
 		"env": {
 			"type": "object",
 			"description": "Environment variables. Values are used literally; no shell expansion.",
-			"additionalProperties": { "type": "string" }
+			"additionalProperties": {
+				"type": "string"
+			}
 		},
 		"command": {
 			"description": "What to run. An array is exec'd directly (no shell, no quoting rules). A string is split on whitespace, or passed to `sh -c` when `shell` is true.",
 			"oneOf": [
-				{ "type": "string", "minLength": 1 },
-				{ "type": "array", "items": { "type": "string" }, "minItems": 1 }
+				{
+					"type": "string",
+					"minLength": 1
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"minItems": 1
+				}
 			]
 		},
 		"project": {
@@ -42,25 +57,35 @@
 			"required": ["id", "processes"],
 			"additionalProperties": false,
 			"properties": {
-				"id": { "$ref": "#/$defs/identifier" },
+				"id": {
+					"$ref": "#/$defs/identifier"
+				},
 				"name": {
 					"type": "string",
 					"description": "Display name. Defaults to the id."
 				},
-				"description": { "type": "string" },
+				"description": {
+					"type": "string"
+				},
 				"cwd": {
 					"type": "string",
 					"description": "Absolute working directory inherited by every process in the project."
 				},
-				"env": { "$ref": "#/$defs/env" },
+				"env": {
+					"$ref": "#/$defs/env"
+				},
 				"envFiles": {
 					"type": "array",
 					"description": "Files of KEY=value lines loaded before `env`, which wins. Relative paths resolve against `cwd`.",
-					"items": { "type": "string" }
+					"items": {
+						"type": "string"
+					}
 				},
 				"tags": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "Free-form labels, shown as chips and usable as a dashboard filter."
 				},
 				"url": {
@@ -75,11 +100,19 @@
 				"processes": {
 					"type": "array",
 					"description": "The processes the node runs for this project.",
-					"items": { "$ref": "#/$defs/process" }
+					"items": {
+						"$ref": "#/$defs/process"
+					}
 				},
 				"watch": {
 					"$ref": "#/$defs/watch",
 					"description": "Things this project owns but does not run, grouped onto its card."
+				},
+				"source": {
+					"$ref": "#/$defs/source"
+				},
+				"build": {
+					"$ref": "#/$defs/build"
 				}
 			}
 		},
@@ -88,12 +121,16 @@
 			"required": ["id", "command"],
 			"additionalProperties": false,
 			"properties": {
-				"id": { "$ref": "#/$defs/identifier" },
+				"id": {
+					"$ref": "#/$defs/identifier"
+				},
 				"name": {
 					"type": "string",
 					"description": "Display name. Defaults to the id."
 				},
-				"command": { "$ref": "#/$defs/command" },
+				"command": {
+					"$ref": "#/$defs/command"
+				},
 				"shell": {
 					"type": "boolean",
 					"default": false,
@@ -103,8 +140,15 @@
 					"type": "string",
 					"description": "Overrides the project's cwd."
 				},
-				"env": { "$ref": "#/$defs/env" },
-				"envFiles": { "type": "array", "items": { "type": "string" } },
+				"env": {
+					"$ref": "#/$defs/env"
+				},
+				"envFiles": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
 				"autostart": {
 					"type": "boolean",
 					"default": true,
@@ -159,8 +203,65 @@
 					"default": 1000,
 					"description": "Output lines kept in memory for the log tail."
 				},
-				"healthcheck": { "$ref": "#/$defs/healthcheck" }
+				"healthcheck": {
+					"$ref": "#/$defs/healthcheck"
+				},
+				"route": {
+					"$ref": "#/$defs/route"
+				}
 			}
+		},
+		"route": {
+			"$ref": "#/$defs/route"
+		},
+		"source": {
+			"type": "object",
+			"required": ["repo"],
+			"additionalProperties": false,
+			"description": "Where the code comes from. A deploy clones or fast-forwards it into the project's cwd, which is then required.",
+			"properties": {
+				"repo": {
+					"type": "string",
+					"description": "A git URL."
+				},
+				"ref": {
+					"type": "string",
+					"default": "main",
+					"description": "Branch or tag."
+				}
+			}
+		},
+		"build": {
+			"description": "Run by a deploy after the code is in place and before processes restart. A string or array is shorthand for `steps`.",
+			"oneOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"steps": {
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"description": "Shell commands, run in order in cwd. The first failure aborts the deploy."
+						},
+						"timeoutSec": {
+							"type": "integer",
+							"minimum": 1,
+							"default": 600
+						}
+					}
+				}
+			]
 		},
 		"healthcheck": {
 			"type": "object",
@@ -168,14 +269,18 @@
 			"required": ["type"],
 			"additionalProperties": false,
 			"properties": {
-				"type": { "enum": ["http", "tcp", "command"] },
+				"type": {
+					"enum": ["http", "tcp", "command"]
+				},
 				"url": {
 					"type": "string",
 					"description": "http: absolute URL to GET, e.g. http://127.0.0.1:3000/health"
 				},
 				"expectStatus": {
 					"type": "array",
-					"items": { "type": "integer" },
+					"items": {
+						"type": "integer"
+					},
 					"description": "http: status codes counted as healthy. Defaults to anything in 200-399."
 				},
 				"port": {
@@ -191,11 +296,21 @@
 				},
 				"command": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "command: argv run to completion; exit 0 is healthy."
 				},
-				"intervalSec": { "type": "integer", "minimum": 1, "default": 30 },
-				"timeoutMs": { "type": "integer", "minimum": 100, "default": 3000 },
+				"intervalSec": {
+					"type": "integer",
+					"minimum": 1,
+					"default": 30
+				},
+				"timeoutMs": {
+					"type": "integer",
+					"minimum": 100,
+					"default": 3000
+				},
 				"failures": {
 					"type": "integer",
 					"minimum": 1,
@@ -211,16 +326,40 @@
 			},
 			"allOf": [
 				{
-					"if": { "properties": { "type": { "const": "http" } } },
-					"then": { "required": ["url"] }
+					"if": {
+						"properties": {
+							"type": {
+								"const": "http"
+							}
+						}
+					},
+					"then": {
+						"required": ["url"]
+					}
 				},
 				{
-					"if": { "properties": { "type": { "const": "tcp" } } },
-					"then": { "required": ["port"] }
+					"if": {
+						"properties": {
+							"type": {
+								"const": "tcp"
+							}
+						}
+					},
+					"then": {
+						"required": ["port"]
+					}
 				},
 				{
-					"if": { "properties": { "type": { "const": "command" } } },
-					"then": { "required": ["command"] }
+					"if": {
+						"properties": {
+							"type": {
+								"const": "command"
+							}
+						}
+					},
+					"then": {
+						"required": ["command"]
+					}
 				}
 			]
 		},
@@ -230,22 +369,32 @@
 			"properties": {
 				"systemd": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "Units belonging to this project, e.g. nginx.service."
 				},
 				"containers": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "Container names belonging to this project."
 				},
 				"ports": {
 					"type": "array",
-					"items": { "type": "integer", "minimum": 1, "maximum": 65535 },
+					"items": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 65535
+					},
 					"description": "Ports this project is expected to be listening on."
 				},
 				"paths": {
 					"type": "array",
-					"items": { "type": "string" },
+					"items": {
+						"type": "string"
+					},
 					"description": "Log files or directories to offer in the log picker for this project."
 				}
 			}
