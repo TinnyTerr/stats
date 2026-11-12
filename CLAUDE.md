@@ -141,6 +141,14 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   means plain HTTP on `port` as before. Nodes pointed at `ws://host:port` need
   `wss://` or the http port after this.
 
+- **Deploy and routing live on the node; the proxy stays dumb.** `src/agent/deploy.ts`
+  fetches and builds, `Supervisor.deploy()` restarts only after the build passed,
+  and `src/agent/routes.ts` (`RouteSync`) PUTs/DELETEs routes on the proxy's own
+  API as processes become healthy or stop. The hub never names a repo or a
+  command: both come from the node's projects file, same rule as updates.
+  `project.deploy` returns once the deploy has *started*; a build outlasts the
+  relay's 30s one-shot.
+
 ## Things that bit us, worth not rediscovering
 
 - **macOS, written without a Mac in reach.** The darwin parsers are pure and

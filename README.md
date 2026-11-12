@@ -115,7 +115,7 @@ each one.
 | Command | Does |
 | --- | --- |
 | `hub [--config hub.json] [--port 3000] [--host 127.0.0.1]` | starts the hub |
-| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules] [--allow-hub-ssh-keys]` | starts a node |
+| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules] [--allow-hub-ssh-keys] [--proxy URL] [--proxy-token T] [--proxy-host ADDR]` | starts a node |
 | `modules` | list builtin and installed modules, and what each may touch |
 | `modules install <repo> [--ref R] [--force]` | install a module from a git repository |
 | `modules update [id]` | fast-forward one installed module, or all of them |
@@ -480,6 +480,38 @@ host it mattered on.
 
 `examples/stats-module-endpoints/` is a complete, working one — HTTP checks
 against a list of URLs — written to be read.
+
+### Deploying and routing
+
+A project can say where its code comes from, how to build it, and what hostname
+reaches it:
+
+```jsonc
+{
+  "id": "billing-api",
+  "cwd": "/srv/billing",
+  "source": { "repo": "https://github.com/me/billing.git", "ref": "main" },
+  "build": ["bun install", "bun run build"],
+  "processes": [
+    {
+      "id": "web",
+      "command": ["bun", "run", "start"],
+      "healthcheck": { "type": "http", "url": "http://127.0.0.1:3000/health" },
+      "route": { "host": "billing.example.com", "port": 3000 }
+    }
+  ]
+}
+```
+
+- **`project.deploy`** clones or fast-forwards `source` into `cwd`, runs `build`
+  in order (first failure aborts), then restarts the processes. A failed build
+  leaves the running version alone. Progress is the project's `deploy` status
+  and a log tail at target `<project>/@deploy`.
+- **`route`** is registered with the proxy while the process is running and
+  healthy, and deleted when it isn't. Point the node at the proxy with
+  `--proxy http://127.0.0.1:7778` (`STATS_PROXY`, `STATS_PROXY_TOKEN`; and
+  `--proxy-host` / `STATS_PROXY_HOST` for the address the proxy should dial when
+  it is not on the same machine). Without `--proxy`, `route` is ignored.
 
 ## Certificates
 
