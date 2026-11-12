@@ -30,6 +30,8 @@ import type {
 	ProjectStatus,
 	ProxmoxGuest,
 	ProxmoxSummary,
+	ProxyRoute,
+	ProxySummary,
 	SystemdSummary,
 	SystemdUnit,
 	SystemdUnitDetail,
@@ -111,6 +113,8 @@ export const NodeAction = {
 	ContainerAction: "container.action",
 	GuestAction: "guest.action",
 	PiholeBlocking: "pihole.blocking",
+	ProxyReload: "proxy.reload",
+	ProxyRemove: "proxy.remove",
 	ProjectsList: "projects.list",
 	ProjectsReload: "projects.reload",
 	ProjectAction: "project.action",
@@ -320,6 +324,11 @@ export interface PiholeDnsParams extends Partial<NodeScoped> {
 	present?: boolean;
 }
 
+/** Delete one api route from the proxy. File routes belong to the file. */
+export interface ProxyRemoveParams extends Partial<NodeScoped> {
+	name: string;
+}
+
 export interface ProjectDeployParams extends Partial<NodeScoped> {
 	projectId: string;
 }
@@ -354,6 +363,8 @@ export interface SnapshotResult {
 	guests: ProxmoxGuest[];
 	pihole?: PiholeSummary;
 	piholeDetail?: PiholeDetail;
+	proxy?: ProxySummary;
+	proxyRoutes?: ProxyRoute[];
 	ca?: CaStatus;
 	extras: Record<string, ModuleReport>;
 	errors: Record<string, string>;

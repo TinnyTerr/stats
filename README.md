@@ -295,7 +295,7 @@ stats modules      # the table, with a [not on this platform] marker
 | Module | Runs on |
 | --- | --- |
 | `system` | Linux, macOS, Windows — one probe per platform |
-| `projects`, `logs`, `proxmox`, `pihole` | any platform |
+| `projects`, `logs`, `proxmox`, `pihole`, `proxy` | any platform |
 | `docker` | Linux, macOS |
 | `processes`, `ports` | Linux, macOS, Windows |
 | `systemd` | Linux |
@@ -512,6 +512,12 @@ reaches it:
   `--proxy http://127.0.0.1:7778` (`STATS_PROXY`, `STATS_PROXY_TOKEN`; and
   `--proxy-host` / `STATS_PROXY_HOST` for the address the proxy should dial when
   it is not on the same machine). Without `--proxy`, `route` is ignored.
+
+The same `--proxy` setting loads the **`proxy` module**: the node reads the
+proxy's `/topology` and shows routes, upstream health, middleware chains and
+request/error counts on a Proxy tab and card face, and can reload the proxy or
+remove an api route (`proxy.reload`, `proxy.remove`). A dead upstream or a broken
+chain puts a dot on the tab. File routes are read-only from here.
 
 ## Certificates
 

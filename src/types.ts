@@ -319,6 +319,39 @@ export interface ProxmoxSummary {
  * `name` is what the resolver saw; `label` is the friendlier name Pi-hole
  * knows it by, which only clients and upstreams usually have.
  */
+/** One route on the proxy, from its `/topology`: what it matches, where it goes, how it's doing. */
+export interface ProxyRoute {
+	name: string;
+	/** a file route is read-only from here; only api routes can be removed */
+	source: "file" | "api";
+	hosts: string[];
+	path: string;
+	/** upstreams, with the proxy's own verdict on each */
+	to: { url: string; down: boolean }[];
+	/** the middleware chain, in order */
+	chain: string[];
+	/** why the chain failed to build, when it did; such a route answers 500 */
+	error: string | null;
+	requests: number;
+	errors: number;
+	lastSeen: number | null;
+}
+
+/** The headline for a proxy this node reaches; the rows are {@link ProxyRoute}. */
+export interface ProxySummary {
+	available: boolean;
+	url: string;
+	routes: number;
+	file: number;
+	api: number;
+	requests: number;
+	errors: number;
+	/** upstreams the proxy currently considers down */
+	down: number;
+	/** routes whose middleware chain is broken */
+	broken: number;
+}
+
 export interface PiholeEntry {
 	name: string;
 	label: string | null;
@@ -615,6 +648,9 @@ export interface Telemetry {
 	pihole?: PiholeSummary;
 	/** the leaderboards behind the Pi-hole tab; refreshed slower than the tick */
 	piholeDetail?: PiholeDetail;
+	/** from the `proxy` module; absent when the node reaches no proxy */
+	proxy?: ProxySummary;
+	proxyRoutes?: ProxyRoute[];
 	/** from the `ca` module; absent when the hub has no local CA to trust */
 	ca?: CaStatus;
 	/** what each installed module reported this tick, keyed by module id */
@@ -738,6 +774,8 @@ export interface NodeSummary {
 	proxmox: ProxmoxSummary | null;
 	/** null unless this node actually reached a Pi-hole */
 	pihole: PiholeSummary | null;
+	/** null unless this node actually reached a proxy */
+	proxy: ProxySummary | null;
 	/** installed modules' scalars — the rows stay in telemetry, see ModuleHeadline */
 	extras: Record<string, ModuleHeadline>;
 	collectorErrors: Record<string, string>;

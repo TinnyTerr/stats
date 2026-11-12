@@ -149,6 +149,11 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   `project.deploy` returns once the deploy has *started*; a build outlasts the
   relay's 30s one-shot.
 
+- **The `proxy` module reuses the node's `proxy` config.** Availability is
+  "`config.proxy` is set" (same flag as `RouteSync`); an unreachable proxy is a
+  `telemetry.errors.proxy`, not an unavailable module. Rows (`proxyRoutes`) stay
+  in telemetry, the counts (`NodeSummary.proxy`) go to every browser.
+
 ## Things that bit us, worth not rediscovering
 
 - **macOS, written without a Mac in reach.** The darwin parsers are pure and

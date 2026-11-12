@@ -18,6 +18,7 @@ import { piholeModule } from "./pihole.ts";
 import { portsModule, processesModule } from "./processes.ts";
 import { projectsModule } from "./projects.ts";
 import { proxmoxModule } from "./proxmox.ts";
+import { proxyModule } from "./proxy.ts";
 import { systemModule } from "./system.ts";
 import { systemdModule } from "./systemd.ts";
 import { terminalModule } from "./terminal.ts";
@@ -42,6 +43,7 @@ export const BUILTIN_MODULES: NodeModule[] = [
 	systemdModule,
 	proxmoxModule,
 	piholeModule,
+	proxyModule,
 	processesModule,
 	portsModule,
 	logsModule,

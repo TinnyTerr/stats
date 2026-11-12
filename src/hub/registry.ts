@@ -502,6 +502,7 @@ export class NodeRegistry {
 			// Same rule as proxmox: only a node that actually reached one gets a
 			// summary, so the face appears on the Pi-hole's card and nowhere else.
 			pihole: t?.pihole?.available ? t.pihole : null,
+			proxy: t?.proxy?.available ? t.proxy : null,
 			projects: t
 				? {
 						total: projects.length,

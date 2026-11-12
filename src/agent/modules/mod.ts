@@ -14,6 +14,8 @@ import type {
 	ProjectStatus,
 	ProxmoxGuest,
 	ProxmoxSummary,
+	ProxyRoute,
+	ProxySummary,
 	SystemdSummary,
 	SystemdUnit,
 	SystemStats,
@@ -63,6 +65,8 @@ export interface TelemetryParts {
 	guests?: ProxmoxGuest[];
 	pihole?: PiholeSummary;
 	piholeDetail?: PiholeDetail;
+	proxy?: ProxySummary;
+	proxyRoutes?: ProxyRoute[];
 	ca?: CaStatus;
 	/** installed modules' reports, keyed by module id — merged, not replaced */
 	extras?: Record<string, ModuleReport>;

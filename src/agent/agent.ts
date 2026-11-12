@@ -40,8 +40,8 @@ import {
 	type LoadedModules,
 	loadModules,
 } from "./modules/index.ts";
-import { addKey, normalizeKey, removeKey } from "./sshkeys.ts";
 import { RouteSync } from "./routes.ts";
+import { addKey, normalizeKey, removeKey } from "./sshkeys.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -272,6 +272,8 @@ export function startNode(config: AgentConfig): AgentHandle {
 			// that have no business showing it.
 			pihole: parts.pihole,
 			piholeDetail: parts.piholeDetail,
+			proxy: parts.proxy,
+			proxyRoutes: parts.proxyRoutes,
 			ca: parts.ca,
 			extras: parts.extras ?? {},
 			errors,

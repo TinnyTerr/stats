@@ -27,6 +27,7 @@ export const BUILTIN_MODULE_IDS = [
 	"systemd",
 	"proxmox",
 	"pihole",
+	"proxy",
 	"processes",
 	"ports",
 	"logs",
@@ -191,6 +192,20 @@ export const MODULES: Record<BuiltinModuleId, ModuleManifest> = {
 		actions: ["pihole.blocking", "pihole.dns"],
 		tab: "pihole",
 		provides: ["pihole"],
+	},
+	proxy: {
+		id: "proxy",
+		label: "Proxy",
+		description:
+			"Routes, upstream health and traffic from the reverse proxy's own API.",
+		required: false,
+		enabledByDefault: true,
+		// HTTP calls only, and the proxy is usually on another machine.
+		platforms: [],
+		grants: ["http"],
+		actions: ["proxy.reload", "proxy.remove"],
+		tab: "proxy",
+		provides: ["proxy", "proxyRoutes"],
 	},
 	processes: {
 		id: "processes",

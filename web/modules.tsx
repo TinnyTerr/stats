@@ -27,6 +27,7 @@ import {
 	PiholePanel,
 	PortsPanel,
 	ProcessesPanel,
+	ProxyPanel,
 	ServicesPanel,
 } from "./panels.tsx";
 import { TerminalPanel } from "./terminal.tsx";
@@ -707,6 +708,32 @@ export const UI_MODULES: UiModule[] = [
 						</>
 					);
 				},
+			},
+		],
+	},
+
+	{
+		id: "proxy",
+		tab: {
+			id: "proxy",
+			label: "proxy",
+			render: (props) => <ProxyPanel {...props} />,
+			// A dead upstream or a broken chain is a route answering 5xx.
+			badge: (node) => Boolean(node.proxy?.down || node.proxy?.broken),
+		},
+		faces: [
+			{
+				id: "routes",
+				label: "Proxy",
+				module: "proxy",
+				available: ({ node }) => Boolean(node.proxy?.available),
+				render: ({ node }) => (
+					<div className="metrics">
+						<Tile label="Routes" value={count(node.proxy?.routes ?? 0)} />
+						<Tile label="Requests" value={count(node.proxy?.requests ?? 0)} />
+						<Tile label="Down" value={count(node.proxy?.down ?? 0)} />
+					</div>
+				),
 			},
 		],
 	},

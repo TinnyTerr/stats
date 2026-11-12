@@ -1583,6 +1583,121 @@ function PiholeTop({
 	);
 }
 
+export function ProxyPanel({ node, telemetry, hub }: PanelProps) {
+	const proxy = telemetry?.proxy ?? node.proxy;
+	const routes = telemetry?.proxyRoutes ?? [];
+	const canControl = node.capabilities?.control ?? false;
+	const error = telemetry?.errors?.proxy ?? node.collectorErrors?.proxy;
+
+	if (!proxy?.available) {
+		return (
+			<>
+				{error && <ErrorNote>{error}</ErrorNote>}
+				<Empty>
+					{moduleOn(node.capabilities?.modules, "proxy")
+						? "This node hasn't reached its proxy yet."
+						: "The proxy module isn't loaded on this node."}
+				</Empty>
+			</>
+		);
+	}
+
+	return (
+		<div className="stack">
+			{error && <ErrorNote>{error}</ErrorNote>}
+			<section className="panel">
+				<header className="panel-head">
+					<h4>
+						<Dot tone={proxy.down || proxy.broken ? "warn" : "ok"} />
+						{proxy.url}
+					</h4>
+					<span className="row-actions">
+						<ActionButton
+							disabled={!canControl}
+							title="re-read the proxy's config file"
+							onAction={() =>
+								hub.request(NodeAction.ProxyReload, { nodeId: node.id })
+							}
+						>
+							reload
+						</ActionButton>
+					</span>
+				</header>
+				<dl className="facts-grid">
+					<Stat label="Routes" value={count(proxy.routes)} />
+					<Stat label="From file" value={count(proxy.file)} />
+					<Stat label="From api" value={count(proxy.api)} />
+					<Stat label="Requests" value={count(proxy.requests)} />
+					<Stat label="Errors" value={count(proxy.errors)} />
+					<Stat label="Upstreams down" value={count(proxy.down)} />
+				</dl>
+			</section>
+
+			<section className="panel">
+				<header className="panel-head">
+					<h4>Routes</h4>
+				</header>
+				{routes.length ? (
+					<DataTable
+						columns={[
+							"Route",
+							"Match",
+							"Upstreams",
+							"Middleware",
+							"Requests",
+							"Errors",
+							"Last",
+							"",
+						]}
+					>
+						{routes.map((r) => (
+							<tr key={r.name}>
+								<td className="truncate" title={r.name}>
+									{r.name} <Pill tone="info">{r.source}</Pill>
+									{r.error && <Pill tone="crit">{r.error}</Pill>}
+								</td>
+								<td className="mono truncate">
+									{(r.hosts.length ? r.hosts.join(", ") : "*") + r.path}
+								</td>
+								<td className="mono">
+									{r.to.map((t) => (
+										<div key={t.url}>
+											<Dot tone={t.down ? "crit" : "ok"} /> {t.url}
+										</div>
+									))}
+								</td>
+								<td className="mono truncate">{r.chain.join(" → ") || "—"}</td>
+								<td className="mono">{count(r.requests)}</td>
+								<td className="mono">{count(r.errors)}</td>
+								<td>{r.lastSeen ? ago(r.lastSeen) : "—"}</td>
+								<td>
+									{r.source === "api" && (
+										<ActionButton
+											danger
+											disabled={!canControl}
+											title="delete this route from the proxy"
+											onAction={() =>
+												hub.request(NodeAction.ProxyRemove, {
+													nodeId: node.id,
+													name: r.name,
+												})
+											}
+										>
+											remove
+										</ActionButton>
+									)}
+								</td>
+							</tr>
+						))}
+					</DataTable>
+				) : (
+					<Empty>The proxy has no routes.</Empty>
+				)}
+			</section>
+		</div>
+	);
+}
+
 export function PiholePanel({ node, telemetry, hub }: PanelProps) {
 	const pihole = telemetry?.pihole ?? node.pihole;
 	const detail = telemetry?.piholeDetail;
