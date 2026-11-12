@@ -6,6 +6,7 @@ import type {
 	HealthCheck,
 	HealthState,
 	LogLine,
+	ProcessRoute,
 	ProcessSpec,
 	ProcessState,
 	ProcessStatus,
@@ -836,6 +837,31 @@ export class Supervisor {
 		const unsubscribe = buffer.subscribe(onLine);
 		signal?.addEventListener("abort", unsubscribe, { once: true });
 		return unsubscribe;
+	}
+
+	/**
+	 * Every declared route and whether it should be served right now: running,
+	 * and healthy when there is a healthcheck to say so. Cheap — unlike
+	 * status() it samples nothing.
+	 */
+	routes(): { name: string; route: ProcessRoute; up: boolean }[] {
+		const out: { name: string; route: ProcessRoute; up: boolean }[] = [];
+		for (const project of this.projects) {
+			for (const spec of project.processes) {
+				if (!spec.route) continue;
+				const m = this.managed.get(this.key(project.id, spec.id));
+				const up =
+					project.enabled &&
+					m?.state === "running" &&
+					(spec.healthcheck ? m.health === "healthy" : true);
+				out.push({
+					name: `${project.id}-${spec.id}`,
+					route: spec.route,
+					up: Boolean(up),
+				});
+			}
+		}
+		return out;
 	}
 
 	/** Working directory and environment for a terminal opened "in" a project. */

@@ -75,7 +75,8 @@ Usage:
                        [--modules docker,systemd | --modules -terminal]
                        [--no-terminal] [--no-control] [--allow-remote-update]
                        [--allow-hub-modules]
-                       [--allow-hub-ssh-keys]
+                       [--allow-hub-ssh-keys] [--proxy URL] [--proxy-token T]
+                       [--proxy-host ADDR]
   ${invocation} modules                      list builtin and installed modules
   ${invocation} modules install <repo>       install a module from a git repository
   ${invocation} modules update [ID]          fast-forward installed modules
@@ -425,6 +426,9 @@ async function main(role: string | undefined) {
 				tags: flag("tags"),
 				interval: flag("interval"),
 				projects: flag("projects"),
+				proxy: flag("proxy"),
+				proxyToken: flag("proxy-token"),
+				proxyHost: flag("proxy-host"),
 				config: flag("config"),
 				modules: flag("modules"),
 				terminal: toggle("terminal"),

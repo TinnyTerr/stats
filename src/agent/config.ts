@@ -62,12 +62,25 @@ export interface AgentConfig {
 	 * a login, so same shape as the other two: on by default.
 	 */
 	allowHubSshKeys?: boolean;
+	/**
+	 * The proxy this node registers its projects' routes with. Absent means
+	 * `route` in the projects file is parsed and ignored.
+	 */
+	proxy?: ProxyConfig;
 	/** projects files/directories, in load order */
 	projectPaths: string[];
 	/** what `stats modules install` put in the store, ready to load */
 	installed?: InstalledModule[];
 	/** per-module configuration, keyed by module id — installed modules only */
 	moduleSettings?: Record<string, Record<string, unknown>>;
+}
+
+export interface ProxyConfig {
+	/** the proxy's API, e.g. http://127.0.0.1:7778 */
+	url: string;
+	token: string | null;
+	/** how the proxy reaches this node, for a proxy that is not on it */
+	host: string;
 }
 
 const DEFAULT_CONFIG_PATH =
@@ -87,6 +100,7 @@ interface RawAgentConfig {
 	allowHubModules?: boolean;
 	allowHubSshKeys?: boolean;
 	projects?: string | string[];
+	proxy?: { url?: string; token?: string | null; host?: string };
 	modules?: Record<string, boolean>;
 	moduleSettings?: Record<string, Record<string, unknown>>;
 }
@@ -200,6 +214,9 @@ export interface AgentOverrides {
 	allowHubModules?: boolean;
 	allowHubSshKeys?: boolean;
 	projects?: string;
+	proxy?: string;
+	proxyToken?: string;
+	proxyHost?: string;
 	config?: string;
 	/** "docker,systemd" or "-terminal"; see parseModuleList */
 	modules?: string;
@@ -239,6 +256,23 @@ export async function loadAgentConfig(
 	const tags = flags.tags ?? process.env.STATS_TAGS;
 	const projects =
 		flags.projects ?? process.env.STATS_PROJECTS ?? file.projects;
+
+	const proxyUrl = flags.proxy ?? process.env.STATS_PROXY ?? file.proxy?.url;
+	const proxy: ProxyConfig | undefined = proxyUrl
+		? {
+				url: proxyUrl.replace(/\/+$/, ""),
+				token:
+					flags.proxyToken ??
+					process.env.STATS_PROXY_TOKEN ??
+					file.proxy?.token ??
+					null,
+				host:
+					flags.proxyHost ??
+					process.env.STATS_PROXY_HOST ??
+					file.proxy?.host ??
+					"127.0.0.1",
+			}
+		: undefined;
 
 	// What `stats modules install` left in the store counts as known from here
 	// on: it can be named in --modules, switched off in agent.json, and it gets
@@ -304,6 +338,7 @@ export async function loadAgentConfig(
 		allowHubSshKeys:
 			flags.allowHubSshKeys ??
 			envBool("STATS_ALLOW_HUB_SSH_KEYS", file.allowHubSshKeys ?? true),
+		proxy,
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(
 					Boolean,

@@ -41,6 +41,7 @@ import {
 	loadModules,
 } from "./modules/index.ts";
 import { addKey, normalizeKey, removeKey } from "./sshkeys.ts";
+import { RouteSync } from "./routes.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -71,6 +72,8 @@ export interface AgentHandle {
 
 export function startNode(config: AgentConfig): AgentHandle {
 	const supervisor = new Supervisor(config.projectPaths);
+	const routes = config.proxy ? new RouteSync(supervisor, config.proxy) : null;
+	routes?.start();
 	const terminals = new TerminalManager(config.modules.terminal !== false);
 
 	let socket: WebSocket | null = null;
@@ -703,6 +706,7 @@ export function startNode(config: AgentConfig): AgentHandle {
 			if (reconnectTimer) clearTimeout(reconnectTimer);
 			teardown("shutting down");
 			socket?.close(1000, "shutting down");
+			await routes?.stop();
 			await supervisor.shutdown();
 		},
 	};
