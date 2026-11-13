@@ -85,15 +85,15 @@ jobs:
           # draft and publish after the last upload. Drafts aren't visible by
           # tag, so find one by listing.
           id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n1)"
+            --jq ".[] | select(.name == \"$tag\" or .tag_name == \"$tag\") | .id" | head -n1)"
           if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=true >/dev/null
-            gh release edit "$tag" --notes-file notes.md
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
+              -F draft=true -F "body=@notes.md" >/dev/null
           else
-            gh release create "$tag" --draft --title "$tag" --notes-file notes.md
-            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n1)"
+            id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$tag" -f name="$tag" -F draft=true -F "body=@notes.md" --jq .id)"
           fi
+          echo "release id $id"
 
           shopt -s nullglob
           assets=(
