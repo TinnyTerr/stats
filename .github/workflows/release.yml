@@ -120,11 +120,14 @@ jobs:
                 -H "Accept: application/vnd.github+json" \
                 -H "Content-Type: application/octet-stream" \
                 --data-binary @"$asset" \
-                -o /dev/null \
+                -o upload.out \
                 "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$id/assets?name=$name"; then
                 echo "uploaded $name"
                 break
               fi
+              # the API says why in the body (422 = already_exists, bad name, ...)
+              cat upload.out >&2 || true
+              echo >&2
               if [ "$attempt" -eq 3 ]; then
                 echo "failed to upload $name after $attempt attempts" >&2
                 exit 1
