@@ -63,6 +63,12 @@ export interface AgentConfig {
 	 */
 	allowHubSshKeys?: boolean;
 	/**
+	 * Put hub-sent keys in the system file (`SYSTEM_KEYS_PATH`, shared by every
+	 * account) instead of the running account's `~/.ssh/authorized_keys`. Off by
+	 * default: sshd only reads that file if `AuthorizedKeysFile` names it.
+	 */
+	sshKeysSystem?: boolean;
+	/**
 	 * The proxy this node registers its projects' routes with. Absent means
 	 * `route` in the projects file is parsed and ignored.
 	 */
@@ -99,6 +105,7 @@ interface RawAgentConfig {
 	allowRemoteUpdate?: boolean;
 	allowHubModules?: boolean;
 	allowHubSshKeys?: boolean;
+	sshKeysSystem?: boolean;
 	projects?: string | string[];
 	proxy?: { url?: string; token?: string | null; host?: string };
 	modules?: Record<string, boolean>;
@@ -213,6 +220,7 @@ export interface AgentOverrides {
 	allowRemoteUpdate?: boolean;
 	allowHubModules?: boolean;
 	allowHubSshKeys?: boolean;
+	sshKeysSystem?: boolean;
 	projects?: string;
 	proxy?: string;
 	proxyToken?: string;
@@ -338,6 +346,9 @@ export async function loadAgentConfig(
 		allowHubSshKeys:
 			flags.allowHubSshKeys ??
 			envBool("STATS_ALLOW_HUB_SSH_KEYS", file.allowHubSshKeys ?? true),
+		sshKeysSystem:
+			flags.sshKeysSystem ??
+			envBool("STATS_SSH_KEYS_SYSTEM", file.sshKeysSystem ?? false),
 		proxy,
 		projectPaths: projects
 			? (Array.isArray(projects) ? projects : projects.split(":")).filter(

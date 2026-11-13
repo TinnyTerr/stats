@@ -116,7 +116,10 @@ node (src/agent) ──ws /node──▶ hub (src/hub) ◀──ws /ws── bro
   account's `authorized_keys` inside a block it owns (`src/agent/sshkeys.ts`),
   refuses anything with options, and gates on `allowHubSshKeys` — on by
   default, the same shape as `allowRemoteUpdate`. `ssh.spread` is the
-  hub-side fan-out and skips offline nodes rather than queueing.
+  hub-side fan-out and skips offline nodes rather than queueing. The target is
+  the node's call too: `sshKeysSystem` (off by default) swaps `~/.ssh` for
+  `SYSTEM_KEYS_PATH`; the node warns if `sshd_config` doesn't read it and never
+  edits `sshd_config` itself.
 - **Bump `PROTOCOL` in `src/version.ts` when the wire shape changes** in a way
   an older peer would misread. It is also the version byte in every frame, and
   a test asserts the two agree.

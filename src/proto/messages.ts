@@ -469,6 +469,8 @@ export interface SshKeyResult {
 	changed: boolean;
 	/** the file written, for the operator to go and look at */
 	path: string;
+	/** the key is written, but sshd on that node won't read the file yet */
+	warning?: string;
 }
 
 export interface SshSpreadParams {
@@ -484,6 +486,7 @@ export interface SshSpreadResult {
 		ok: boolean;
 		changed?: boolean;
 		path?: string;
+		warning?: string;
 		error?: string;
 	}[];
 }

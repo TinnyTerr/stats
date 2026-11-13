@@ -115,7 +115,7 @@ each one.
 | Command | Does |
 | --- | --- |
 | `hub [--config hub.json] [--port 3000] [--host 127.0.0.1]` | starts the hub |
-| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules] [--allow-hub-ssh-keys] [--proxy URL] [--proxy-token T] [--proxy-host ADDR]` | starts a node |
+| `node --hub ws://hub:3000 [--token T] [--id ID] [--name NAME] [--tags a,b] [--interval 3000] [--projects PATH] [--modules docker,systemd \| -terminal] [--no-terminal] [--no-control] [--allow-remote-update] [--allow-hub-modules] [--allow-hub-ssh-keys] [--ssh-keys-system] [--proxy URL] [--proxy-token T] [--proxy-host ADDR]` | starts a node |
 | `modules` | list builtin and installed modules, and what each may touch |
 | `modules install <repo> [--ref R] [--force]` | install a module from a git repository |
 | `modules update [id]` | fast-forward one installed module, or all of them |
@@ -379,6 +379,13 @@ and nothing else. The hub sends a key and nothing about where it goes, and a key
 with options (`command=`, `from=`) is refused. Same opt-in as the above:
 `--allow-hub-ssh-keys` / `STATS_ALLOW_HUB_SSH_KEYS`, on for root, off otherwise.
 Not supported on Windows nodes. Offline nodes are skipped, not queued.
+
+`--ssh-keys-system` / `STATS_SSH_KEYS_SYSTEM` (off by default) writes to
+`/etc/ssh/authorized_keys.d/stats` instead, so the key works for every account.
+sshd only reads that if `sshd_config` has
+`AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/stats`; the
+node doesn't edit `sshd_config`, it returns a warning (shown per node in the
+spread result) when it can't find that line.
 
 `modules` in `hub.json` stays fleet-wide and stays subtractive: it beats
 per-node intent in both directions, and no node can turn one back on.
@@ -760,6 +767,7 @@ This is the part that changed most from 0.1, so read it before rolling it out.
 | `STATS_ALLOW_REMOTE_UPDATE` | node | `0` |
 | `STATS_ALLOW_HUB_MODULES` | node | `0` (let the hub turn modules on, not just off) |
 | `STATS_ALLOW_HUB_SSH_KEYS` | node | `0` (let the hub add/remove authorized_keys entries; on for root) |
+| `STATS_SSH_KEYS_SYSTEM` | node | `0` (hub keys go to `/etc/ssh/authorized_keys.d/stats`, not `~/.ssh`) |
 | `STATS_HOST` | both | `github.com` (where updates come from) |
 | `STATS_REPO` | both | `tinnyterr/stats` |
 | `STATS_ASSET` | both | detected from arch, libc and AVX2 |

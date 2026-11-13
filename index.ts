@@ -75,7 +75,7 @@ Usage:
                        [--modules docker,systemd | --modules -terminal]
                        [--no-terminal] [--no-control] [--allow-remote-update]
                        [--allow-hub-modules]
-                       [--allow-hub-ssh-keys] [--proxy URL] [--proxy-token T]
+                       [--allow-hub-ssh-keys] [--ssh-keys-system] [--proxy URL] [--proxy-token T]
                        [--proxy-host ADDR]
   ${invocation} modules                      list builtin and installed modules
   ${invocation} modules install <repo>       install a module from a git repository
@@ -436,6 +436,7 @@ async function main(role: string | undefined) {
 				allowRemoteUpdate: toggle("allow-remote-update"),
 				allowHubModules: toggle("allow-hub-modules"),
 				allowHubSshKeys: toggle("allow-hub-ssh-keys"),
+				sshKeysSystem: toggle("ssh-keys-system"),
 			};
 			const config = await loadAgentConfig(overrides);
 

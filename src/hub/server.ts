@@ -423,7 +423,13 @@ export function startHub(config: HubConfig) {
 								{ action, params: { key: p.key } } as InboundRequest,
 								record.id,
 							)) as SshKeyResult;
-							return { ...base, ok: true, changed: r.changed, path: r.path };
+							return {
+								...base,
+								ok: true,
+								changed: r.changed,
+								path: r.path,
+								warning: r.warning,
+							};
 						} catch (err) {
 							return {
 								...base,

@@ -1,6 +1,6 @@
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { selectProbe } from "../collect/probe.ts";
 import { emptyProxmoxSummary } from "../collect/proxmox.ts";
 import {
@@ -41,7 +41,13 @@ import {
 	loadModules,
 } from "./modules/index.ts";
 import { RouteSync } from "./routes.ts";
-import { addKey, normalizeKey, removeKey } from "./sshkeys.ts";
+import {
+	addKey,
+	normalizeKey,
+	removeKey,
+	SYSTEM_KEYS_PATH,
+	sshdReadsSystemFile,
+} from "./sshkeys.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TerminalManager } from "./terminal.ts";
 
@@ -456,17 +462,41 @@ export function startNode(config: AgentConfig): AgentHandle {
 			);
 		}
 
-		const dir = join(homedir(), ".ssh");
-		const path = join(dir, "authorized_keys");
-		await mkdir(dir, { recursive: true, mode: 0o700 });
+		const system = config.sshKeysSystem === true;
+		const path = system
+			? SYSTEM_KEYS_PATH
+			: join(homedir(), ".ssh", "authorized_keys");
+		// sshd refuses a system file that isn't root's alone to write.
+		const dir = dirname(path);
+		await mkdir(dir, { recursive: true, mode: system ? 0o755 : 0o700 });
 		const file = Bun.file(path);
 		const current = (await file.exists()) ? await file.text() : "";
 		const next = edit(current, key);
 		if (next.changed) {
 			await Bun.write(path, next.content);
-			await chmod(path, 0o600);
+			await chmod(path, system ? 0o644 : 0o600);
 		}
-		return { changed: next.changed, path };
+		let warning: string | undefined;
+		if (system && !(await systemFileIsRead())) {
+			warning = `sshd isn't configured to read ${path} — add "AuthorizedKeysFile .ssh/authorized_keys ${path}" to sshd_config and reload sshd`;
+		}
+		return { changed: next.changed, path, ...(warning ? { warning } : {}) };
+	}
+
+	async function systemFileIsRead(): Promise<boolean> {
+		const texts: string[] = [];
+		const read = async (p: string) => {
+			try {
+				texts.push(await Bun.file(p).text());
+			} catch {}
+		};
+		await read("/etc/ssh/sshd_config");
+		try {
+			for (const f of await readdir("/etc/ssh/sshd_config.d")) {
+				if (f.endsWith(".conf")) await read(join("/etc/ssh/sshd_config.d", f));
+			}
+		} catch {}
+		return sshdReadsSystemFile(texts);
 	}
 
 	/* ---------- self-update ---------- */

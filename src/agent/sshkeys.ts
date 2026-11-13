@@ -89,3 +89,20 @@ export function removeKey(
 	if (kept.length === keys.length) return { content, changed: false };
 	return { content: render(before, kept, after), changed: true };
 }
+
+/** Where `sshKeysSystem` puts keys. One file, every account. */
+export const SYSTEM_KEYS_PATH = "/etc/ssh/authorized_keys.d/stats";
+
+/**
+ * Whether sshd's config names the system file in `AuthorizedKeysFile`. Reads the
+ * main config and its drop-ins; a miss is a warning, not a failure, because
+ * `Include` paths and `Match` blocks are beyond what a grep should second-guess.
+ */
+export function sshdReadsSystemFile(configs: string[]): boolean {
+	return configs.some((text) =>
+		text.split("\n").some((line) => {
+			const l = line.trim();
+			return /^AuthorizedKeysFile\s/i.test(l) && l.includes(SYSTEM_KEYS_PATH);
+		}),
+	);
+}

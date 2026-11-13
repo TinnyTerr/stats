@@ -37,3 +37,19 @@ test("revoke removes only the managed key", () => {
 	expect(removed.content).toContain(KEY);
 	expect(removeKey(`${OTHER}\n`, OTHER).changed).toBe(false);
 });
+
+import { SYSTEM_KEYS_PATH, sshdReadsSystemFile } from "./sshkeys.ts";
+
+test("sshdReadsSystemFile finds the path in AuthorizedKeysFile", () => {
+	expect(
+		sshdReadsSystemFile([
+			`AuthorizedKeysFile .ssh/authorized_keys ${SYSTEM_KEYS_PATH}\n`,
+		]),
+	).toBe(true);
+	expect(
+		sshdReadsSystemFile([`# AuthorizedKeysFile ${SYSTEM_KEYS_PATH}`]),
+	).toBe(false);
+	expect(sshdReadsSystemFile(["AuthorizedKeysFile .ssh/authorized_keys"])).toBe(
+		false,
+	);
+});
