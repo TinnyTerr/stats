@@ -81,17 +81,19 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
 
-          if gh release view "$tag" >/dev/null 2>&1; then
+          # Immutable releases refuse assets once published, so build it as a
+          # draft and publish after the last upload. Drafts aren't visible by
+          # tag, so find one by listing.
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n1)"
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=true >/dev/null
             gh release edit "$tag" --notes-file notes.md
           else
-            gh release create "$tag" --title "$tag" --notes-file notes.md
+            gh release create "$tag" --draft --title "$tag" --notes-file notes.md
+            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n1)"
           fi
-
-          # gh release upload has stalled here with no output for 20+ minutes on
-          # 80 MB assets, so talk to the API directly: curl gives progress, a
-          # stall detector (<10 KB/s for 60s) and a hard cap, and a timeout is
-          # an ordinary non-zero exit we can retry.
-          id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)"
 
           shopt -s nullglob
           assets=(
@@ -136,3 +138,6 @@ jobs:
               sleep 2
             done
           done
+
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false >/dev/null
+          echo "published $tag"
