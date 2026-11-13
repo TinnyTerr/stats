@@ -768,7 +768,7 @@ EOF
 
   log ""
   log "Node is dialling ${BOLD}$HUB_URL${RESET} — it should appear on the dashboard within seconds."
-  log "Identity:  ${DIM}${NODE_ID:-this host's machine id}  (${NODE_NAME:-$(hostname)})$RESET"
+  log "Identity:  ${DIM}${NODE_ID:-the machine id}  (${NODE_NAME:-$(hostname)})$RESET"
   log "Projects:  $PROJECTS   ${DIM}(declare what this host runs; stats check validates it)$RESET"
   if [ "$NO_TERMINAL" -eq 0 ] || [ "$NO_CONTROL" -eq 0 ]; then
     log ""
@@ -878,8 +878,8 @@ log "Install a node on each server you want to watch:"
 log ""
 log "  ${BOLD}curl -fsSL https://raw.githubusercontent.com/TinnyTerr/stats/main/install.sh | \\$RESET"
 log "  ${BOLD}    sudo sh -s -- --node --hub-url ws://$ADDR:$PORT --token $TOKEN${RESET}"
-# log ""
-# log "${DIM}(that token is also in $HUB_ENV, root-only)$RESET"
+log ""
+log "${DIM}(that token is also in $HUB_ENV, root-only)$RESET"
 if [ "$BIND" = "127.0.0.1" ]; then
   log ""
   log "${YELLOW}Bound to localhost, so no node can reach it.$RESET Re-run with ${BOLD}--host 0.0.0.0${RESET}"
